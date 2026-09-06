@@ -9,6 +9,7 @@ import { getMcpPolicy } from '../../src/cli/mcp/policy';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { continueGoalWorkloop, finalizeGoalWorkloop, routeWorkStart, runGoalWorkloop, verifyGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { runGoalWorkloop as runGoalWorkloopWithAccess } from '../../src/runtime/control-plane/facade/goal-workloop-access';
 import { acceptPlanStepEvidence, approvePlanContract, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { appendWorkEvidence, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, recordWorkScopeEvidence, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { selectExecutionMode } from '../../src/runtime/control-plane/facade/types';
@@ -280,6 +281,34 @@ describe('single Route Policy authority', () => {
       expect(assessment.routeDecision.reasons.some((reason) => reason.code === `explicit_${mode}`)).toBe(true);
     }
   });
+  test('preserves explicit Plan mode through the access facade without forcing isolation', () => {
+    const root = temp('route-plan-access-');
+    const result = runGoalWorkloopWithAccess({
+      workStore: { root: join(root, 'work') },
+      handoffStore: { root: join(root, 'handoff') },
+      repoId: 'repo-a',
+      checkoutId: 'checkout-a',
+      principalId: 'principal-a',
+      controllerInstanceId: 'controller-a',
+      sourceRevision: 'revision-a',
+    }, 'start', {
+      objective: 'Deliver one approved Plan step on the current checkout',
+      mode: 'plan',
+      scope_clear: true,
+      expected_files: 2,
+      expected_changed_lines: 80,
+      allowed_paths: ['src/**'],
+    });
+    expect(result.status).toBe('ok');
+    expect(result.data).toMatchObject({
+      workContractCreated: true,
+      worktreeRequired: false,
+      mode: {
+        routeDecision: { executionMode: 'goal_workloop', requiresWork: true, requiresIsolation: false },
+      },
+    });
+  });
+
   test('typed isolated placement overrides an explicit Direct routing preference before admission', () => {
     const decision = decideRoute(sharedInput({
       intent: { objective: 'Apply one isolated edit', scopeClear: true, mutation: true, explicitMode: 'direct' },
