@@ -432,15 +432,10 @@ function logicalEvidenceArtifactPath(id: string): string {
 }
 
 const CHECK_REVISION_EXCLUDES = [
-  '.ai/harness/jobs/**',
-  '.ai/harness/local-jobs/**',
-  '.ai/harness/checks/controller/**',
-  '.ai/harness/edit-sessions/**',
-  '.ai/harness/worktrees/**',
-  '.ai/harness/controller/**',
-  '.ai/harness/artifacts/**',
-  '.ai/harness/local-bridge/**',
-  '.ai/harness/ephemeral-issues/**',
+  // `.ai/harness` is Forge runtime/check state, not repository source. Checks
+  // are allowed to materialize artifacts such as design-system audit reports
+  // there; hashing those outputs would make a stable check invalidate itself.
+  '.ai/harness/**',
 ];
 
 function checkRevisionPathspecs(): string[] {

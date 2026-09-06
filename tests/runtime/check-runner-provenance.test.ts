@@ -77,6 +77,36 @@ function fixture(checks: Record<string, { command: string[]; effects?: unknown; 
 }
 
 describe('controller check provenance and failure classification', () => {
+  test('does not mark a stable check stale when it writes a Forge harness artifact', () => {
+    const repoRoot = fixture({
+      harness_artifact: {
+        command: [
+          process.execPath,
+          '-e',
+          "const fs=require('fs');fs.mkdirSync('.ai/harness',{recursive:true});fs.writeFileSync('.ai/harness/design-system-audit.json','{}');",
+        ],
+      },
+    });
+
+    const result = runControllerCheck(repoRoot, 'harness_artifact');
+
+    expect(result.ok).toBe(true);
+    expect(existsSync(join(repoRoot, '.ai/harness/design-system-audit.json'))).toBe(true);
+  });
+
+  test('still fails closed when a check changes repository source content', () => {
+    const repoRoot = fixture({
+      source_drift: {
+        command: [process.execPath, '-e', "require('fs').writeFileSync('source.ts','export const changed = true;\\n');"],
+      },
+    });
+
+    const result = runControllerCheck(repoRoot, 'source_drift');
+
+    expect(result.ok).toBe(false);
+    expect(result.failureClass).toBe('infrastructure_failure');
+    expect(result.stderr).toContain('repository revision changed while the check was running');
+  });
   test('inherits tracked legacy checks into isolated worktrees and keeps .forge precedence', () => {
     const container = mkdtempSync(join(tmpdir(), 'forge-check-portable-'));
     roots.push(container);
