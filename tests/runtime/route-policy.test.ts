@@ -267,6 +267,11 @@ describe('single Route Policy authority', () => {
       expect(assessment.executionPath).toBe(contract.executionPath);
       expect(assessment.modeBehavior.mutationPhase).toBe(contract.mutationPhase);
       expect(assessment.modeBehavior.structuralContext).toBe(contract.structuralContext);
+      if (mode === 'plan') {
+        expect(assessment.routeDecision).toMatchObject({ executionMode: 'goal_workloop', requiresWork: true, requiresIsolation: false });
+        expect(assessment.modeBehavior.planRequired).toBe(true);
+        expect(assessment.modeBehavior.worktreeRequired).toBe(false);
+      }
       if (mode === 'scale') {
         expect(assessment.modeBehavior.planRequired).toBe(true);
         expect(assessment.modeBehavior.worktreeRequired).toBe(true);

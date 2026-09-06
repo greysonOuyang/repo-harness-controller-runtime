@@ -158,7 +158,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     superseded_by: { type: 'string' },
     expected_files: { type: 'number' },
     expected_changed_lines: { type: 'number' },
-    mode: { type: 'string', enum: ['scale'], description: 'Explicit Scale coordination mode for start. Scale requires a bound approved PlanContract step and uses existing Work/Process/resource-claim authorities; it does not create an agent-swarm lifecycle.' },
+    mode: { type: 'string', enum: ['plan', 'scale'], description: 'Explicit durable Plan/Scale mode for start. Plan binds one approved PlanContract delivery step without implying isolation; Scale additionally coordinates parallel delivery through existing Work/Process/resource-claim authorities.' },
     work_kind: { type: 'string', enum: ['repository_change', 'completed_no_change', 'read_only_review', 'investigation', 'local_effect', 'remote_effect', 'reconciliation'], description: 'Explicit technical Work evidence shape for operation=start. read_only_review is a recoverable source-frozen review lifecycle: it permits inspected-path/finding persistence without repository edits and only clean-finalizes after unchanged-source proof. local_effect/remote_effect represent effect-only execution; completed_no_change/investigation/reconciliation likewise do not imply a source mutation. None imply semantic completion; ChatGPT must still explicitly finalize after reviewing evidence.' },
     scope_clear: { type: 'boolean' },
     requires_investigation: { type: 'boolean' },
