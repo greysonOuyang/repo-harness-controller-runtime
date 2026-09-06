@@ -865,6 +865,11 @@ describe('scheduled external Controller wake', () => {
     expect(scheduledPrompt).not.toContain('This is a new ChatGPT controller round.');
     expect(scheduledPrompt).toContain('不得选择、启动、delegate、resume sibling Work');
     expect(scheduledPrompt).not.toContain('选择、启动或 claim 正确的 Work');
+    expect(scheduledPrompt).toContain('本轮结束协议是强制的');
+    expect(scheduledPrompt).toContain('必须选择 continue_immediately');
+    expect(scheduledPrompt).toContain('必须立即 controller_release 当前 Work');
+    expect(scheduledPrompt).toContain('正常连续推进不得依赖用户再次发送“继续”');
+    expect(scheduledPrompt).toContain('schedule 只能作为故障恢复/watchdog');
     const dispatched = finishControllerRoundRelayDispatch(store, {
       workId,
       ok: true,

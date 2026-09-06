@@ -46,6 +46,9 @@ export function buildChatgptControllerRoundPrompt(
     terminalOriginGuidance
       ? `terminal predecessor 必须在显式 successor start 完成 mechanical bind 后，再显式提交一次 continue_immediately；得到 pending_release 后仅释放 predecessor。若没有可执行 successor，则按最新 Plan/Requirement 事实使用 wait、带 active Handoff 的 wait_for_user 或 goal_complete。`
       : `如果 Requirement/Goal 需要下一个 controller round，在释放 Work 前提交 continue_immediately，并带 relay_scope_id=${record.relayScopeId}。否则使用 wait、带 active Handoff 的 wait_for_user，或 goal_complete。Frozen MCP client 可使用 controller.disposition:<disposition>:${record.relayScopeId}。`,
+    '本轮结束协议是强制的：在向用户输出本轮最终回复之前，必须先提交且仅提交一次 semantic disposition，并完成 controller_release；不得只报告“继续中”“下一步继续”或输出进度后结束本轮。',
+    '如果最新 durable state 表明 Requirement/Goal 尚有可执行工作，且不存在真实 external blocker、active Handoff 或必须由用户决定的边界，则必须选择 continue_immediately。wait 只用于真实等待条件；wait_for_user 必须绑定 active Handoff；goal_complete 只用于 Requirement/Goal 已语义完成。',
+    '提交 continue_immediately 后必须立即 controller_release 当前 Work。controller_release 是立即续跑的 canonical trigger：Forge 将通过现有 ChatGPT launcher 复用 durable conversation binding 并投递下一 ControllerRound prompt。正常连续推进不得依赖用户再次发送“继续”，也不得用 interval schedule 代替该即时 relay；schedule 只能作为故障恢复/watchdog。',
     'Forge 不得自行推断 semantic next step。现有 Work ownership、Handoff authority 与 external-effect authorization 始终是权威。',
   ].join('\n');
 }
