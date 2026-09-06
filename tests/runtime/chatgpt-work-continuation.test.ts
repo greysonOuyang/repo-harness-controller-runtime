@@ -508,7 +508,7 @@ describe('ChatGPT Work conversation binding', () => {
     const generated = writeChatgptBridgeExtension(generatedRoot, 'http://127.0.0.1:17651', 'test-token');
     const generatedScript = readFileSync(generated.contentScriptPath, 'utf8');
     expect(() => new Function(generatedScript)).not.toThrow();
-    expect(launcher).toContain('const bridgeRuntime = isWslWindowsRuntime()');
+    expect(launcher).toContain('const bridgeRuntime = dependencies.bridgeRuntime ?? isWslWindowsRuntime()'); expect(launcher).toContain('dependencies.wslHost ?? createChatgptWslBridgeDeliveryHost()'); expect(launcher).toContain('dependencies.browserHost ?? createChatgptBrowserDeliveryHost({');
     expect(launcher).toContain('createChatgptWslBridgeDeliveryHost()');
     expect(wslHost).toContain('dispatchOnly: true');
     expect(wslHost).toContain("provider: 'chatgpt-bridge'");
@@ -575,6 +575,119 @@ describe('ChatGPT Work conversation binding', () => {
     });
     expect(missingAuthority.status).toBe('failed');
     expect(missingAuthority.error?.code).toBe('CHATGPT_CONTROLLER_ROUND_AUTHORITY_INCOMPLETE');
+  });
+
+  test('persists observed conversation identity when provider delivery is outcome_unknown without upgrading dispatch success', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-outcome-unknown-binding-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'binding@example.test'], ['config', 'user.name', 'Binding Test']] as string[][]) {
+      execFileSync('git', args, { cwd: repoRoot });
+    }
+    writeFileSync(join(repoRoot, 'README.md'), 'binding fixture\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-outcome-unknown-binding' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workInput = {
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop' as const,
+      acceptanceCriteria: ['Keep provider outcome separate from conversation resource identity.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current' as const, requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt' as const,
+      status: 'running' as const,
+    };
+    createWorkContract(store, { ...workInput, workId: 'WORK-OUTCOME-UNKNOWN-BINDING', objective: 'Persist observed ChatGPT conversation identity.' });
+    createWorkContract(store, { ...workInput, workId: 'WORK-FAILED-NO-BINDING', objective: 'Do not invent a ChatGPT conversation identity.' });
+    createWorkContract(store, { ...workInput, workId: 'WORK-FAILED-VALID-CONVERSATION', objective: 'Do not persist a valid conversation URL from a known provider failure.' });
+
+    const outcomeUnknown = await runWorkChatgptContinuation({
+      controllerHome,
+      repoId: repository.repoId,
+      repoRoot,
+      workId: 'WORK-OUTCOME-UNKNOWN-BINDING',
+      prompt: 'continue',
+      controllerAuthorityId: 'cra_11111111111111111111111111111111',
+      relayScopeId: 'goal:WORK-OUTCOME-UNKNOWN-BINDING',
+    }, {
+      bridgeRuntime: false,
+      browserHost: {
+        dispatch: async () => ({
+          status: 'outcome_unknown' as const,
+          provider: 'controller-browser' as const,
+          browserSessionId: 'browser-outcome-unknown',
+          conversationUrl: 'https://chatgpt.com/c/outcome-unknown-binding',
+          executionPreferenceVerified: true,
+          error: { code: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED', message: 'submission confirmation is ambiguous' },
+        }),
+      },
+    });
+    expect(outcomeUnknown).toMatchObject({
+      status: 'failed',
+      providerDeliveryStatus: 'outcome_unknown',
+      conversationId: 'outcome-unknown-binding',
+      conversationUrl: 'https://chatgpt.com/c/outcome-unknown-binding',
+    });
+    expect(getChatgptWorkConversationBinding(store, 'WORK-OUTCOME-UNKNOWN-BINDING')).toMatchObject({
+      conversationId: 'outcome-unknown-binding',
+      conversationUrl: 'https://chatgpt.com/c/outcome-unknown-binding',
+      latestBrowserSessionId: 'browser-outcome-unknown',
+    });
+
+    const ordinaryFailure = await runWorkChatgptContinuation({
+      controllerHome,
+      repoId: repository.repoId,
+      repoRoot,
+      workId: 'WORK-FAILED-NO-BINDING',
+      prompt: 'continue',
+      controllerAuthorityId: 'cra_22222222222222222222222222222222',
+      relayScopeId: 'goal:WORK-FAILED-NO-BINDING',
+    }, {
+      bridgeRuntime: false,
+      browserHost: {
+        dispatch: async () => ({
+          status: 'failed' as const,
+          provider: 'controller-browser' as const,
+          browserSessionId: 'browser-failed',
+          conversationUrl: 'https://chatgpt.com/',
+          executionPreferenceVerified: false,
+          error: { code: 'CHATGPT_BRIDGE_DISPATCH_FAILED', message: 'known provider failure' },
+        }),
+      },
+    });
+    expect(ordinaryFailure).toMatchObject({ status: 'failed', providerDeliveryStatus: 'failed' });
+    expect(getChatgptWorkConversationBinding(store, 'WORK-FAILED-NO-BINDING')).toBeUndefined();
+
+    const knownFailureWithConversation = await runWorkChatgptContinuation({
+      controllerHome,
+      repoId: repository.repoId,
+      repoRoot,
+      workId: 'WORK-FAILED-VALID-CONVERSATION',
+      prompt: 'continue',
+      controllerAuthorityId: 'cra_33333333333333333333333333333333',
+      relayScopeId: 'goal:WORK-FAILED-VALID-CONVERSATION',
+    }, {
+      bridgeRuntime: false,
+      browserHost: {
+        dispatch: async () => ({
+          status: 'failed' as const,
+          provider: 'controller-browser' as const,
+          browserSessionId: 'browser-failed-valid-conversation',
+          conversationUrl: 'https://chatgpt.com/c/known-failure-conversation',
+          executionPreferenceVerified: false,
+          error: { code: 'CHATGPT_BRIDGE_DISPATCH_FAILED', message: 'known provider failure with an observed page' },
+        }),
+      },
+    });
+    expect(knownFailureWithConversation).toMatchObject({ status: 'failed', providerDeliveryStatus: 'failed' });
+    expect(getChatgptWorkConversationBinding(store, 'WORK-FAILED-VALID-CONVERSATION')).toBeUndefined();
   });
 
   test('keeps automation in Chat mode, prefixes @forge, and submits from the stable prompt editor', () => {

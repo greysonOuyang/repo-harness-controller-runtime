@@ -10,6 +10,7 @@ import {
   type ChatgptAutomationReasoning,
   type ChatgptAutomationTabCleanupStatus,
   type ChatgptAutomationTabPolicy,
+  type ChatgptProviderDeliveryHost,
   type ChatgptProviderDeliveryStatus,
 } from '../../../../adapters/chatgpt/provider-delivery';
 import {
@@ -77,6 +78,12 @@ export interface WorkChatgptContinuationInput {
   timeoutMs?: number;
   /** Authorization provenance for Browser actions. Immediate/source launches default to chatgpt-action; Scheduler resume must pass schedule. */
   originSurface?: 'chatgpt-action' | 'schedule';
+}
+
+export interface WorkChatgptContinuationDependencies {
+  bridgeRuntime?: boolean;
+  browserHost?: ChatgptProviderDeliveryHost;
+  wslHost?: ChatgptProviderDeliveryHost;
 }
 
 export interface WorkChatgptContinuationResult {
@@ -269,16 +276,19 @@ export async function runStandaloneChatgptPrompt(input: StandaloneChatgptPromptI
  * Dispatches a bounded resume prompt to one controller-owned ChatGPT Web tab.
  * Chat history is transport context only. Forge Work/Plan/evidence remain authoritative.
  */
-export async function runWorkChatgptContinuation(input: WorkChatgptContinuationInput): Promise<WorkChatgptContinuationResult> {
+export async function runWorkChatgptContinuation(
+  input: WorkChatgptContinuationInput,
+  dependencies: WorkChatgptContinuationDependencies = {},
+): Promise<WorkChatgptContinuationResult> {
   const store = { controllerHome: input.controllerHome, repoId: input.repoId };
   const existing = getChatgptWorkConversationBinding(store, input.workId);
   const seedUrl = input.conversationUrl?.trim() || existing?.conversationUrl;
   const model = normalizeModel(input.model);
   const reasoning = normalizeReasoning(input.reasoning);
   const tabPolicy = normalizeTabPolicy(input.tabPolicy);
+  const bridgeRuntime = dependencies.bridgeRuntime ?? isWslWindowsRuntime();
   const authorityInputError = controllerRoundAuthorityInputError(input);
   if (authorityInputError) {
-    const bridgeRuntime = isWslWindowsRuntime();
     const browserSessionId = bridgeRuntime
       ? stableChatgptWorkBridgeSessionId(input.repoId, input.workId)
       : resolveChatgptWorkBrowserSessionId({
@@ -315,7 +325,6 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
     boundSessionId: existing?.latestBrowserSessionId,
   });
   let binding: ChatgptWorkConversationBinding | undefined = existing;
-  const bridgeRuntime = isWslWindowsRuntime();
   const deliverySessionId = bridgeRuntime
     ? stableChatgptWorkBridgeSessionId(input.repoId, input.workId)
     : sessionId;
@@ -336,8 +345,8 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
     const targetUrl = binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/';
     const renderedPrompt = `${workflowToolAttributionInstruction(input)}\n\n${input.prompt}`;
     const host = bridgeRuntime
-      ? createChatgptWslBridgeDeliveryHost()
-      : createChatgptBrowserDeliveryHost({
+      ? dependencies.wslHost ?? createChatgptWslBridgeDeliveryHost()
+      : dependencies.browserHost ?? createChatgptBrowserDeliveryHost({
           ensureBrowser: ensureControllerChatgptBrowser,
           navigate: navigateWorkConversation,
           ensureExecutionPreference: ensureChatgptExecutionPreference,
@@ -358,6 +367,25 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
         timeoutMs: input.timeoutMs,
       }),
     );
+    const observedUrl = delivery.conversationUrl ?? targetUrl;
+    const mayPersistObservedConversation = delivery.status === 'dispatch_confirmed' || delivery.status === 'outcome_unknown';
+    if (mayPersistObservedConversation && /\/c\/[^/?#]+/.test(observedUrl)) {
+      const observedIdentity = parseChatgptConversationIdentity(observedUrl);
+      binding = binding && binding.conversationId !== observedIdentity.conversationId
+        ? rebindChatgptWorkConversation(store, {
+            workId: input.workId,
+            previousConversationId: binding.conversationId,
+            conversationUrl: observedUrl,
+            latestBrowserSessionId: delivery.browserSessionId,
+            localAlias: binding.localAlias ?? input.title,
+          })
+        : bindChatgptWorkConversation(store, {
+            workId: input.workId,
+            conversationUrl: observedUrl,
+            latestBrowserSessionId: delivery.browserSessionId,
+            localAlias: binding?.localAlias ?? input.title,
+          });
+    }
     if (delivery.status !== 'dispatch_confirmed') {
       return {
         status: 'failed',
@@ -374,24 +402,6 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
         providerDeliveryStatus: delivery.status,
         error: delivery.error ?? { code: `CHATGPT_PROVIDER_${delivery.status.toUpperCase()}`, message: delivery.status },
       };
-    }
-    const observedUrl = delivery.conversationUrl ?? targetUrl;
-    if (/\/c\/[^/?#]+/.test(observedUrl)) {
-      const observedIdentity = parseChatgptConversationIdentity(observedUrl);
-      binding = binding && binding.conversationId !== observedIdentity.conversationId
-        ? rebindChatgptWorkConversation(store, {
-            workId: input.workId,
-            previousConversationId: binding.conversationId,
-            conversationUrl: observedUrl,
-            latestBrowserSessionId: delivery.browserSessionId,
-            localAlias: binding.localAlias ?? input.title,
-          })
-        : bindChatgptWorkConversation(store, {
-            workId: input.workId,
-            conversationUrl: observedUrl,
-            latestBrowserSessionId: delivery.browserSessionId,
-            localAlias: binding?.localAlias ?? input.title,
-          });
     }
     return {
       status: 'dispatched',
