@@ -36,6 +36,7 @@ import {
   chatgptAutomationPageFailure,
   chatgptAutomationReasoningLevelFromLabel,
   chatgptBrowserActionArgs,
+  chatgptBrowserActionResult,
   isChatgptConversationUrl,
   reconciledNewChatgptOpenPageSessionId,
   resolveChatgptWorkBrowserSessionId,
@@ -59,9 +60,19 @@ import type { RepositorySchedule } from '../../src/runtime/workflow/schedules/ty
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
 
+describe('ChatGPT Browser action result contract', () => {
+  test('unwraps the typed plugin envelope exactly once and rejects malformed envelopes', () => {
+    const raw = { session: { sessionId: 'browser-session-1', url: 'https://chatgpt.com/' }, matched: true };
+    expect(chatgptBrowserActionResult({ schemaVersion: 1, plugin: {}, action: {}, result: raw }, 'open_page')).toBe(raw);
+    expect(() => chatgptBrowserActionResult({ schemaVersion: 1, plugin: {}, action: {} }, 'open_page')).toThrow('CHATGPT_BROWSER_ACTION_RESULT_INVALID:open_page');
+    expect(() => chatgptBrowserActionResult({ result: [] }, 'list_sessions')).toThrow('CHATGPT_BROWSER_ACTION_RESULT_INVALID:list_sessions');
+  });
+});
+
 describe('ChatGPT provider delivery classification', () => {
   test('separates ambiguous mutation, user blockers, and ordinary provider failure', () => {
     expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN')).toBe('outcome_unknown');
+    expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED')).toBe('outcome_unknown');
     expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_LOGIN_REQUIRED')).toBe('wait_for_user');
     expect(classifyChatgptProviderFailure('CHATGPT_PERMISSION_REQUIRED')).toBe('wait_for_user');
     expect(classifyChatgptProviderFailure('CHATGPT_BRIDGE_DISPATCH_FAILED')).toBe('failed');
@@ -477,6 +488,10 @@ describe('ChatGPT Work conversation binding', () => {
     const prompt = '@forge Continue exact Work work-native-send and preserve the same conversation. '.repeat(6).trim();
     expect(chatgptOutboundMessageMatchesPrompt(prompt, prompt)).toBe(true);
     expect(chatgptOutboundMessageMatchesPrompt(prompt.replace(/\s+/g, '   '), prompt)).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`${prompt}\n收起`, prompt)).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`${prompt}\nCollapse`, prompt)).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`${prompt}\nShow less`, prompt)).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`${prompt}\nnot a known UI suffix`, prompt)).toBe(false);
     expect(chatgptOutboundMessageMatchesPrompt(`prefix ${prompt}`, prompt)).toBe(false);
     expect(chatgptOutboundMessageMatchesPrompt(`${prompt.slice(0, 160)} but wrong tail`, prompt)).toBe(false);
     expect(chatgptOutboundMessageMatchesPrompt('', prompt)).toBe(false);
@@ -570,6 +585,12 @@ describe('ChatGPT Work conversation binding', () => {
     expect(providerDelivery).toContain("DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6'");
     expect(providerDelivery).toContain("DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high'");
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge'"); expect(browserRuntime).not.toContain('CHATGPT_WORK_MODE_RADIO_SELECTOR');
+    expect(browserRuntime).toContain('new AsyncLocalStorage<ChatgptBrowserActionOrigin>()');
+    expect(browserRuntime).toContain("surface: 'schedule', actor: 'chatgpt-work-continuation'");
+    expect(source).toContain("originSurface?: 'chatgpt-action' | 'schedule'");
+    expect(source).toContain("surface: input.originSurface ?? 'chatgpt-action'");
+    const controllerHost = readFileSync(join(process.cwd(), 'adapters/chatgpt/controller-host.ts'), 'utf8');
+    expect(controllerHost).toContain("originSurface: 'schedule'");
     expect(source).toContain('从成功的 controller_claim 响应中取得 data.controllerAuthorityId');
     expect(source).toContain('本次启动的 controller round 已具备 durable controller authority：controller_authority_id=');
     expect(source).toContain('第一次 controller_claim 必须使用这组完全相同的 authority');
@@ -1002,7 +1023,7 @@ describe('provider dispatch outcome-unknown fence', () => {
     expect(retry).not.toHaveProperty('blockedReason');
   });
 
-  test('keeps native prompt mutation ambiguity distinct from ordinary submission-not-confirmed failure', () => {
+  test('keeps native prompt mutation ambiguity explicit while submission-not-confirmed remains separately observable', () => {
     const browserRuntime = readFileSync(join(process.cwd(), 'adapters/chatgpt/browser-delivery-runtime.ts'), 'utf8');
     const providerDelivery = readFileSync(join(process.cwd(), 'adapters/chatgpt/provider-delivery.ts'), 'utf8');
     const host = readFileSync(join(process.cwd(), 'adapters/chatgpt/controller-host.ts'), 'utf8');

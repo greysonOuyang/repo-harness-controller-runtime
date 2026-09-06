@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import type { ExecutionJobOrigin } from '../../src/runtime/execution/jobs/types';
 import { buildBrowserPluginManifest } from '../../src/runtime/plugins/browser-adapter';
 import { executeControllerScopedPluginAction } from '../../src/runtime/plugins/store';
 import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
@@ -10,6 +12,16 @@ import {
 } from './provider-delivery';
 
 const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
+
+type ChatgptBrowserActionOrigin = Pick<ExecutionJobOrigin, 'surface' | 'actor'>;
+const chatgptBrowserActionOrigin = new AsyncLocalStorage<ChatgptBrowserActionOrigin>();
+
+export function withChatgptBrowserActionOrigin<T>(
+  origin: ChatgptBrowserActionOrigin,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return chatgptBrowserActionOrigin.run(origin, operation);
+}
 
 function withForgePluginMention(prompt: string): string {
   const value = prompt.trim();
@@ -44,6 +56,14 @@ export function chatgptBrowserActionArgs(actionId: string, args: Record<string, 
   return { ...args, ...CHATGPT_BROWSER_TRANSPORT_OVERRIDES };
 }
 
+export function chatgptBrowserActionResult(envelope: Record<string, unknown>, actionId: string): Record<string, unknown> {
+  const result = envelope.result;
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    throw new Error(`CHATGPT_BROWSER_ACTION_RESULT_INVALID:${actionId}`);
+  }
+  return result as Record<string, unknown>;
+}
+
 async function controllerBrowserAction(
   controllerHome: string,
   workId: string,
@@ -51,15 +71,16 @@ async function controllerBrowserAction(
   args: Record<string, unknown>,
   timeoutMs?: number,
 ): Promise<Record<string, unknown>> {
-  return executeControllerScopedPluginAction({
+  const envelope = await executeControllerScopedPluginAction({
     controllerHome,
     pluginId: 'browser',
     actionId,
     requestId: requestId(workId, actionId),
     args: chatgptBrowserActionArgs(actionId, args),
     timeoutMs,
-    origin: { surface: 'schedule', actor: 'chatgpt-work-continuation' },
+    origin: chatgptBrowserActionOrigin.getStore() ?? { surface: 'schedule', actor: 'chatgpt-work-continuation' },
   });
+  return chatgptBrowserActionResult(envelope, actionId);
 }
 
 export async function ensureControllerChatgptBrowser(controllerHome: string, workId: string): Promise<void> {
@@ -98,10 +119,14 @@ function normalizeChatgptOutboundText(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+const CHATGPT_OUTBOUND_MESSAGE_UI_SUFFIXES = ['收起', 'Collapse', 'Show less'] as const;
+
 export function chatgptOutboundMessageMatchesPrompt(messageText: string, prompt: string): boolean {
   const message = normalizeChatgptOutboundText(messageText);
   const normalizedPrompt = normalizeChatgptOutboundText(prompt);
-  return Boolean(message && normalizedPrompt && message === normalizedPrompt);
+  if (!message || !normalizedPrompt) return false;
+  if (message === normalizedPrompt) return true;
+  return CHATGPT_OUTBOUND_MESSAGE_UI_SUFFIXES.some((suffix) => message === `${normalizedPrompt} ${suffix}`);
 }
 
 async function latestChatgptUserMessage(

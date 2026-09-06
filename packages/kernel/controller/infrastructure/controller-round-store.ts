@@ -955,7 +955,8 @@ export function acknowledgeControllerRoundClaim(
       && initial.value.claimGeneration === input.session.claimGeneration
     ) return initial.value;
   } else if (initial.value.status === 'blocked') {
-    if (!initial.value.blockedReason?.startsWith('repeated_state:')) return initial.value;
+    const recoverableDispatchOutcome = initial.value.blockedReason === 'provider_dispatch_outcome_unknown';
+    if (!recoverableDispatchOutcome && !initial.value.blockedReason?.startsWith('repeated_state:')) return initial.value;
   } else if (!['dispatching', 'dispatched'].includes(initial.value.status)) return initial.value;
   const expectedControllerType = relayControllerType(initial.value);
   if (input.session.controllerType !== expectedControllerType) throw new Error(`CONTROLLER_RELAY_CONTROLLER_TYPE_MISMATCH: ${input.workId}`);
@@ -1014,8 +1015,10 @@ export function acknowledgeControllerRoundClaim(
       return migrated;
     }
     if (current.value.status === 'blocked') {
-      if (!current.value.blockedReason?.startsWith('repeated_state:')) return current.value;
-      if (current.value.roundCount > current.value.maxRounds || current.value.consecutiveFailures >= current.value.maxFailures) {
+      const providerDispatchOutcomeUnknown = current.value.blockedReason === 'provider_dispatch_outcome_unknown';
+      const repeatedStateBlocked = current.value.blockedReason?.startsWith('repeated_state:') === true;
+      if (!providerDispatchOutcomeUnknown && !repeatedStateBlocked) return current.value;
+      if (repeatedStateBlocked && (current.value.roundCount > current.value.maxRounds || current.value.consecutiveFailures >= current.value.maxFailures)) {
         return current.value;
       }
       const work = getWorkContract(options, input.workId);
@@ -1040,6 +1043,36 @@ export function acknowledgeControllerRoundClaim(
       }
       const controllerInstanceId = owner.controllerInstanceId?.trim();
       if (!controllerInstanceId) throw new Error(`CONTROLLER_RELAY_CLAIM_INSTANCE_REQUIRED: ${input.workId}`);
+      if (providerDispatchOutcomeUnknown) {
+        const at = nowIso(options);
+        const confirmed: ControllerRoundRelayRecord = {
+          ...current.value,
+          status: 'claimed',
+          lifecycleStage: 'controller_claimed',
+          controllerId: owner.controllerId,
+          controllerType: owner.controllerType,
+          principalId: ownerPrincipal,
+          controllerInstanceId,
+          sessionId: owner.sessionId,
+          claimGeneration: owner.claimGeneration,
+          consecutiveFailures: 0,
+          blockedReason: undefined,
+          lastError: undefined,
+          nextRecoveryAt: undefined,
+          claimedAt: at,
+          updatedAt: at,
+        };
+        writeControlPlaneRecord(options.controllerHome, {
+          namespace: NAMESPACE,
+          scope: options.repoId,
+          key: input.workId,
+          schemaVersion: SCHEMA_VERSION,
+          value: confirmed,
+          action: 'controller_round_relay_claim_confirmed_unknown_dispatch',
+          expectedRevision: current.revision,
+        });
+        return confirmed;
+      }
       const stateFingerprint = mechanicalStateFingerprint(options, work, current.value.requirementId, current.value.relayScopeId);
       if (stateFingerprint === current.value.stateFingerprint) return current.value;
       const at = nowIso(options);

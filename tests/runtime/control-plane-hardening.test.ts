@@ -22,17 +22,19 @@ import { stopGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-wo
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createHandoffItem, getHandoffItem, listHandoffItems } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { claimControllerSession, controllerSessionBlocksRecovery, getControllerSession, releaseControllerSession, resumeControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
-import { invalidateExecutionSession, startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import { invalidateExecutionSession, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import {
   acknowledgeControllerRoundClaim,
   beginInitialControllerRoundDispatch,
   claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
+  getControllerRoundRelay,
   parseControllerDispositionCompatibilityCapability,
   parseControllerRoundCompatibilityCapability,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { buildChatgptControllerRoundPrompt } from '../../adapters/chatgpt/controller-round-host';
+import { continueChatgptControllerRoundFromSource, openChatgptControllerRoundFromSource, SOURCE_ROUND_CONTINUATION_INSTRUCTION } from '../../src/runtime/control-plane/launcher/chatgpt-round-continuation';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { awaitExternalControllerWake, classifyChatgptWakeFailure, evaluateSchedule, externalControllerWakeTimeoutMs } from '../../src/runtime/workflow/schedules/engine';
 import { applyScheduleRetryableFailure } from '../../src/runtime/workflow/schedules/settlement';
@@ -826,6 +828,236 @@ describe('scheduled external Controller wake', () => {
       lastOccurrenceId: 'OCC-RUNTIME-SETTLEMENT',
       revision: paused.revision + 1,
     });
+  });
+
+  test('source round continuation reconciles an old-Runtime owner with provider outcome_unknown and dispatches the next round without a timer', async () => {
+    const root = temp('forge-source-round-continuation-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'source-round-continuation' });
+    const workId = 'WORK-SOURCE-ROUND-CONTINUE';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Keep advancing without asking the user to type continue.',
+      acceptanceCriteria: ['The next ControllerRound is dispatched from current source.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source', sessionId: 'launch-source' },
+    });
+    const outcomeUnknown = finishControllerRoundRelayDispatch(store, {
+      workId,
+      ok: false,
+      outcomeUnknown: true,
+      error: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:https://chatgpt.com/c/source-next',
+    });
+    expect(outcomeUnknown).toMatchObject({ status: 'blocked', blockedReason: 'provider_dispatch_outcome_unknown', consecutiveFailures: 1 });
+    startExecutionSession(controllerHome, {
+      sessionId: 'chatgpt-source-session',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-source',
+    });
+    updateExecutionSession(controllerHome, {
+      sessionId: 'chatgpt-source-session',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-source',
+    }, { activeWorkId: workId });
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'chatgpt-controller',
+      controllerType: 'chatgpt',
+      sessionId: 'chatgpt-source-session',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-source',
+      leaseMs: 5 * 60_000,
+    });
+    // Simulate the installed old Runtime stopping after it establishes the exact owner.
+    // Current source round-continue must perform the canonical claim acknowledgement itself.
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'blocked', blockedReason: 'provider_dispatch_outcome_unknown' });
+
+    let dispatchedPrompt = '';
+    let dispatchedAuthority = '';
+    const result = await continueChatgptControllerRoundFromSource({
+      controllerHome,
+      repoId: repository.repoId,
+      repoRoot,
+      workId,
+      controllerAuthorityId: opened.authorityId!,
+      relayScopeId: opened.relayScopeId,
+      reason: 'continue source canary',
+    }, {
+      dispatch: async (input) => {
+        dispatchedPrompt = input.prompt;
+        dispatchedAuthority = input.controllerAuthorityId ?? '';
+        return {
+          status: 'dispatched' as const,
+          provider: 'controller-browser' as const,
+          browserSessionId: 'browser-source-next',
+          conversationUrl: 'https://chatgpt.com/c/source-next',
+          conversationId: 'source-next',
+          localAlias: 'source-next',
+          resumedFromBinding: false,
+          model: 'gpt-5.6',
+          reasoning: 'high' as const,
+          tabPolicy: 'reuse' as const,
+          executionPreferenceVerified: true,
+        };
+      },
+    });
+
+    expect(result).toMatchObject({ dispositionStatus: 'pending_release', relayStatus: 'dispatched', relayWorkId: workId });
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(readExecutionSession(controllerHome, {
+      sessionId: 'chatgpt-source-session',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-source',
+    })?.activeWorkId).toBeUndefined();
+    expect(dispatchedAuthority).toStartWith('cra_');
+    expect(dispatchedAuthority).not.toBe(opened.authorityId);
+    expect(dispatchedPrompt).toContain(SOURCE_ROUND_CONTINUATION_INSTRUCTION);
+    expect(dispatchedPrompt).toContain('本轮结束协议是强制的');
+  });
+
+
+
+  test('source round reconciliation never revives an ordinary failed relay even when an exact live owner exists', async () => {
+    const root = temp('forge-source-round-known-failure-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'source-round-known-failure' });
+    const workId = 'WORK-SOURCE-ROUND-KNOWN-FAILURE';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+      objective: 'Known provider failure must remain fail-closed.', acceptanceCriteria: [],
+      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source', sessionId: 'launch-source' },
+    });
+    expect(finishControllerRoundRelayDispatch(store, { workId, ok: false, error: 'CHATGPT_LOGIN_REQUIRED' })).toMatchObject({ status: 'failed' });
+    startExecutionSession(controllerHome, { sessionId: 'chatgpt-source-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source' });
+    updateExecutionSession(controllerHome, { sessionId: 'chatgpt-source-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source' }, { activeWorkId: workId });
+    const owner = claimControllerSession(store, {
+      workId, controllerId: 'chatgpt-controller', controllerType: 'chatgpt', sessionId: 'chatgpt-source-session',
+      principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source', leaseMs: 5 * 60_000,
+    });
+
+    await expect(continueChatgptControllerRoundFromSource({
+      controllerHome, repoId: repository.repoId, repoRoot, workId,
+      controllerAuthorityId: opened.authorityId!, relayScopeId: opened.relayScopeId,
+    })).rejects.toThrow('CONTROLLER_RELAY_ROUND_NOT_CLAIMED: failed');
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'failed', lastError: 'CHATGPT_LOGIN_REQUIRED' });
+    expect(getControllerSession(store, workId)).toMatchObject({ sessionId: owner.sessionId, claimGeneration: owner.claimGeneration });
+  });
+
+  test('source round preserves typed outcome_unknown even when the provider error code is submission-not-confirmed', async () => {
+    const root = temp('forge-source-round-outcome-unknown-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'source-round-outcome-unknown' });
+    const workId = 'WORK-SOURCE-ROUND-OUTCOME-UNKNOWN';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      mode: 'goal_workloop',
+      objective: 'Keep typed provider delivery uncertainty across the source round boundary.',
+      acceptanceCriteria: [],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+
+    await expect(openChatgptControllerRoundFromSource({
+      controllerHome,
+      repoId: repository.repoId,
+      repoRoot,
+      workId,
+      controllerId: 'chatgpt-controller',
+      principalId: 'chatgpt-principal',
+      controllerInstanceId: 'runtime-source',
+    }, {
+      dispatch: async () => ({
+        status: 'failed' as const,
+        provider: 'controller-browser' as const,
+        providerDeliveryStatus: 'outcome_unknown' as const,
+        browserSessionId: 'browser-source-unknown',
+        conversationUrl: 'https://chatgpt.com/c/source-unknown',
+        resumedFromBinding: false,
+        model: 'gpt-5.6',
+        reasoning: 'high' as const,
+        tabPolicy: 'reuse' as const,
+        executionPreferenceVerified: true,
+        error: {
+          code: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED',
+          message: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:https://chatgpt.com/c/source-unknown',
+        },
+      }),
+    })).rejects.toThrow('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED');
+
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'blocked',
+      blockedReason: 'provider_dispatch_outcome_unknown',
+      consecutiveFailures: 1,
+      lastError: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:https://chatgpt.com/c/source-unknown',
+    });
+  });
+
+  test('an exact controller claim confirms a provider dispatch whose outcome was previously unknown', () => {
+    const root = temp('forge-controller-relay-unknown-dispatch-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-unknown-dispatch' });
+    const workId = 'WORK-RELAY-UNKNOWN-DISPATCH';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+      objective: 'Confirm provider delivery only when the exact controller actually claims the Work.',
+      acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'launcher-instance', sessionId: 'launcher-session' },
+    });
+    const blocked = finishControllerRoundRelayDispatch(store, {
+      workId, ok: false, outcomeUnknown: true, error: 'provider dispatch could not be confirmed',
+    });
+    expect(blocked).toMatchObject({ status: 'blocked', blockedReason: 'provider_dispatch_outcome_unknown' });
+
+    startExecutionSession(controllerHome, { sessionId: 'claimed-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-test' });
+    const session = claimControllerSession(store, {
+      workId, controllerId: 'chatgpt-controller', controllerType: 'chatgpt', sessionId: 'claimed-session',
+      principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-test', leaseMs: 5 * 60_000,
+    });
+    const claimed = acknowledgeControllerRoundClaim(store, { workId, session });
+    expect(claimed).toMatchObject({
+      status: 'claimed', lifecycleStage: 'controller_claimed', consecutiveFailures: 0, blockedReason: undefined, lastError: undefined,
+      controllerId: 'chatgpt-controller', sessionId: 'claimed-session', claimGeneration: session.claimGeneration,
+    });
+    expect(claimed?.authorityId).toBe(opened.authorityId);
   });
 
   test('acknowledges a dispatched ChatGPT round only after an exact Work claim and only recovers liveness when that claimed round is abandoned', () => {

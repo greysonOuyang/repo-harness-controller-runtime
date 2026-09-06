@@ -55,7 +55,7 @@ export function classifyChatgptProviderFailure(
   message?: string,
 ): ChatgptProviderFailureDisposition {
   const normalized = `${code ?? ''}\n${message ?? ''}`.toUpperCase();
-  if (normalized.includes('OUTCOME_UNKNOWN')) return 'outcome_unknown';
+  if (normalized.includes('OUTCOME_UNKNOWN') || normalized.includes('SUBMISSION_NOT_CONFIRMED')) return 'outcome_unknown';
   if (CHATGPT_WAIT_FOR_USER_MARKERS.some((marker) => normalized.includes(marker))) return 'wait_for_user';
   return 'failed';
 }

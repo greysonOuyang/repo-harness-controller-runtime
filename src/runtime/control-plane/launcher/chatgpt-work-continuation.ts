@@ -10,6 +10,7 @@ import {
   type ChatgptAutomationReasoning,
   type ChatgptAutomationTabCleanupStatus,
   type ChatgptAutomationTabPolicy,
+  type ChatgptProviderDeliveryStatus,
 } from '../../../../adapters/chatgpt/provider-delivery';
 import {
   closeChatgptAutomationTabAfterDispatch,
@@ -17,6 +18,7 @@ import {
   ensureControllerChatgptBrowser,
   navigateWorkConversation,
   submitChatgptPrompt,
+  withChatgptBrowserActionOrigin,
 } from '../../../../adapters/chatgpt/browser-delivery-runtime';
 import { getWorkContract } from '../../../../packages/kernel/work/api/index';
 import {
@@ -36,6 +38,7 @@ export {
   type ChatgptAutomationReasoning,
   type ChatgptAutomationTabCleanupStatus,
   type ChatgptAutomationTabPolicy,
+  type ChatgptProviderDeliveryStatus,
 } from '../../../../adapters/chatgpt/provider-delivery';
 export {
   chatgptAutomationControlQueryLimit,
@@ -44,6 +47,7 @@ export {
   chatgptAutomationPageFailure,
   chatgptAutomationReasoningLevelFromLabel,
   chatgptBrowserActionArgs,
+  chatgptBrowserActionResult,
   chatgptOutboundMessageMatchesPrompt,
   isChatgptConversationUrl,
   reconciledNewChatgptOpenPageSessionId,
@@ -71,6 +75,8 @@ export interface WorkChatgptContinuationInput {
   reasoning?: ChatgptAutomationReasoning;
   tabPolicy?: ChatgptAutomationTabPolicy;
   timeoutMs?: number;
+  /** Authorization provenance for Browser actions. Immediate/source launches default to chatgpt-action; Scheduler resume must pass schedule. */
+  originSurface?: 'chatgpt-action' | 'schedule';
 }
 
 export interface WorkChatgptContinuationResult {
@@ -85,6 +91,8 @@ export interface WorkChatgptContinuationResult {
   reasoning: ChatgptAutomationReasoning;
   tabPolicy: ChatgptAutomationTabPolicy;
   executionPreferenceVerified: boolean;
+  /** Typed provider delivery disposition. Present when provider dispatch was attempted; callers must not infer this from error strings. */
+  providerDeliveryStatus?: ChatgptProviderDeliveryStatus;
   tabCleanupStatus?: ChatgptAutomationTabCleanupStatus;
   tabCleanupError?: { code: string; message: string };
   error?: { code: string; message: string };
@@ -335,18 +343,21 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
           ensureExecutionPreference: ensureChatgptExecutionPreference,
           submitPrompt: submitChatgptPrompt,
         });
-    const delivery = await host.dispatch({
-      controllerHome: input.controllerHome,
-      repoId: input.repoId,
-      repoRoot: input.repoRoot,
-      workId: input.workId,
-      prompt: renderedPrompt,
-      browserSessionId: deliverySessionId,
-      targetUrl,
-      model,
-      reasoning,
-      timeoutMs: input.timeoutMs,
-    });
+    const delivery = await withChatgptBrowserActionOrigin(
+      { surface: input.originSurface ?? 'chatgpt-action', actor: 'chatgpt-work-continuation' },
+      () => host.dispatch({
+        controllerHome: input.controllerHome,
+        repoId: input.repoId,
+        repoRoot: input.repoRoot,
+        workId: input.workId,
+        prompt: renderedPrompt,
+        browserSessionId: deliverySessionId,
+        targetUrl,
+        model,
+        reasoning,
+        timeoutMs: input.timeoutMs,
+      }),
+    );
     if (delivery.status !== 'dispatch_confirmed') {
       return {
         status: 'failed',
@@ -360,6 +371,7 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
         reasoning,
         tabPolicy,
         executionPreferenceVerified: delivery.executionPreferenceVerified,
+        providerDeliveryStatus: delivery.status,
         error: delivery.error ?? { code: `CHATGPT_PROVIDER_${delivery.status.toUpperCase()}`, message: delivery.status },
       };
     }
@@ -393,6 +405,7 @@ export async function runWorkChatgptContinuation(input: WorkChatgptContinuationI
       reasoning,
       tabPolicy,
       executionPreferenceVerified: delivery.executionPreferenceVerified,
+      providerDeliveryStatus: delivery.status,
     };
   } catch (error) {
     const provider = bridgeRuntime ? 'chatgpt-bridge' : 'controller-browser';

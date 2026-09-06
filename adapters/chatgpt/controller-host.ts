@@ -89,6 +89,7 @@ export function createChatgptControllerHost(options: {
         reasoning: payload.reasoning ?? 'high',
         tabPolicy: payload.tabPolicy ?? 'auto',
         timeoutMs: payload.timeoutMs,
+        originSurface: 'schedule',
       });
       if (result.status === 'failed') {
         const code = result.error?.code ?? 'CHATGPT_WORK_CONTINUATION_FAILED';
