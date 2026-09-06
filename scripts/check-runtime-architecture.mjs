@@ -1502,6 +1502,17 @@ for (const path of sourceFiles('src/runtime/plugins')) {
   if (path === 'src/runtime/plugins/browser-session-authority.ts') continue;
   forbid(path, /from\s+['"]\.\/browser-session-authority['"]/, 'active Browser runtime code must consume the composed BrowserSessionAuthorityPort, not the retired authority owner');
 }
+// Workflow Asset authority: editable content stays in files; machine registry stays metadata-only.
+requireText('packages/workflow-runtime/domain/workflow-asset.ts', 'export interface WorkflowAssetDefinition');
+requireText('packages/workflow-runtime/domain/workflow-asset.ts', 'workflowAssetContentDigest');
+requireText('src/runtime/control-plane/persistence/workflow-content-store.ts', 'ensureControllerWorkflowContentRoot');
+requireText('src/runtime/control-plane/persistence/workflow-registry-store.ts', "WORKFLOW_REGISTRY_NAMESPACE = 'workflow_registry'");
+requireText('src/runtime/control-plane/persistence/workflow-registry-store.ts', 'WORKFLOW_REGISTRY_CONTENT_IDENTITY_CHANGED');
+forbid('src/runtime/control-plane/persistence/workflow-registry-store.ts', /\b(?:prompts|scripts|templates|selectors|resources)\s*:/, 'Workflow machine registry must not persist editable prompt/script/template/selector/resource bodies');
+for (const path of sourceFiles('packages/workflow-runtime')) {
+  forbid(path, /xiaohongshu|douyin|instagram|reddit|facebook/i, 'generic Workflow Runtime contracts must not own site/business choreography');
+  forbid(path, /from\s+['"][^'"]*(?:src\/runtime|adapters)\//, 'Workflow Runtime package contracts must remain independent from Runtime/adapters implementation authority');
+}
 requireText('src/runtime/plugins/browser-registration.ts', 'export const browserPluginAdapter');
 requireText('src/runtime/plugins/first-party-registry.ts', "from './browser-registration'");
 forbid('src/runtime/plugins/first-party-registry.ts', /from\s+['"]\.\/browser-adapter['"]/, 'first-party registry must depend on the thin Browser registration entrypoint, not the action implementation');
