@@ -129,6 +129,8 @@ export interface EditSession {
 export interface EditSessionSummary {
   sessionId: string;
   purpose: string;
+  /** Derived ownership identity for cheap lifecycle inventory; never a second Work authority. */
+  workId?: string;
   status: EditSessionStatus;
   issueId?: string;
   taskId?: string;
@@ -1136,6 +1138,7 @@ function sessionSummary(session: EditSession): EditSessionSummary {
   return {
     sessionId: session.sessionId,
     purpose: session.purpose,
+    workId: session.workId,
     status: session.status,
     issueId: session.issueId,
     taskId: session.taskId,
