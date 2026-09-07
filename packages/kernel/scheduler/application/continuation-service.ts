@@ -114,6 +114,7 @@ export async function resumeScheduledControllerContinuation(
         relayScopeId: requestedRelayScopeId,
         requirementId: work.requirementId,
         bindingId: bindingRecord.binding.bindingId,
+        occurrenceId: input.occurrenceId,
         identity: {
           controllerId: session.controllerId,
           controllerType: session.controllerType,
