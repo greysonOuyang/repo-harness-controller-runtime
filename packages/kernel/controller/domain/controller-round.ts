@@ -65,8 +65,22 @@ export interface ControllerRoundRelayRecord {
   reason?: string;
   /** Opaque provider binding owned by a ControllerHost adapter. */
   bindingId?: string;
+  /** Stable provider-neutral identity for the exact external dispatch responsibility. */
+  providerDispatchEffectId?: string;
+  /** Monotonic provider-effect attempt within one semantic round authority. */
+  providerDispatchAttempt?: number;
+  /** Monotonic historical provider failures; recovery epochs never erase it. */
+  providerFailureTotal?: number;
+  /** Bounded provider-recovery epoch for the same semantic round. */
+  providerRecoveryEpoch?: number;
+  providerRecoveryEvidenceId?: string;
+  providerFailureEvidenceId?: string;
+  providerEffectReconciliationEvidenceId?: string;
+  providerDispatchStartedAt?: string;
   /** Canonical provider-dispatch receipt for this semantic round. Scheduler occurrence copies it only as a replay projection. */
   providerDispatchReceiptId?: string;
+  /** Explicit schedule/manual/replan occurrence identity when a prior lineage exists. */
+  occurrenceId?: string;
   blockedReason?: string;
   lastError?: string;
   nextRecoveryAt?: string;

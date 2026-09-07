@@ -32,9 +32,11 @@ import {
   getControllerRoundRelay,
   parseControllerDispositionCompatibilityCapability,
   parseControllerRoundCompatibilityCapability,
+  rearmControllerRoundAfterProviderRecovery,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { buildChatgptControllerRoundPrompt } from '../../adapters/chatgpt/controller-round-host';
+import { decideControllerRoundTransition } from '../../packages/kernel/controller/domain/controller-round-transition-policy';
 import { closeChatgptControllerRoundFromSource, continueChatgptControllerRoundFromSource, openChatgptControllerRoundFromSource, SOURCE_ROUND_CONTINUATION_INSTRUCTION } from '../../src/runtime/control-plane/launcher/chatgpt-round-continuation';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { awaitExternalControllerWake, classifyChatgptWakeFailure, evaluateSchedule, externalControllerWakeTimeoutMs } from '../../src/runtime/workflow/schedules/engine';
@@ -1158,6 +1160,83 @@ describe('scheduled external Controller wake', () => {
       consecutiveFailures: 1,
       lastError: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:https://chatgpt.com/c/source-unknown',
     });
+  });
+
+  test('verified provider recovery rearms the exact consecutive-failure fuse without changing semantic round identity', () => {
+    const root = temp('forge-controller-relay-provider-recovery-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-provider-recovery' });
+    const workId = 'WORK-RELAY-PROVIDER-RECOVERY';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+      objective: 'Recover the same semantic round only after exact provider repair evidence.',
+      acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'launcher-instance', sessionId: 'launcher-session' },
+      maxFailures: 3,
+    });
+    expect(opened.authorityId).toBeTruthy();
+    expect(finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'PLUGIN_NOT_FOUND: browser' })).toMatchObject({ status: 'dispatching', consecutiveFailures: 1, providerFailureTotal: 1 });
+    expect(finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'PLUGIN_NOT_FOUND: browser' })).toMatchObject({ status: 'dispatching', consecutiveFailures: 2, providerFailureTotal: 2 });
+    const blocked = finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'PLUGIN_NOT_FOUND: browser' })!;
+    expect(blocked).toMatchObject({
+      status: 'blocked', blockedReason: 'consecutive_failures:3>=3', consecutiveFailures: 3, providerFailureTotal: 3,
+      roundCount: opened.roundCount, repeatedStateCount: opened.repeatedStateCount, authorityId: opened.authorityId,
+    });
+
+    expect(() => rearmControllerRoundAfterProviderRecovery(store, {
+      workId, relayScopeId: blocked.relayScopeId, authorityId: 'cra_wrong', expectedUpdatedAt: blocked.updatedAt, evidenceId: 'runtime:verified-browser-provider:rev-1',
+    })).toThrow('CONTROLLER_RELAY_PROVIDER_RECOVERY_AUTHORITY_MISMATCH');
+    expect(() => rearmControllerRoundAfterProviderRecovery(store, {
+      workId, relayScopeId: blocked.relayScopeId, authorityId: blocked.authorityId!, expectedUpdatedAt: new Date(Date.parse(blocked.updatedAt) - 1).toISOString(), evidenceId: 'runtime:verified-browser-provider:rev-1',
+    })).toThrow('CONTROLLER_RELAY_PROVIDER_RECOVERY_STALE');
+
+    const rearmed = rearmControllerRoundAfterProviderRecovery(store, {
+      workId, relayScopeId: blocked.relayScopeId, authorityId: blocked.authorityId!, expectedUpdatedAt: blocked.updatedAt, evidenceId: 'runtime:verified-browser-provider:rev-1',
+    });
+    expect(rearmed).toMatchObject({
+      status: 'dispatching', lifecycleStage: 'dispatching', authorityId: opened.authorityId,
+      roundCount: opened.roundCount, repeatedStateCount: opened.repeatedStateCount, consecutiveFailures: 0,
+      providerFailureTotal: 3, providerRecoveryEpoch: 1, providerRecoveryEvidenceId: 'runtime:verified-browser-provider:rev-1',
+      blockedReason: undefined, lastError: undefined,
+    });
+  });
+
+  test('fresh occurrence policy cannot bypass semantic wait, failed lineage, or duplicate occurrence identity', () => {
+    const base = {
+      schemaVersion: 1 as const,
+      repoId: 'repo-occurrence-policy', relayScopeId: 'goal:WORK-OCCURRENCE-POLICY', originWorkId: 'WORK-OCCURRENCE-POLICY',
+      disposition: 'wait' as const, status: 'waiting' as const, lifecycleStage: 'semantic_round_closed' as const,
+      controllerId: 'chatgpt-controller', controllerType: 'chatgpt' as const, principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-test', sessionId: 'session-test',
+      claimGeneration: 1, authorityId: 'cra_11111111111111111111111111111111', stateFingerprint: 'fingerprint-a',
+      roundCount: 2, repeatedStateCount: 0, consecutiveFailures: 0, providerFailureTotal: 5, providerRecoveryEpoch: 1, maxRounds: 8, maxRepeatedState: 2, maxFailures: 3,
+      occurrenceId: 'OCC-1', submittedAt: '2026-09-07T00:00:00.000Z', updatedAt: '2026-09-07T00:00:00.000Z',
+    };
+    const occurrence = (stateFingerprint: string, occurrenceId = 'OCC-2') => ({
+      type: 'occurrence_requested' as const, at: '2026-09-07T00:01:00.000Z', repoId: base.repoId, relayScopeId: base.relayScopeId,
+      originWorkId: base.originWorkId, identity: { controllerId: 'schedule:test', controllerType: 'chatgpt' as const, principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: occurrenceId },
+      stateFingerprint, proposedAuthorityId: 'cra_22222222222222222222222222222222', maxRounds: 8, maxRepeatedState: 2, maxFailures: 3,
+      occurrenceId, abandonedReleaseRecovery: false,
+    });
+
+    expect(decideControllerRoundTransition(base, occurrence('fingerprint-a'))).toMatchObject({ kind: 'reject', code: 'CONTROLLER_RELAY_WAITING_STATE_UNCHANGED' });
+    expect(decideControllerRoundTransition(base, occurrence('fingerprint-b', 'OCC-1'))).toMatchObject({ kind: 'reject', code: 'CONTROLLER_RELAY_OCCURRENCE_ALREADY_APPLIED:OCC-1' });
+    const reopened = decideControllerRoundTransition(base, occurrence('fingerprint-b'));
+    expect(reopened).toMatchObject({ kind: 'accept', next: { status: 'dispatching', occurrenceId: 'OCC-2', roundCount: 3, repeatedStateCount: 0, providerFailureTotal: 5, providerRecoveryEpoch: 1 } });
+    if (reopened.kind !== 'accept') throw new Error('expected accepted occurrence');
+    expect(reopened.next.authorityId).not.toBe(base.authorityId);
+
+    const failed = { ...base, status: 'failed' as const, lastError: 'HTTP 502' };
+    expect(decideControllerRoundTransition(failed, occurrence('fingerprint-b', 'OCC-3'))).toMatchObject({ kind: 'reject', code: 'CONTROLLER_RELAY_FAILED_REQUIRES_EXPLICIT_RESUME' });
+    const fused = { ...base, status: 'blocked' as const, blockedReason: 'consecutive_failures:3>=3' };
+    expect(decideControllerRoundTransition(fused, occurrence('fingerprint-b', 'OCC-4'))).toMatchObject({ kind: 'reject', code: 'CONTROLLER_RELAY_BLOCKED_OCCURRENCE_FORBIDDEN:consecutive_failures' });
   });
 
   test('an exact controller claim confirms a provider dispatch whose outcome was previously unknown', () => {

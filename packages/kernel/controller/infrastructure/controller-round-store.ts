@@ -25,6 +25,13 @@ import {
   type ControllerRoundRelayRecord,
   type ControllerRoundRelayStatus,
 } from '../domain/controller-round';
+import {
+  controllerRoundBlockerClass,
+  controllerRoundProviderEffectId,
+  decideControllerRoundTransition,
+  type ControllerRoundTransitionDecision,
+  type ControllerRoundTransitionEvent,
+} from '../domain/controller-round-transition-policy';
 
 export interface ControllerRoundRelayStoreOptions {
   controllerHome: string;
@@ -61,6 +68,8 @@ export interface BeginInitialControllerRoundDispatchInput {
   maxRounds?: number;
   maxRepeatedState?: number;
   maxFailures?: number;
+  /** Required for any later schedule/manual/replan occurrence after a prior semantic state exists. */
+  occurrenceId?: string;
 }
 
 export interface RecoverControllerRoundRelayAuthorityInput {
@@ -84,6 +93,36 @@ const MAX_UNCLOSED_ROUND_GRACE_MS = 60 * 60_000;
 const DEFAULT_STALLED_RECOVERY_BACKOFF_MS = 60_000;
 const MAX_STALLED_RECOVERY_BACKOFF_MS = 15 * 60_000;
 
+
+function transitionDecisionOrThrow(decision: ControllerRoundTransitionDecision): { record: ControllerRoundRelayRecord; action?: string; changed: boolean } {
+  if (decision.kind === 'accept') return { record: decision.next, action: decision.action, changed: true };
+  if (decision.kind === 'accept_atomic') throw new Error('CONTROLLER_RELAY_ATOMIC_TRANSITION_REQUIRES_TRANSACTION');
+  if (decision.kind === 'no_op') return { record: decision.current, changed: false };
+  if (decision.kind === 'needs_evidence') throw new Error(decision.code);
+  throw new Error(decision.code);
+}
+
+function atomicTransitionDecisionOrThrow(decision: ControllerRoundTransitionDecision): Extract<ControllerRoundTransitionDecision, { kind: 'accept_atomic' }> {
+  if (decision.kind === 'accept_atomic') return decision;
+  if (decision.kind === 'needs_evidence' || decision.kind === 'reject') throw new Error(decision.code);
+  throw new Error('CONTROLLER_RELAY_ATOMIC_TRANSITION_REQUIRED');
+}
+
+function applyControllerRoundTransition(
+  options: ControllerRoundRelayStoreOptions,
+  current: ControlPlaneRecord<ControllerRoundRelayRecord> | undefined,
+  event: ControllerRoundTransitionEvent,
+): ControllerRoundRelayRecord {
+  const decided = transitionDecisionOrThrow(decideControllerRoundTransition(current?.value, event));
+  if (!decided.changed) return decided.record;
+  const key = current?.value.originWorkId ?? (event.type === 'occurrence_requested' ? event.originWorkId : undefined);
+  if (!key) throw new Error('CONTROLLER_RELAY_TRANSITION_KEY_REQUIRED');
+  writeControlPlaneRecord(options.controllerHome, {
+    namespace: NAMESPACE, scope: options.repoId, key, schemaVersion: SCHEMA_VERSION, value: decided.record,
+    action: decided.action ?? `controller_round_transition_${event.type}`, expectedRevision: current?.revision ?? null,
+  });
+  return decided.record;
+}
 function nowIso(options: ControllerRoundRelayStoreOptions): string {
   return options.now?.() ?? new Date().toISOString();
 }
@@ -393,17 +432,9 @@ export function bindControllerRoundSuccessorWork(
       }
     }
     const successor = assertControllerRoundSuccessorLineage(options, predecessor, input.successorWorkId.trim());
-    if (current.value.successorWorkId && current.value.successorWorkId !== successor.workId) {
-      throw new Error(`CONTROLLER_RELAY_SUCCESSOR_ALREADY_BOUND: ${predecessor.workId}:${current.value.successorWorkId}`);
-    }
-    if (current.value.successorWorkId === successor.workId) return current.value;
-    const at = nowIso(options);
-    const next: ControllerRoundRelayRecord = { ...current.value, successorWorkId: successor.workId, updatedAt: at };
-    writeControlPlaneRecord(options.controllerHome, {
-      namespace: NAMESPACE, scope: options.repoId, key: predecessor.workId, schemaVersion: SCHEMA_VERSION,
-      value: next, action: 'controller_round_successor_work_bound', expectedRevision: current.revision,
+    return applyControllerRoundTransition(options, current, {
+      type: 'successor_bound', at: nowIso(options), successorWorkId: successor.workId,
     });
-    return next;
   });
 }
 
@@ -553,27 +584,8 @@ export function submitControllerRoundDisposition(
     const requestedMaxRounds = boundedInteger(input.maxRounds, DEFAULT_MAX_ROUNDS, 1, 32);
     const requestedMaxRepeatedState = boundedInteger(input.maxRepeatedState, DEFAULT_MAX_REPEATED_STATE, 1, 8);
     const requestedMaxFailures = boundedInteger(input.maxFailures, DEFAULT_MAX_FAILURES, 1, 8);
-    const maxRounds = previous ? Math.min(previous.maxRounds, requestedMaxRounds) : requestedMaxRounds;
-    const maxRepeatedState = previous ? Math.min(previous.maxRepeatedState, requestedMaxRepeatedState) : requestedMaxRepeatedState;
-    const maxFailures = previous ? Math.min(previous.maxFailures, requestedMaxFailures) : requestedMaxFailures;
     const stateFingerprint = bounded(input.stateFingerprint, 256) ?? mechanicalStateFingerprint(options, terminalSuccessor ?? work, requirementId, relayScopeId);
-    const continuing = input.disposition === 'continue_immediately';
-    const roundCount = (previous?.roundCount ?? 0) + (continuing ? 1 : 0);
-    const repeatedStateCount = continuing
-      ? (previous?.stateFingerprint === stateFingerprint ? (previous.repeatedStateCount + 1) : 0)
-      : (previous?.repeatedStateCount ?? 0);
-    const consecutiveFailures = previous?.consecutiveFailures ?? 0;
-    const bindingId = bounded(input.bindingId, 500) ?? previous?.bindingId;
-
-    let status: ControllerRoundRelayStatus = input.disposition === 'continue_immediately'
-      ? 'pending_release'
-      : input.disposition === 'wait'
-        ? 'waiting'
-        : input.disposition === 'wait_for_user'
-          ? 'waiting_for_user'
-          : 'goal_complete';
-    let blockedReason: string | undefined;
-
+    const bindingId = bounded(input.bindingId, 500) ?? existing.value.bindingId;
     const handoffId = bounded(input.handoffId, 200);
     if (input.disposition === 'wait_for_user') {
       if (!handoffId) throw new Error('CONTROLLER_RELAY_WAIT_FOR_USER_HANDOFF_REQUIRED');
@@ -582,60 +594,20 @@ export function submitControllerRoundDisposition(
       if (isTerminalHandoffStatus(handoff.status)) throw new Error(`CONTROLLER_RELAY_HANDOFF_TERMINAL: ${handoff.status}`);
       if (handoff.workId && handoff.workId !== work.workId) throw new Error(`CONTROLLER_RELAY_HANDOFF_WORK_MISMATCH: ${handoffId}`);
     }
-
-    if (continuing) {
-      if (roundCount > maxRounds) blockedReason = `round_budget_exhausted:${roundCount}>${maxRounds}`;
-      else if (repeatedStateCount >= maxRepeatedState) blockedReason = `repeated_state:${repeatedStateCount}>=${maxRepeatedState}`;
-      else if (consecutiveFailures >= maxFailures) blockedReason = `consecutive_failures:${consecutiveFailures}>=${maxFailures}`;
-      if (blockedReason) status = 'blocked';
-    }
-
     const at = nowIso(options);
-    const record: ControllerRoundRelayRecord = {
-      schemaVersion: 1,
-      repoId: options.repoId,
-      relayScopeId,
-      originWorkId: work.workId,
-      ...(existing.value.predecessorWorkId ? { predecessorWorkId: existing.value.predecessorWorkId } : {}),
-      ...(existing.value.successorWorkId ? { successorWorkId: existing.value.successorWorkId } : {}),
-      ...(requirementId ? { requirementId } : {}),
-      disposition: input.disposition,
-      status,
-      lifecycleStage: 'semantic_round_closed',
-      qualityDecisions: [...(existing.value.qualityDecisions ?? []), ...qualityDecisions].slice(-64),
-      observationWindow: [...(previous?.observationWindow ?? []), closedRoundObservation(work, `${relayScopeId}:${existing.value.roundCount}`, stateFingerprint, input.disposition === 'wait' || input.disposition === 'wait_for_user')].slice(-8),
-      controllerId: authority.controllerId,
-      controllerType: authority.controllerType,
-      principalId: authority.principalId,
-      controllerInstanceId: authority.controllerInstanceId,
-      sessionId: authority.sessionId,
-      claimGeneration: authority.claimGeneration,
-      authorityId: existing.value.authorityId,
-      stateFingerprint,
-      roundCount,
-      repeatedStateCount,
-      consecutiveFailures,
-      maxRounds,
-      maxRepeatedState,
-      maxFailures,
+    const observationWindow = [
+      ...(existing.value.observationWindow ?? []),
+      closedRoundObservation(work, `${relayScopeId}:${existing.value.roundCount}`, stateFingerprint, input.disposition === 'wait' || input.disposition === 'wait_for_user'),
+    ].slice(-8);
+    const accumulatedQualityDecisions = [...(existing.value.qualityDecisions ?? []), ...qualityDecisions].slice(-64);
+    return applyControllerRoundTransition(options, existing, {
+      type: 'semantic_disposition_submitted', at, disposition: input.disposition, stateFingerprint,
+      maxRounds: requestedMaxRounds, maxRepeatedState: requestedMaxRepeatedState, maxFailures: requestedMaxFailures,
+      qualityDecisions: accumulatedQualityDecisions, observationWindow,
       ...(handoffId ? { handoffId } : {}),
       ...(bounded(input.reason, 1_000) ? { reason: bounded(input.reason, 1_000) } : {}),
       ...(bindingId ? { bindingId } : {}),
-      ...(existing.value.providerDispatchReceiptId ? { providerDispatchReceiptId: existing.value.providerDispatchReceiptId } : {}),
-      ...(blockedReason ? { blockedReason } : {}),
-      submittedAt: at,
-      updatedAt: at,
-    };
-    writeControlPlaneRecord(options.controllerHome, {
-      namespace: NAMESPACE,
-      scope: options.repoId,
-      key: work.workId,
-      schemaVersion: SCHEMA_VERSION,
-      value: record,
-      action: 'controller_round_disposition_submitted',
-      expectedRevision: existing?.revision ?? null,
     });
-    return record;
   });
 }
 
@@ -659,80 +631,17 @@ export function beginInitialControllerRoundDispatch(
       throw new Error(`CONTROLLER_RELAY_SCOPE_MISMATCH: Work ${work.workId} is already bound to ${existing.value.relayScopeId}`);
     }
     const previous = relayHistory(options, relayScopeId)[0];
-    if (previous && ['pending_release', 'dispatching', 'dispatched', 'claimed'].includes(previous.status)) {
-      throw new Error(`CONTROLLER_RELAY_ROUND_ALREADY_OPEN: ${relayScopeId}`);
-    }
-    if (previous?.status === 'blocked' && previous.blockedReason === 'provider_dispatch_outcome_unknown') {
-      throw new Error(`CONTROLLER_RELAY_PROVIDER_DISPATCH_OUTCOME_UNKNOWN: ${relayScopeId}`);
-    }
-    const abandonedReleasedRound = previous?.status === 'failed'
-      && previous.lastError === CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR;
-    const requestedMaxRounds = boundedInteger(input.maxRounds, DEFAULT_MAX_ROUNDS, 1, 32);
-    const requestedMaxRepeatedState = boundedInteger(input.maxRepeatedState, DEFAULT_MAX_REPEATED_STATE, 1, 8);
-    const requestedMaxFailures = boundedInteger(input.maxFailures, DEFAULT_MAX_FAILURES, 1, 8);
-    const maxRounds = previous ? Math.min(previous.maxRounds, requestedMaxRounds) : requestedMaxRounds;
-    const maxRepeatedState = previous ? Math.min(previous.maxRepeatedState, requestedMaxRepeatedState) : requestedMaxRepeatedState;
-    const maxFailures = previous ? Math.min(previous.maxFailures, requestedMaxFailures) : requestedMaxFailures;
+    const abandonedReleasedRound = previous?.status === 'failed' && previous.lastError === CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR;
     const stateFingerprint = mechanicalStateFingerprint(options, work, requirementId, relayScopeId);
-    // Ordinary later schedule/manual occurrences intentionally receive a fresh
-    // mechanical budget. A claimed round explicitly released without any semantic
-    // disposition is different: launcher_start is recovering the same abandoned
-    // relay chain, so it must consume round/repeated-state budget rather than reset
-    // it and thereby weaken repeated-state fencing.
-    const roundCount = abandonedReleasedRound ? previous!.roundCount + 1 : 1;
-    const repeatedStateCount = abandonedReleasedRound
-      ? (previous!.stateFingerprint === stateFingerprint ? previous!.repeatedStateCount + 1 : 0)
-      : 0;
-    const consecutiveFailures = abandonedReleasedRound ? previous!.consecutiveFailures : 0;
-    let blockedReason: string | undefined;
-    if (roundCount > maxRounds) blockedReason = `round_budget_exhausted:${roundCount}>${maxRounds}`;
-    else if (repeatedStateCount >= maxRepeatedState) blockedReason = `repeated_state:${repeatedStateCount}>=${maxRepeatedState}`;
-    else if (consecutiveFailures >= maxFailures) blockedReason = `consecutive_failures:${consecutiveFailures}>=${maxFailures}`;
-
-    const at = nowIso(options);
-    const record: ControllerRoundRelayRecord = {
-      schemaVersion: 1,
-      repoId: options.repoId,
-      relayScopeId,
-      originWorkId: work.workId,
-      ...(requirementId ? { requirementId } : {}),
-      // launcher_start is itself an explicit request to continue the Work. The
-      // launched controller must still submit its own end-of-round disposition.
-      disposition: 'continue_immediately',
-      status: blockedReason ? 'blocked' : 'dispatching',
-      lifecycleStage: 'dispatching',
-      observationWindow: previous?.observationWindow,
-      qualityDecisions: previous?.qualityDecisions,
-      controllerId: input.identity.controllerId.trim().slice(0, 240) || 'controller-host',
-      controllerType: input.identity.controllerType,
-      principalId: input.identity.principalId.trim().slice(0, 240) || input.identity.controllerId.trim().slice(0, 240),
-      controllerInstanceId: input.identity.controllerInstanceId.trim().slice(0, 240),
-      sessionId: input.identity.sessionId.trim().slice(0, 240),
-      claimGeneration: 0,
-      authorityId: newControllerRoundAuthorityId(),
-      stateFingerprint,
-      roundCount,
-      repeatedStateCount,
-      consecutiveFailures,
-      maxRounds,
-      maxRepeatedState,
-      maxFailures,
-      reason: abandonedReleasedRound ? 'launcher_start_recovered_abandoned_claim' : 'launcher_start_requested_continuation',
-      ...(bounded(input.bindingId, 500) ? { bindingId: bounded(input.bindingId, 500) } : previous?.bindingId ? { bindingId: previous.bindingId } : {}),
-      ...(blockedReason ? { blockedReason } : {}),
-      submittedAt: at,
-      updatedAt: at,
-    };
-    writeControlPlaneRecord(options.controllerHome, {
-      namespace: NAMESPACE,
-      scope: options.repoId,
-      key: work.workId,
-      schemaVersion: SCHEMA_VERSION,
-      value: record,
-      action: blockedReason ? 'controller_round_initial_launch_blocked' : 'controller_round_initial_launch_begin',
-      expectedRevision: existing?.revision ?? null,
+    const occurrenceId = bounded(input.occurrenceId, 500);
+    return applyControllerRoundTransition(options, existing, {
+      type: 'occurrence_requested', at: nowIso(options), repoId: options.repoId, relayScopeId, originWorkId: work.workId,
+      ...(requirementId ? { requirementId } : {}), identity: input.identity, stateFingerprint, proposedAuthorityId: newControllerRoundAuthorityId(),
+      maxRounds: boundedInteger(input.maxRounds, DEFAULT_MAX_ROUNDS, 1, 32), maxRepeatedState: boundedInteger(input.maxRepeatedState, DEFAULT_MAX_REPEATED_STATE, 1, 8),
+      maxFailures: boundedInteger(input.maxFailures, DEFAULT_MAX_FAILURES, 1, 8),
+      ...(bounded(input.bindingId, 500) ? { bindingId: bounded(input.bindingId, 500) } : {}), ...(occurrenceId ? { occurrenceId } : {}),
+      abandonedReleaseRecovery: Boolean(abandonedReleasedRound),
     });
-    return record;
   });
 }
 
@@ -779,65 +688,23 @@ export function beginControllerRoundRelayAfterRelease(
           }
           throw new Error(`CONTROLLER_RELAY_SUCCESSOR_ALREADY_HAS_ROUND: ${successor.workId}`);
         }
-        const handedOff: ControllerRoundRelayRecord = {
-          ...predecessorRelay.value,
-          status: 'handed_off',
-          lifecycleStage: 'semantic_round_closed',
-          authorityId: undefined,
-          updatedAt: at,
-        };
-        const dispatching: ControllerRoundRelayRecord = {
-          ...predecessorRelay.value,
-          originWorkId: successor.workId,
-          predecessorWorkId: predecessor.workId,
-          successorWorkId: undefined,
-          status: 'dispatching',
-          lifecycleStage: 'dispatching',
-          authorityId: newControllerRoundAuthorityId(),
-          stateFingerprint: successorStateFingerprint,
-          repeatedStateCount: 0,
-          controllerInstanceId: '',
-          sessionId: '',
-          claimGeneration: 0,
-          bindingId: undefined,
-          providerDispatchReceiptId: undefined,
-          blockedReason: undefined,
-          lastError: undefined,
-          nextRecoveryAt: undefined,
-          dispatchedAt: undefined,
-          claimedAt: undefined,
-          updatedAt: at,
-        };
+        const decision = atomicTransitionDecisionOrThrow(decideControllerRoundTransition(predecessorRelay.value, {
+          type: 'successor_release_handoff', at, successorWorkId: successor.workId, successorStateFingerprint, proposedAuthorityId: newControllerRoundAuthorityId(),
+        }));
         writeControlPlaneRecordWithinTransaction(database, {
           namespace: NAMESPACE, scope: options.repoId, key: predecessor.workId, schemaVersion: SCHEMA_VERSION,
-          value: handedOff, action: 'controller_round_relay_successor_handoff_closed', expectedRevision: predecessorRelay.revision,
+          value: decision.next, action: decision.action, expectedRevision: predecessorRelay.revision,
         });
         writeControlPlaneRecordWithinTransaction(database, {
-          namespace: NAMESPACE, scope: options.repoId, key: successor.workId, schemaVersion: SCHEMA_VERSION,
-          value: dispatching, action: 'controller_round_relay_successor_dispatch_begin', expectedRevision: null,
+          namespace: NAMESPACE, scope: options.repoId, key: decision.relatedWorkId, schemaVersion: SCHEMA_VERSION,
+          value: decision.relatedNext, action: decision.relatedAction, expectedRevision: null,
         });
-        return dispatching;
+        return decision.relatedNext;
       });
     }
-    // A released round is semantically closed. The successor dispatch receives a
-    // fresh capability so a stale provider host cannot mutate the next round.
-    const dispatching: ControllerRoundRelayRecord = {
-      ...record,
-      authorityId: newControllerRoundAuthorityId(),
-      status: 'dispatching',
-      lifecycleStage: 'dispatching',
-      updatedAt: at,
-    };
-    writeControlPlaneRecord(options.controllerHome, {
-      namespace: NAMESPACE,
-      scope: options.repoId,
-      key: input.workId,
-      schemaVersion: SCHEMA_VERSION,
-      value: dispatching,
-      action: 'controller_round_relay_dispatch_begin',
-      expectedRevision: current.revision,
+    return applyControllerRoundTransition(options, current, {
+      type: 'controller_release_observed', at, proposedAuthorityId: newControllerRoundAuthorityId(),
     });
-    return dispatching;
   });
 }
 
@@ -876,24 +743,9 @@ export function reconcileControllerRoundAfterAbandonedRelease(
     // round and free the relay scope for later recovery/replanning.
     if (!work || work.status === 'completed') return undefined;
 
-    const at = nowIso(options);
-    const abandoned: ControllerRoundRelayRecord = {
-      ...record,
-      status: 'failed',
-      lastError: CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR,
-      claimedAt: undefined,
-      updatedAt: at,
-    };
-    writeControlPlaneRecord(options.controllerHome, {
-      namespace: NAMESPACE,
-      scope: options.repoId,
-      key: input.workId,
-      schemaVersion: SCHEMA_VERSION,
-      value: abandoned,
-      action: 'controller_round_relay_claim_abandoned_after_release',
-      expectedRevision: current.revision,
+    return applyControllerRoundTransition(options, current, {
+      type: 'abandoned_release_observed', at: nowIso(options), error: CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR,
     });
-    return abandoned;
   });
 }
 
@@ -923,30 +775,15 @@ export function reconcileControllerRoundAfterTerminalWork(
       throw new Error(`CONTROLLER_RELAY_TERMINAL_WORK_ACTIVE_CLAIM: ${input.workId}`);
     }
     if (current.value.status === 'failed') return current.value;
-    const at = nowIso(options);
-    const retired: ControllerRoundRelayRecord = {
-      ...current.value,
-      status: 'failed',
-      lastError: `CONTROLLER_RELAY_TERMINAL_WORK_RETIRED:${input.workId}`,
-      claimedAt: undefined,
-      updatedAt: at,
-    };
-    writeControlPlaneRecord(options.controllerHome, {
-      namespace: NAMESPACE,
-      scope: options.repoId,
-      key: input.workId,
-      schemaVersion: SCHEMA_VERSION,
-      value: retired,
-      action: 'controller_round_relay_terminal_work_retired',
-      expectedRevision: current.revision,
+    return applyControllerRoundTransition(options, current, {
+      type: 'terminal_work_observed', at: nowIso(options), error: `CONTROLLER_RELAY_TERMINAL_WORK_RETIRED:${input.workId}`,
     });
-    return retired;
   });
 }
 
 export function finishControllerRoundRelayDispatch(
   options: ControllerRoundRelayStoreOptions,
-  input: { workId: string; ok: boolean; bindingId?: string; providerDispatchReceiptId?: string; error?: string; recovery?: boolean; outcomeUnknown?: boolean; waitForUser?: boolean; handoffId?: string; nowMs?: number },
+  input: { workId: string; ok: boolean; bindingId?: string; providerDispatchEffectId?: string; providerDispatchReceiptId?: string; error?: string; recovery?: boolean; outcomeUnknown?: boolean; waitForUser?: boolean; handoffId?: string; nowMs?: number },
 ): ControllerRoundRelayRecord | undefined {
   const initial = readRelayRecord(options, input.workId);
   if (!initial || initial.value.status !== 'dispatching') return initial?.value;
@@ -954,8 +791,6 @@ export function finishControllerRoundRelayDispatch(
     const current = readRelayRecord(options, input.workId);
     if (!current || current.value.status !== 'dispatching') return current?.value;
     const at = typeof input.nowMs === 'number' ? new Date(input.nowMs).toISOString() : nowIso(options);
-    const nextFailureCount = current.value.consecutiveFailures + 1;
-    const recoveryBlocked = input.recovery === true && nextFailureCount >= current.value.maxFailures;
     const handoffId = bounded(input.handoffId, 200);
     if (input.waitForUser) {
       if (!handoffId) throw new Error('CONTROLLER_RELAY_WAIT_FOR_USER_HANDOFF_REQUIRED');
@@ -964,84 +799,31 @@ export function finishControllerRoundRelayDispatch(
       if (isTerminalHandoffStatus(handoff.status)) throw new Error(`CONTROLLER_RELAY_HANDOFF_TERMINAL: ${handoff.status}`);
       if (handoff.workId && handoff.workId !== input.workId) throw new Error(`CONTROLLER_RELAY_HANDOFF_WORK_MISMATCH: ${handoffId}`);
     }
-    const recoveryDelayMs = Math.min(
-      MAX_STALLED_RECOVERY_BACKOFF_MS,
-      DEFAULT_STALLED_RECOVERY_BACKOFF_MS * 2 ** Math.max(0, nextFailureCount - 1),
-    );
-    const next: ControllerRoundRelayRecord = input.ok
-      ? {
-          ...current.value,
-          status: 'dispatched',
-          lifecycleStage: 'dispatch_confirmed',
-          consecutiveFailures: 0,
-          lastError: undefined,
-          nextRecoveryAt: undefined,
-          blockedReason: undefined,
-          ...(bounded(input.bindingId, 500) ? { bindingId: bounded(input.bindingId, 500) } : {}),
-          ...(bounded(input.providerDispatchReceiptId, 500) ? { providerDispatchReceiptId: bounded(input.providerDispatchReceiptId, 500) } : {}),
-          dispatchedAt: at,
-          updatedAt: at,
-        }
-      : input.outcomeUnknown
-        ? {
-            ...current.value,
-            status: 'blocked',
-            consecutiveFailures: nextFailureCount,
-            nextRecoveryAt: undefined,
-            lastError: bounded(input.error, 2_000) ?? 'CONTROLLER_RELAY_PROVIDER_DISPATCH_OUTCOME_UNKNOWN',
-            blockedReason: 'provider_dispatch_outcome_unknown',
-            updatedAt: at,
-          }
-        : input.waitForUser
-          ? {
-              ...current.value,
-              status: 'waiting_for_user',
-              nextRecoveryAt: undefined,
-              lastError: bounded(input.error, 2_000) ?? 'CONTROLLER_RELAY_WAIT_FOR_USER',
-              blockedReason: 'provider_user_action_required',
-              handoffId,
-              updatedAt: at,
-            }
+    const error = bounded(input.error, 2_000) ?? (input.outcomeUnknown
+      ? 'CONTROLLER_RELAY_PROVIDER_DISPATCH_OUTCOME_UNKNOWN'
+      : input.waitForUser
+        ? 'CONTROLLER_RELAY_WAIT_FOR_USER'
         : input.recovery
-        ? {
-            ...current.value,
-            status: recoveryBlocked ? 'blocked' : 'dispatching',
-            consecutiveFailures: nextFailureCount,
-            lastError: bounded(input.error, 2_000) ?? 'CONTROLLER_RELAY_RECOVERY_FAILED',
-            blockedReason: recoveryBlocked
-              ? `consecutive_failures:${nextFailureCount}>=${current.value.maxFailures}`
-              : undefined,
-            nextRecoveryAt: recoveryBlocked
-              ? undefined
-              : new Date(Date.parse(at) + recoveryDelayMs).toISOString(),
-            updatedAt: at,
-          }
-        : {
-            ...current.value,
-            status: 'failed',
-            consecutiveFailures: nextFailureCount,
-            nextRecoveryAt: undefined,
-            lastError: bounded(input.error, 2_000) ?? 'CONTROLLER_RELAY_DISPATCH_FAILED',
-            updatedAt: at,
-          };
-    writeControlPlaneRecord(options.controllerHome, {
-      namespace: NAMESPACE,
-      scope: options.repoId,
-      key: input.workId,
-      schemaVersion: SCHEMA_VERSION,
-      value: next,
-      action: input.ok
-        ? 'controller_round_relay_dispatched'
-        : input.outcomeUnknown
-          ? 'controller_round_relay_dispatch_outcome_unknown'
-          : input.waitForUser
-            ? 'controller_round_relay_waiting_for_user'
-          : input.recovery
-            ? recoveryBlocked ? 'controller_round_relay_recovery_blocked' : 'controller_round_relay_recovery_retry_scheduled'
-            : 'controller_round_relay_failed',
-      expectedRevision: current.revision,
-    });
-    return next;
+          ? 'CONTROLLER_RELAY_RECOVERY_FAILED'
+          : 'CONTROLLER_RELAY_DISPATCH_FAILED');
+    const providerDispatchEffectId = bounded(input.providerDispatchEffectId, 500)
+      ?? (current.value.authorityId ? controllerRoundProviderEffectId(current.value.relayScopeId, current.value.authorityId) : undefined);
+    let event: ControllerRoundTransitionEvent;
+    if (input.ok) {
+      if (!providerDispatchEffectId) throw new Error('CONTROLLER_RELAY_PROVIDER_EFFECT_ID_REQUIRED');
+      event = { type: 'provider_dispatch_succeeded', at, providerDispatchEffectId, ...(bounded(input.bindingId, 500) ? { bindingId: bounded(input.bindingId, 500) } : {}), ...(bounded(input.providerDispatchReceiptId, 500) ? { providerDispatchReceiptId: bounded(input.providerDispatchReceiptId, 500) } : {}) };
+    } else if (input.outcomeUnknown) {
+      const effectIdentity = providerDispatchEffectId;
+      if (!effectIdentity) throw new Error('CONTROLLER_RELAY_PROVIDER_EFFECT_ID_REQUIRED');
+      event = { type: 'provider_dispatch_outcome_unknown', at, error, providerDispatchEffectId: effectIdentity };
+    } else if (input.waitForUser) {
+      event = { type: 'provider_user_action_required', at, error, handoffId: handoffId! };
+    } else {
+      const nextFailureCount = current.value.consecutiveFailures + 1;
+      const recoveryDelayMs = Math.min(MAX_STALLED_RECOVERY_BACKOFF_MS, DEFAULT_STALLED_RECOVERY_BACKOFF_MS * 2 ** Math.max(0, nextFailureCount - 1));
+      event = { type: 'provider_dispatch_failed', at, error, recovery: input.recovery === true, ...(input.recovery ? { nextRecoveryAt: new Date(Date.parse(at) + recoveryDelayMs).toISOString() } : {}) };
+    }
+    return applyControllerRoundTransition(options, current, event);
   });
 }
 
@@ -1051,201 +833,58 @@ export function acknowledgeControllerRoundClaim(
 ): ControllerRoundRelayRecord | undefined {
   const initial = readRelayRecord(options, input.workId);
   if (!initial) return undefined;
-  if (initial.value.status === 'claimed') {
-    if (
-      initial.value.controllerId === input.session.controllerId
-      && initial.value.sessionId === input.session.sessionId
-      && initial.value.claimGeneration === input.session.claimGeneration
-    ) return initial.value;
-  } else if (initial.value.status === 'blocked') {
-    const recoverableDispatchOutcome = initial.value.blockedReason === 'provider_dispatch_outcome_unknown';
-    if (!recoverableDispatchOutcome && !initial.value.blockedReason?.startsWith('repeated_state:')) return initial.value;
-  } else if (!['dispatching', 'dispatched'].includes(initial.value.status)) return initial.value;
   const expectedControllerType = relayControllerType(initial.value);
   if (input.session.controllerType !== expectedControllerType) throw new Error(`CONTROLLER_RELAY_CONTROLLER_TYPE_MISMATCH: ${input.workId}`);
 
   return relayLock(options, initial.value.relayScopeId, `controller-relay-claim:${input.session.controllerId}`, () => {
     const current = readRelayRecord(options, input.workId);
     if (!current) return undefined;
-    if (current.value.status === 'claimed') {
-      if (
-        current.value.controllerId === input.session.controllerId
-        && current.value.sessionId === input.session.sessionId
-        && current.value.claimGeneration === input.session.claimGeneration
-      ) return current.value;
+    if (current.value.status === 'claimed'
+      && current.value.controllerId === input.session.controllerId
+      && current.value.sessionId === input.session.sessionId
+      && current.value.claimGeneration === input.session.claimGeneration) return current.value;
 
-      const owner = getControllerSession(options, input.workId);
-      const ownerPrincipal = owner?.principalId?.trim() || owner?.controllerId;
-      const sessionPrincipal = input.session.principalId?.trim() || input.session.controllerId;
-      if (
-        !owner
-        || owner.controllerType !== (relayControllerType(current.value))
-        || owner.controllerId !== input.session.controllerId
-        || owner.sessionId !== input.session.sessionId
-        || owner.claimGeneration !== input.session.claimGeneration
-        || ownerPrincipal !== sessionPrincipal
-        || (owner.controllerInstanceId?.trim() || '') !== (input.session.controllerInstanceId?.trim() || '')
-      ) throw new Error(`CONTROLLER_RELAY_CLAIM_IDENTITY_MISMATCH: ${input.workId}`);
-      if (current.value.controllerId !== owner.controllerId || current.value.principalId !== ownerPrincipal) {
-        throw new Error(`CONTROLLER_RELAY_CLAIM_CONFLICT: ${input.workId}`);
-      }
-      if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
-        throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_REQUIRED: ${input.workId}`);
-      }
-      const controllerInstanceId = owner.controllerInstanceId?.trim();
-      if (!controllerInstanceId) throw new Error(`CONTROLLER_RELAY_CLAIM_INSTANCE_REQUIRED: ${input.workId}`);
-      const at = nowIso(options);
-      const migrated: ControllerRoundRelayRecord = {
-        ...current.value,
-        controllerType: owner.controllerType,
-        controllerInstanceId,
-        sessionId: owner.sessionId,
-        claimGeneration: owner.claimGeneration,
-        lifecycleStage: 'controller_claimed',
-        claimedAt: at,
-        updatedAt: at,
-        lastError: undefined,
-      };
-      writeControlPlaneRecord(options.controllerHome, {
-        namespace: NAMESPACE,
-        scope: options.repoId,
-        key: input.workId,
-        schemaVersion: SCHEMA_VERSION,
-        value: migrated,
-        action: 'controller_round_relay_claim_migrated',
-        expectedRevision: current.revision,
-      });
-      return migrated;
-    }
-    if (current.value.status === 'blocked') {
-      const providerDispatchOutcomeUnknown = current.value.blockedReason === 'provider_dispatch_outcome_unknown';
-      const repeatedStateBlocked = current.value.blockedReason?.startsWith('repeated_state:') === true;
-      if (!providerDispatchOutcomeUnknown && !repeatedStateBlocked) return current.value;
-      if (repeatedStateBlocked && (current.value.roundCount > current.value.maxRounds || current.value.consecutiveFailures >= current.value.maxFailures)) {
-        return current.value;
-      }
-      const work = getWorkContract(options, input.workId);
-      if (!work || isTerminalWorkContractStatus(work.status)) return current.value;
-      const owner = getControllerSession(options, input.workId);
-      const ownerPrincipal = owner?.principalId?.trim() || owner?.controllerId;
-      const sessionPrincipal = input.session.principalId?.trim() || input.session.controllerId;
-      if (
-        !owner
-        || owner.controllerType !== (relayControllerType(current.value))
-        || owner.controllerId !== input.session.controllerId
-        || owner.sessionId !== input.session.sessionId
-        || owner.claimGeneration !== input.session.claimGeneration
-        || ownerPrincipal !== sessionPrincipal
-        || (owner.controllerInstanceId?.trim() || '') !== (input.session.controllerInstanceId?.trim() || '')
-      ) throw new Error(`CONTROLLER_RELAY_CLAIM_IDENTITY_MISMATCH: ${input.workId}`);
-      if (current.value.controllerId !== owner.controllerId || current.value.principalId !== ownerPrincipal) {
-        throw new Error(`CONTROLLER_RELAY_CLAIM_CONFLICT: ${input.workId}`);
-      }
-      if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
-        throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_REQUIRED: ${input.workId}`);
-      }
-      const controllerInstanceId = owner.controllerInstanceId?.trim();
-      if (!controllerInstanceId) throw new Error(`CONTROLLER_RELAY_CLAIM_INSTANCE_REQUIRED: ${input.workId}`);
-      if (providerDispatchOutcomeUnknown) {
-        const at = nowIso(options);
-        const confirmed: ControllerRoundRelayRecord = {
-          ...current.value,
-          status: 'claimed',
-          lifecycleStage: 'controller_claimed',
-          controllerId: owner.controllerId,
-          controllerType: owner.controllerType,
-          principalId: ownerPrincipal,
-          controllerInstanceId,
-          sessionId: owner.sessionId,
-          claimGeneration: owner.claimGeneration,
-          consecutiveFailures: 0,
-          blockedReason: undefined,
-          lastError: undefined,
-          nextRecoveryAt: undefined,
-          claimedAt: at,
-          updatedAt: at,
-        };
-        writeControlPlaneRecord(options.controllerHome, {
-          namespace: NAMESPACE,
-          scope: options.repoId,
-          key: input.workId,
-          schemaVersion: SCHEMA_VERSION,
-          value: confirmed,
-          action: 'controller_round_relay_claim_confirmed_unknown_dispatch',
-          expectedRevision: current.revision,
-        });
-        return confirmed;
-      }
-      const stateFingerprint = mechanicalStateFingerprint(options, work, current.value.requirementId, current.value.relayScopeId);
-      if (stateFingerprint === current.value.stateFingerprint) return current.value;
-      const at = nowIso(options);
-      const rearmed: ControllerRoundRelayRecord = {
-        ...current.value,
-        status: 'claimed',
-        lifecycleStage: 'controller_claimed',
-        controllerId: owner.controllerId,
-        controllerType: owner.controllerType,
-        principalId: ownerPrincipal,
-        controllerInstanceId,
-        sessionId: owner.sessionId,
-        claimGeneration: owner.claimGeneration,
-        stateFingerprint,
-        repeatedStateCount: 0,
-        blockedReason: undefined,
-        lastError: undefined,
-        claimedAt: at,
-        updatedAt: at,
-      };
-      writeControlPlaneRecord(options.controllerHome, {
-        namespace: NAMESPACE,
-        scope: options.repoId,
-        key: input.workId,
-        schemaVersion: SCHEMA_VERSION,
-        value: rearmed,
-        action: 'controller_round_relay_claim_rearmed_after_state_change',
-        expectedRevision: current.revision,
-      });
-      return rearmed;
-    }
-    if (!['dispatching', 'dispatched'].includes(current.value.status)) return current.value;
+    const blocker = controllerRoundBlockerClass(current.value);
+    const policyClaimable = ['dispatching', 'dispatched', 'claimed'].includes(current.value.status)
+      || blocker === 'provider_dispatch_outcome_unknown'
+      || blocker === 'repeated_state';
+    if (!policyClaimable) return current.value;
+
     const owner = getControllerSession(options, input.workId);
-    if (!owner) throw new Error(`CONTROLLER_RELAY_ACTIVE_CLAIM_REQUIRED: ${input.workId}`);
+    const ownerPrincipal = owner?.principalId?.trim() || owner?.controllerId;
+    const sessionPrincipal = input.session.principalId?.trim() || input.session.controllerId;
     if (
-      owner.controllerType !== (relayControllerType(current.value))
+      !owner
+      || owner.controllerType !== relayControllerType(current.value)
       || owner.controllerId !== input.session.controllerId
       || owner.sessionId !== input.session.sessionId
       || owner.claimGeneration !== input.session.claimGeneration
-      || (owner.principalId?.trim() || owner.controllerId) !== (input.session.principalId?.trim() || input.session.controllerId)
+      || ownerPrincipal !== sessionPrincipal
+      || (owner.controllerInstanceId?.trim() || '') !== (input.session.controllerInstanceId?.trim() || '')
     ) throw new Error(`CONTROLLER_RELAY_CLAIM_IDENTITY_MISMATCH: ${input.workId}`);
+    if (current.value.controllerId !== owner.controllerId || current.value.principalId !== ownerPrincipal) {
+      throw new Error(`CONTROLLER_RELAY_CLAIM_CONFLICT: ${input.workId}`);
+    }
     if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
       throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_REQUIRED: ${input.workId}`);
     }
-    const claimGeneration = owner.claimGeneration;
+    const controllerInstanceId = owner.controllerInstanceId?.trim();
+    if (!controllerInstanceId) throw new Error(`CONTROLLER_RELAY_CLAIM_INSTANCE_REQUIRED: ${input.workId}`);
     const at = nowIso(options);
-    const next: ControllerRoundRelayRecord = {
-      ...current.value,
-      status: 'claimed',
-      lifecycleStage: 'controller_claimed',
-      controllerId: owner.controllerId,
-      controllerType: owner.controllerType,
-      principalId: owner.principalId?.trim() || owner.controllerId,
-      controllerInstanceId: owner.controllerInstanceId?.trim() || current.value.controllerInstanceId,
-      sessionId: owner.sessionId,
-      claimGeneration,
-      claimedAt: at,
-      updatedAt: at,
-      lastError: undefined,
-    };
-    writeControlPlaneRecord(options.controllerHome, {
-      namespace: NAMESPACE,
-      scope: options.repoId,
-      key: input.workId,
-      schemaVersion: SCHEMA_VERSION,
-      value: next,
-      action: 'controller_round_relay_claim_acknowledged',
-      expectedRevision: current.revision,
+    const session = owner as ControllerSession & { claimGeneration: number };
+
+    if (blocker === 'repeated_state') {
+      const work = getWorkContract(options, input.workId);
+      if (!work || isTerminalWorkContractStatus(work.status)) return current.value;
+      const stateFingerprint = mechanicalStateFingerprint(options, work, current.value.requirementId, current.value.relayScopeId);
+      return applyControllerRoundTransition(options, current, {
+        type: 'semantic_state_changed', at, stateFingerprint, session, principalId: ownerPrincipal!, controllerInstanceId,
+      });
+    }
+
+    return applyControllerRoundTransition(options, current, {
+      type: 'controller_claim_observed', at, session, principalId: ownerPrincipal!, controllerInstanceId,
     });
-    return next;
   });
 }
 
@@ -1313,27 +952,47 @@ export function recoverControllerRoundRelayAuthority(
       throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_ACTIVE_CLAIM: ${workId}`);
     }
 
-    const at = nowIso(options);
-    const keepsConfirmedDispatch = current.value.status === 'dispatched';
-    const recovered: ControllerRoundRelayRecord = {
-      ...current.value,
-      authorityId: newControllerRoundAuthorityId(),
-      status: keepsConfirmedDispatch ? 'dispatched' : 'dispatching',
-      lifecycleStage: keepsConfirmedDispatch ? 'dispatch_confirmed' : 'dispatching',
-      claimedAt: undefined,
-      nextRecoveryAt: undefined,
-      updatedAt: at,
-    };
-    writeControlPlaneRecord(options.controllerHome, {
-      namespace: NAMESPACE,
-      scope: options.repoId,
-      key: workId,
-      schemaVersion: SCHEMA_VERSION,
-      value: recovered,
-      action: 'controller_round_relay_explicit_authority_recovered',
-      expectedRevision: current.revision,
+    return applyControllerRoundTransition(options, current, {
+      type: 'authority_recovery_requested', at: nowIso(options), proposedAuthorityId: newControllerRoundAuthorityId(),
+      keepsConfirmedDispatch: current.value.status === 'dispatched',
     });
-    return recovered;
+  });
+}
+
+export interface RearmControllerRoundAfterProviderRecoveryInput {
+  workId: string;
+  relayScopeId: string;
+  authorityId: string;
+  expectedUpdatedAt: string;
+  evidenceId: string;
+}
+
+/** Exact evidence-gated provider/environment recovery for one exhausted same-round dispatch responsibility. */
+export function rearmControllerRoundAfterProviderRecovery(
+  options: ControllerRoundRelayStoreOptions,
+  input: RearmControllerRoundAfterProviderRecoveryInput,
+): ControllerRoundRelayRecord {
+  const workId = input.workId.trim();
+  const initial = readRelayRecord(options, workId);
+  if (!initial) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_RELAY_REQUIRED: ${workId}`);
+  if (initial.value.relayScopeId !== input.relayScopeId.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_SCOPE_MISMATCH: ${workId}`);
+  return relayLock(options, initial.value.relayScopeId, `controller-relay-provider-recovered:${workId}`, () => {
+    const current = readRelayRecord(options, workId);
+    if (!current) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_RELAY_REQUIRED: ${workId}`);
+    if (current.value.updatedAt !== input.expectedUpdatedAt.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_STALE: ${workId}`);
+    if (current.value.relayScopeId !== input.relayScopeId.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_SCOPE_MISMATCH: ${workId}`);
+    if ((current.value.authorityId?.trim() || '') !== input.authorityId.trim()) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_AUTHORITY_MISMATCH: ${workId}`);
+    if (controllerRoundBlockerClass(current.value) !== 'consecutive_failures') throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_BLOCKER_MISMATCH: ${workId}`);
+    const work = getWorkContract(options, workId);
+    if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_WORK_TERMINAL: ${workId}:${work?.status ?? 'missing'}`);
+    const requirement = requirementForRelay(options, current.value.requirementId);
+    if (requirement && !['planned', 'active'].includes(requirement.state)) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_REQUIREMENT_TERMINAL: ${requirement.state}`);
+    const activeWorks = relevantWork(options, current.value).filter((entry) => !isTerminalWorkContractStatus(entry.status));
+    if (activeWorks.some((entry) => workHasActiveExecution(options.controllerHome, options.repoId, entry.workId))) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_ACTIVE_EXECUTION: ${workId}`);
+    if (activeWorks.some((entry) => Boolean(getControllerSession(options, entry.workId)))) throw new Error(`CONTROLLER_RELAY_PROVIDER_RECOVERY_ACTIVE_CLAIM: ${workId}`);
+    const evidenceId = bounded(input.evidenceId, 500);
+    if (!evidenceId) throw new Error('CONTROLLER_RELAY_PROVIDER_RECOVERY_EVIDENCE_REQUIRED');
+    return applyControllerRoundTransition(options, current, { type: 'provider_environment_recovered', at: nowIso(options), evidenceId });
   });
 }
 
@@ -1398,56 +1057,21 @@ export function claimStalledControllerRoundRelays(
       const stateFingerprint = fingerprintWork
         ? mechanicalStateFingerprint(options, fingerprintWork, latest.requirementId, latest.relayScopeId)
         : latest.stateFingerprint;
-      if (latestRepeatedStateBlocked && stateFingerprint === latest.stateFingerprint) return undefined;
-      const resumesUndispatchedRound = latest.status === 'pending_release' || latest.status === 'dispatching';
-      const roundCount = latest.roundCount + (resumesUndispatchedRound ? 0 : 1);
-      const repeatedStateCount = resumesUndispatchedRound
-        ? latest.repeatedStateCount
-        : latest.stateFingerprint === stateFingerprint ? latest.repeatedStateCount + 1 : 0;
-      let blockedReason: string | undefined;
-      if (roundCount > latest.maxRounds) blockedReason = `round_budget_exhausted:${roundCount}>${latest.maxRounds}`;
-      else if (repeatedStateCount >= latest.maxRepeatedState) blockedReason = `repeated_state:${repeatedStateCount}>=${latest.maxRepeatedState}`;
-
       const at = new Date(nowMs).toISOString();
-      const recovered: ControllerRoundRelayRecord = {
-        ...latest,
-        // Re-dispatching an already dispatched/claimed round creates a new
-        // controller epoch. Retrying an in-flight dispatch keeps its capability.
-        authorityId: blockedReason
-          ? latest.authorityId
-          : latest.status === 'dispatching' && latest.authorityId
-            ? latest.authorityId
-            : newControllerRoundAuthorityId(),
-        status: blockedReason ? 'blocked' : 'dispatching',
-        ...(blockedReason ? {} : { lifecycleStage: 'dispatching' as const }),
-        stateFingerprint,
-        roundCount,
-        repeatedStateCount,
-        lastError: latestRepeatedStateBlocked
-          ? undefined
-          : latest.nextRecoveryAt
-            ? latest.lastError
-            : latest.status === 'pending_release'
-              ? 'CONTROLLER_RELAY_RELEASE_TRANSITION_INCOMPLETE'
-              : latest.status === 'dispatching'
-                ? 'CONTROLLER_RELAY_DISPATCH_TRANSITION_INCOMPLETE'
-                : latest.status === 'claimed' ? 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED' : 'CONTROLLER_RELAY_ROUND_UNCLOSED',
-        reason: latestRepeatedStateBlocked ? 'semantic_state_changed_after_repeated_state_block' : latest.reason,
-        nextRecoveryAt: undefined,
-        claimedAt: undefined,
-        ...(blockedReason ? { blockedReason } : { blockedReason: undefined }),
-        updatedAt: at,
-      };
-      writeControlPlaneRecord(options.controllerHome, {
-        namespace: NAMESPACE,
-        scope: options.repoId,
-        key: latest.originWorkId,
-        schemaVersion: SCHEMA_VERSION,
-        value: recovered,
-        action: blockedReason ? 'controller_round_relay_stalled_blocked' : 'controller_round_relay_stalled_recovery_begin',
-        expectedRevision: currentRecord.revision,
+      const lastError = latestRepeatedStateBlocked
+        ? undefined
+        : latest.nextRecoveryAt
+          ? latest.lastError
+          : latest.status === 'pending_release'
+            ? 'CONTROLLER_RELAY_RELEASE_TRANSITION_INCOMPLETE'
+            : latest.status === 'dispatching'
+              ? 'CONTROLLER_RELAY_DISPATCH_TRANSITION_INCOMPLETE'
+              : latest.status === 'claimed' ? 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED' : 'CONTROLLER_RELAY_ROUND_UNCLOSED';
+      const recovered = applyControllerRoundTransition(options, currentRecord, {
+        type: 'stalled_round_observed', at, stateFingerprint, proposedAuthorityId: newControllerRoundAuthorityId(),
+        ...(lastError ? { lastError } : {}),
       });
-      return blockedReason ? undefined : recovered;
+      return recovered.status === 'dispatching' ? recovered : undefined;
     });
     if (next) claimed.push(next);
   }
