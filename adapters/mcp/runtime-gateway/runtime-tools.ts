@@ -1510,9 +1510,10 @@ async function finalizeFacadeWorkHandle(
     ?? recoverTerminalWorkHandle(ctx.controllerHome, repository.repoId, workId);
   if (!handle) return undefined;
   const session = bindFacadeExecutionSession(ctx, repository, handle, args);
-  const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
+  const explicitTargetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
     ? args.target_branch.trim()
-    : repository.defaultBranch || 'main';
+    : undefined;
+  const targetBranch = resolveWorkDeliveryTargetBranch(handle, repository.defaultBranch, explicitTargetBranch);
   const common = {
     session_id: session.sessionId,
     repo_id: repository.repoId,
@@ -5679,12 +5680,32 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_CONTROLLER_CLAIM_REQUIRED: ${workId}`);
               }
               const historicalHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
+              const explicitTargetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
+                ? args.target_branch.trim()
+                : undefined;
+              const reconciliationTargetBranch = historicalHandle
+                ? resolveWorkDeliveryTargetBranch(historicalHandle, repository.defaultBranch, explicitTargetBranch)
+                : explicitTargetBranch || repository.defaultBranch || 'main';
               if (historicalHandle?.managedWorktree) {
                 const managedCleanupComplete = historicalHandle.finalization.merge === 'done'
                   && historicalHandle.finalization.branchCleanup === 'done'
                   && historicalHandle.finalization.worktreeCleanup === 'done'
                   && !existsSync(historicalHandle.worktreePath);
-                if (!managedCleanupComplete) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_MANAGED_CLEANUP_REQUIRED: ${workId}`);
+                if (!managedCleanupComplete) {
+                  let managedCheckout: ReturnType<typeof selectRepositoryCheckout>;
+                  try {
+                    managedCheckout = selectRepositoryCheckout(repository, historicalHandle.checkoutId, { allowArchived: true });
+                  } catch {
+                    throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_MANAGED_CLEANUP_REQUIRED: ${workId}`);
+                  }
+                  const managedStatus = repositoryGitStatus(managedCheckout);
+                  const targetRevision = String(args.reconcile_target_revision ?? '').trim();
+                  const exactCleanCandidate = existsSync(historicalHandle.worktreePath)
+                    && managedStatus.clean
+                    && managedStatus.head === targetRevision
+                    && historicalHandle.expectedHead?.trim() === targetRevision;
+                  if (!exactCleanCandidate) throw new Error(`DIRECT_EDIT_WORK_RECONCILIATION_MANAGED_CLEANUP_REQUIRED: ${workId}`);
+                }
               }
               const reconciliation = acceptReviewedDirectEditWorkReconciliation({
                 controllerHome: ctx.controllerHome,
@@ -5692,7 +5713,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 checkoutId: before.checkoutId ?? repository.activeCheckoutId,
                 repoRoot: repository.canonicalRoot,
                 workId,
-                targetBranch: typeof args.target_branch === 'string' && args.target_branch.trim() ? args.target_branch.trim() : repository.defaultBranch || 'main',
+                targetBranch: reconciliationTargetBranch,
                 targetRevision: String(args.reconcile_target_revision ?? ''),
                 comparedPaths: Array.isArray(args.reconcile_compared_paths) ? args.reconcile_compared_paths.map(String) : [],
                 reviewer: identity.principalId,
@@ -5706,7 +5727,12 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 const delivered = historicalHandle.state === 'committed' || historicalHandle.state === 'merged' || historicalHandle.state === 'failed_terminal_cleanup'
                   ? historicalHandle
                   : transitionWorkHandle(ctx.controllerHome, historicalHandle, 'committed', { expectedHead: reconciliation.receipt.targetRevision, finalization, failureReason: undefined });
-                transitionWorkHandle(ctx.controllerHome, delivered, 'cleaned', { expectedHead: reconciliation.receipt.targetRevision, finalization, failureReason: undefined });
+                // Managed reconciliation records semantic delivery first, then lets the
+                // ordinary terminal cleanup authority remove the exact clean checkout.
+                // Marking it cleaned here would skip the only physical cleanup path.
+                if (!historicalHandle.managedWorktree) {
+                  transitionWorkHandle(ctx.controllerHome, delivered, 'cleaned', { expectedHead: reconciliation.receipt.targetRevision, finalization, failureReason: undefined });
+                }
               }
               const released = releaseObservedControllerSession(store, {
                 workId,
@@ -5848,14 +5874,17 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           // plus a later stabilization soak), so finalize must never synthesize semantic
           // Plan acceptance. Only the explicit plan_accept_step operation may promote a
           // validating step to completed after the Controller reviews all criteria.
+          const completedHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
           const lifecycleClosed = Boolean(completed?.completionReceipt)
-            && (!readWorkHandle(ctx.controllerHome, repository.repoId, workId)
-              || readWorkHandle(ctx.controllerHome, repository.repoId, workId)?.finalization.worktreeCleanup !== 'pending');
+            && (!completedHandle || completedHandle.finalization.worktreeCleanup !== 'pending');
           let blockerResolutionOccurrences: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> = [];
           if (lifecycleClosed && facade.status === 'ok') {
-            const targetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
+            const explicitTargetBranch = typeof args.target_branch === 'string' && args.target_branch.trim()
               ? args.target_branch.trim()
-              : repository.defaultBranch || 'main';
+              : undefined;
+            const targetBranch = completedHandle
+              ? resolveWorkDeliveryTargetBranch(completedHandle, repository.defaultBranch, explicitTargetBranch)
+              : explicitTargetBranch || repository.defaultBranch || 'main';
             const targetStatus = repositoryGitStatus(repository);
             if (targetStatus.clean && targetStatus.branch === targetBranch && targetStatus.head) {
               blockerResolutionOccurrences = await triggerWorkContinuationRepositoryEvent(

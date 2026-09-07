@@ -689,7 +689,11 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
   }
 
   await settleProcesses(input, receipt);
-  assertNoOtherLiveWork(input, receipt);
+  // The selected/current repository checkout is shared infrastructure, not a
+  // disposable Work-owned resource. Other live Works may legitimately share it;
+  // only a managed Work checkout requires exclusive lifecycle ownership before
+  // physical removal.
+  if (current.managedWorktree) assertNoOtherLiveWork(input, receipt);
   current = persist(input.controllerHome, current, receipt);
   if (receipt.blockers.length > 0) return { handle: current, receipt };
 
