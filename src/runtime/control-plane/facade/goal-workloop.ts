@@ -1036,8 +1036,8 @@ export function startGoalWorkloop(
   const effectiveChecks = planStep?.checks ?? input.checks ?? [];
   const normalized = normalizeCheckIds(effectiveChecks, available);
   const invalidLineageWork = activeAdmissionSnapshot.invalid.find((candidate) =>
-    (resolvedPlanId && resolvedPlanStepId && candidate.planId === resolvedPlanId && candidate.planStepId === resolvedPlanStepId)
-    || (effectiveRequirementId && candidate.requirementId === effectiveRequirementId));
+    (input.relatedWorkId && candidate.workId === input.relatedWorkId)
+    || (resolvedPlanId && resolvedPlanStepId && candidate.planId === resolvedPlanId && candidate.planStepId === resolvedPlanStepId));
   if (invalidLineageWork) {
     return buildFacadeResult({
       status: 'blocked',
@@ -1073,18 +1073,19 @@ export function startGoalWorkloop(
     : [];
   const explicitPlanStepWork = planStep?.workId ? activeWorks.find((candidate) => candidate.workId === planStep.workId) : undefined;
   const planStepWork = explicitPlanStepWork ?? (boundPlanStepWorks.length === 1 ? boundPlanStepWorks[0] : undefined);
-  const requirementWorks = effectiveRequirementId
-    ? activeWorks.filter((candidate) => candidate.requirementId === effectiveRequirementId)
-    : [];
+  // Requirement membership is portfolio ownership, not semantic Work identity.
+  // Only an explicit related Work or the exact bound Plan step may select an
+  // existing Work authority. Siblings under one Requirement remain unrelated
+  // for semantic admission and meet only in placement/resource arbitration.
   const deterministicTarget = input.relatedWorkId
     ? explicitRelatedWork
-    : planStepWork ?? (requirementWorks.length === 1 ? requirementWorks[0] : undefined);
+    : planStepWork;
   const requestedRelation = input.workRelation ?? (input.modeInput.requiresParallelism === true ? 'parallel' : undefined);
   // Only strong semantic bindings participate in ownership resolution. An
   // unrelated active Work or a checkout writer is a placement fact, not a
   // semantic candidate for continue/extend/parallel/new_goal.
   const candidateWorks = [...new Map(
-    [explicitRelatedWork, planStepWork, ...boundPlanStepWorks, ...requirementWorks]
+    [explicitRelatedWork, planStepWork, ...boundPlanStepWorks]
       .filter((candidate): candidate is WorkContract => Boolean(candidate))
       .map((candidate) => [candidate.workId, candidate]),
   ).values()].slice(0, 8);
@@ -1189,7 +1190,7 @@ export function startGoalWorkloop(
 
   if ((requestedRelation === 'continue' || requestedRelation === 'extend') && !terminalContinuationSource) {
     if (!deterministicTarget) {
-      return resolutionRequired(`${requestedRelation.toUpperCase()}_TARGET_REQUIRED: select related_work_id or bind the request to an active Plan/Requirement before execution.`);
+      return resolutionRequired(`${requestedRelation.toUpperCase()}_TARGET_REQUIRED: select related_work_id or bind the request to an exact active Plan step before execution.`);
     }
     if (requestedRelation === 'extend' && deterministicTarget.planId) {
       return resolutionRequired(

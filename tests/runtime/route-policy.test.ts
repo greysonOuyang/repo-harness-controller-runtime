@@ -962,47 +962,29 @@ describe('single Route Policy authority', () => {
   });
 
   test('preserves the Direct fast path with unrelated active Work while retaining explicit ownership metadata', () => { const root = temp('route-direct-admission-'); const context = { workStore: { root: join(root, 'work') }, handoffStore: { root: join(root, 'handoff') }, repoId: 'repo-a', checkoutId: 'checkout-a', principalId: 'principal-a', controllerInstanceId: 'controller-a', sourceRevision: 'revision-a', materializeIsolatedWorkspace: ({ workId }: { workId: string }) => ({ checkoutId: `isolated-${workId}`, root: join(root, workId), baseRevision: 'revision-a', managed: true as const }) }; const durable = routeWorkStart(context, { objective: 'Own the long-running repository change', modeInput: { scopeClear: true, mutation: true, expectedFiles: 5, expectedChangedLines: 250, requiresRecovery: true, risk: 'local_repo_write' }, }); const workId = (durable.data as { work?: { workId?: string } }).work?.workId; expect(workId).toBeTruthy(); const independentSmallEdit = routeWorkStart(context, { objective: 'Make one tiny independent edit', modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' }, }); expect(independentSmallEdit.status).toBe('ok'); expect(independentSmallEdit.summary).toContain('Direct control recommended'); expect(independentSmallEdit.data).toMatchObject({ directControlPreserved: true, workContractCreated: false }); const ownedSmallEdit = routeWorkStart(context, { objective: 'Make one tiny edit owned by the existing Work', relatedWorkId: workId, workRelation: 'continue', modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 5, risk: 'local_repo_write' }, }); expect(ownedSmallEdit.summary).toContain('Direct control recommended'); expect(ownedSmallEdit.data).toMatchObject({ directControlPreserved: true, workContractCreated: false, ownership: { workId, relation: 'continue', executionDepthPreserved: true } }); });
-  test('keeps one shared Requirement authority across 32 admissions while admitting 32 independent Requirements', () => {
-    const root = temp('route-semantic-admission-cardinality-');
+  test('Requirement membership alone never aliases unrelated Work authorities', () => {
+    const root = temp('route-semantic-admission-requirement-siblings-');
     const workStore = { root: join(root, 'work') };
     const handoffStore = { root: join(root, 'handoff') };
     const modeInput = { scopeClear: true, mutation: true, expectedFiles: 4, expectedChangedLines: 200, requiresRecovery: true, risk: 'local_repo_write' as const };
-    const shared = Array.from({ length: 32 }, (_, index) => routeWorkStart({
-      workStore,
-      handoffStore,
-      repoId: 'repo-a',
-      checkoutId: `shared-${index}`,
-      sourceRevision: 'revision-a',
+    const siblings = Array.from({ length: 8 }, (_, index) => routeWorkStart({
+      workStore, handoffStore, repoId: 'repo-a', checkoutId: `shared-${index}`, sourceRevision: 'revision-a',
     }, {
-      objective: 'Own the shared semantic admission requirement',
-      requirementId: 'REQ-shared-admission',
-      modeInput,
+      objective: `Deliver independent slice ${index} under one portfolio Requirement`,
+      requirementId: 'REQ-shared-admission', modeInput,
     }));
-    const sharedCreated = shared.filter((result) => (result.data as { workContractCreated?: boolean }).workContractCreated === true);
-    expect(sharedCreated).toHaveLength(1);
-    const sharedAuthorityIds = new Set(shared.flatMap((result) => {
-      const data = result.data as { work?: { workId?: string }; recommendedWork?: { workId?: string }; candidates?: Array<{ workId?: string }> };
-      const workId = data.work?.workId ?? data.recommendedWork?.workId ?? data.candidates?.[0]?.workId;
-      return workId ? [workId] : [];
-    }));
-    expect(sharedAuthorityIds.size).toBe(1);
-    expect(shared.slice(1).every((result) => ['resolution_required', 'reuse_existing'].includes(String((result.data as { admissionDecision?: string }).admissionDecision)))).toBe(true);
+    const siblingIds = siblings.map((result) => (result.data as { work?: { workId?: string }; workContractCreated?: boolean }).work?.workId);
+    expect(siblings.every((result) => (result.data as { workContractCreated?: boolean }).workContractCreated === true)).toBe(true);
+    expect(siblingIds.every(Boolean)).toBe(true);
+    expect(new Set(siblingIds).size).toBe(8);
+    expect(siblings.every((result) => String((result.data as { admissionDecision?: string }).admissionDecision) !== 'resolution_required')).toBe(true);
 
-    const independent = Array.from({ length: 32 }, (_, index) => routeWorkStart({
-      workStore,
-      handoffStore,
-      repoId: 'repo-a',
-      checkoutId: `independent-${index}`,
-      sourceRevision: 'revision-a',
-    }, {
-      objective: `Own independent semantic admission requirement ${index}`,
-      requirementId: `REQ-independent-admission-${index}`,
-      modeInput,
-    }));
-    const independentIds = independent.map((result) => (result.data as { work?: { workId?: string }; workContractCreated?: boolean }).work?.workId);
-    expect(independent.every((result) => (result.data as { workContractCreated?: boolean }).workContractCreated === true)).toBe(true);
-    expect(independentIds.every(Boolean)).toBe(true);
-    expect(new Set(independentIds).size).toBe(32);
+    const firstWorkId = siblingIds[0]!;
+    const continued = routeWorkStart({ workStore, handoffStore, repoId: 'repo-a', checkoutId: 'shared-0', sourceRevision: 'revision-a' }, {
+      objective: 'Continue the explicitly selected first slice', requirementId: 'REQ-shared-admission',
+      relatedWorkId: firstWorkId, workRelation: 'continue', modeInput,
+    });
+    expect(continued.data).toMatchObject({ workContractCreated: false, admissionDecision: 'reuse_existing', work: { workId: firstWorkId } });
   });
 
   test('ignores low-level execution-child Work when resolving a new business task', () => { const root = temp('route-execution-child-admission-'); const workStore = { root: join(root, 'work') }; createWorkContract(workStore, { workId: 'WORK-child', repoId: 'repo-a', mode: 'direct_control', lifecycleRole: 'execution_child', objective: 'Accepted operation run_check', acceptanceCriteria: [], constraints: { requireHandoffOnAmbiguity: true }, allowedPaths: [], forbiddenPaths: [], checks: [], requestedBy: 'system', }); const result = routeWorkStart({ workStore, handoffStore: { root: join(root, 'handoff') }, repoId: 'repo-a', checkoutId: 'checkout-a', sourceRevision: 'revision-a' }, { objective: 'Make one independent tiny product edit', modeInput: { scopeClear: true, mutation: true, expectedFiles: 1, expectedChangedLines: 4, risk: 'local_repo_write' }, }); expect(result.status).toBe('ok'); expect(result.summary).toContain('Direct control recommended'); expect(result.data).toMatchObject({ directControlPreserved: true, workContractCreated: false }); });

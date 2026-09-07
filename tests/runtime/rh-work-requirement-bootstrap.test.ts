@@ -203,19 +203,29 @@ describe('rh_work Requirement bootstrap', () => {
 
     const successor = structured(await callRuntimeTool(ctx, 'rh_work', successorArgs));
     expect(successor.status).toBe('ok');
-    expect(successor.data.planContractCreated).toBe(true);
-    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)?.status).toBe('superseded');
-    const successorBeforeRepair = getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)!;
-    expect(successorBeforeRepair).toMatchObject({
-      status: 'draft',
-      supersedes: [predecessorPlanId],
+    expect(successor.summary).toContain('PLAN_REVISION_REUSED_AUTHORITY');
+    expect(successor.data).toMatchObject({
+      planContractCreated: false,
+      admissionDecision: 'reuse_existing',
+      plan: { planId: predecessorPlanId },
     });
-    expect(successorBeforeRepair.obligationDispositions).toHaveLength(obligations.length);
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)).toBeUndefined();
+    const stagedBeforeRepair = getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)!;
+    expect(stagedBeforeRepair).toMatchObject({
+      planId: predecessorPlanId,
+      revision: 1,
+      status: 'replanning',
+      pendingRevision: {
+        revision: 2,
+        requestedRevisionLabel: successorPlanId,
+      },
+    });
+    expect(stagedBeforeRepair.pendingRevision?.obligationDispositions).toHaveLength(obligations.length);
 
     const repaired = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'repair',
-      plan_id: successorPlanId,
+      plan_id: predecessorPlanId,
       repair_operation: 'repair',
       dry_run: false,
       plan_steps: [{
@@ -225,19 +235,20 @@ describe('rh_work Requirement bootstrap', () => {
     }));
     expect(repaired.status).toBe('ok');
     expect(repaired.data.repaired).toBe(true);
-    const successorAfterRepair = getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)!;
-    expect(successorAfterRepair.planId).toBe(successorPlanId);
-    expect(successorAfterRepair.supersedes).toEqual([predecessorPlanId]);
-    expect(successorAfterRepair.obligationDispositions).toEqual(successorBeforeRepair.obligationDispositions);
-    expect(successorAfterRepair.steps[0]?.acceptanceCriteria).toContain('Draft repair preserves predecessor continuity.');
+    const stagedAfterRepair = getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)!;
+    expect(stagedAfterRepair.planId).toBe(predecessorPlanId);
+    expect(stagedAfterRepair.pendingRevision?.requestedRevisionLabel).toBe(successorPlanId);
+    expect(stagedAfterRepair.pendingRevision?.obligationDispositions).toEqual(stagedBeforeRepair.pendingRevision?.obligationDispositions);
+    expect(stagedAfterRepair.pendingRevision?.steps[0]?.acceptanceCriteria).toContain('Draft repair preserves predecessor continuity.');
 
     const approvedSuccessor = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'plan_approve',
-      plan_id: successorPlanId,
+      plan_id: predecessorPlanId,
     }));
     expect(approvedSuccessor.status).toBe('ok');
-    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)?.status).toBe('approved');
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)).toMatchObject({ planId: predecessorPlanId, revision: 2, status: 'approved' });
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)).toBeUndefined();
 
     const conflictingNativeField = structured(await callRuntimeTool(ctx, 'rh_work', {
       ...successorArgs,
@@ -300,9 +311,15 @@ describe('rh_work Requirement bootstrap', () => {
       objective: 'Recovered successor Plan.', plan_relation: 'extend', related_plan_id: predecessorPlanId, plan_steps: [step],
     }));
     expect(successor.status).toBe('ok');
-    expect(successor.data.planContractCreated).toBe(true);
-    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)).toMatchObject({ status: 'superseded', supersededBy: successorPlanId });
-    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)).toMatchObject({ status: 'draft', supersedes: [predecessorPlanId] });
+    expect(successor.summary).toContain('PLAN_REVISION_REUSED_AUTHORITY');
+    expect(successor.data).toMatchObject({ planContractCreated: false, admissionDecision: 'reuse_existing', plan: { planId: predecessorPlanId } });
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, predecessorPlanId)).toMatchObject({
+      planId: predecessorPlanId,
+      revision: 1,
+      status: 'replanning',
+      pendingRevision: { revision: 2, requestedRevisionLabel: successorPlanId },
+    });
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, successorPlanId)).toBeUndefined();
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, unrelatedPlanId)?.status).toBe('draft');
     expect(getPlanContract({ controllerHome, repoId: repository.repoId }, unrelatedPlanId)?.supersededBy).toBeUndefined();
   }, 15_000);
@@ -578,7 +595,7 @@ describe('rh_work Requirement bootstrap', () => {
     }));
     expect(diagnosed.status).toBe('ok');
     expect(diagnosed.summary).toContain('PLAN_WORK_SCOPE_REPLAN_AVAILABLE');
-    expect(diagnosed.data).toMatchObject({ boundWorkId: 'work-active-scope', successorPlanId: 'PLAN-ACTIVE-SCOPE-R2', repaired: false, reusedExistingWork: true });
+    expect(diagnosed.data).toMatchObject({ boundWorkId: 'work-active-scope', requestedRevisionLabel: 'PLAN-ACTIVE-SCOPE-R2', repaired: false, reusedExistingWork: true });
     expect(diagnosed.data.requestedAllowedPaths).toEqual(['src/**', 'src/runtime/context/**']);
 
     const repaired = structured(await callRuntimeTool(ctx, 'rh_work', {
@@ -594,13 +611,15 @@ describe('rh_work Requirement bootstrap', () => {
       reason: 'Current-source evidence proved the active Plan omitted a path required by its own accepted scope.',
     }));
     expect(repaired.status).toBe('ok');
+    expect(repaired.summary).toContain('PLAN-ACTIVE-SCOPE-R1 r2');
     expect(repaired.data).toMatchObject({ repaired: true, replacementWorkCreated: false, reusedExistingWork: true });
-    expect(repaired.data.predecessor).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', status: 'superseded' });
-    expect(repaired.data.successor).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R2', status: 'executing' });
+    expect(repaired.data.priorPlan).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', revision: 1, status: 'executing' });
+    expect(repaired.data.currentPlan).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', revision: 2, status: 'executing' });
     expect(repaired.data.work).toMatchObject({ workId: 'work-active-scope', status: 'running' });
-    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R1')?.supersededBy).toBe('PLAN-ACTIVE-SCOPE-R2');
-    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R2')?.steps[0]).toMatchObject({ workId: 'work-active-scope', allowedPaths: ['src/**', 'src/runtime/context/**'] });
-    expect(getWorkContract(store, 'work-active-scope')).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R2', allowedPaths: ['src/**', 'src/runtime/context/**'], checks: ['package:check:type'] });
+    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R1')).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', revision: 2, status: 'executing' });
+    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R2')).toBeUndefined();
+    expect(getPlanContract(store, 'PLAN-ACTIVE-SCOPE-R1')?.steps[0]).toMatchObject({ workId: 'work-active-scope', allowedPaths: ['src/**', 'src/runtime/context/**'] });
+    expect(getWorkContract(store, 'work-active-scope')).toMatchObject({ planId: 'PLAN-ACTIVE-SCOPE-R1', allowedPaths: ['src/**', 'src/runtime/context/**'], checks: ['package:check:type'] });
   }, 15_000);
 
   test('repairs a malformed draft Plan in place through rh_work without creating a second authority', async () => {

@@ -2510,13 +2510,17 @@ async function runFacadeRepair(
       const facade = buildFacadeResult({ status: 'not_found', summary: `PlanContract ${planId} not found.`, data: { operation: repairOperation, dryRun, planId, repaired: false } });
       return result(facade as unknown as Record<string, unknown>, true);
     }
-    if (plan.status !== 'draft') {
+    const pendingRevision = plan.status === 'replanning' ? plan.pendingRevision : undefined;
+    if (plan.status !== 'draft' && !pendingRevision) {
       const facade = buildFacadeResult({ status: 'blocked', summary: `PLAN_DRAFT_REPAIR_STATUS_INVALID: ${plan.planId}:${plan.status}`, data: { operation: repairOperation, dryRun, planId, repaired: false } });
       return result(facade as unknown as Record<string, unknown>, true);
     }
+    const repairBase = pendingRevision ?? plan;
     if (repairOperation !== 'repair' || dryRun) {
       const facade = buildFacadeResult({
-        summary: `PlanContract ${plan.planId} is a draft. Exact in-place repair is available; the Plan identity and Requirement authority are preserved and only a fully valid draft may be persisted.`,
+        summary: pendingRevision
+          ? `PlanContract ${plan.planId} has staged revision r${pendingRevision.revision}. Exact in-place revision repair is available; stable Plan identity and committed revision remain authoritative until approval.`
+          : `PlanContract ${plan.planId} is a draft. Exact in-place repair is available; the Plan identity and Requirement authority are preserved and only a fully valid draft may be persisted.`,
         data: { operation: repairOperation, dryRun, plan: summarizePlanContract(plan), repaired: false, repairRequired: true },
         suggestedNextActions: [{ label: 'Repair this exact draft Plan', tool: 'rh_work', operation: 'repair', payload: { plan_id: plan.planId, repair_operation: 'repair', dry_run: false }, risk: 'workspace_write', confidence: 'high' }],
       });
@@ -2524,7 +2528,7 @@ async function runFacadeRepair(
     }
     const rawSteps = Array.isArray(args.plan_steps)
       ? args.plan_steps
-      : plan.steps.map((step) => ({
+      : repairBase.steps.map((step) => ({
           id: step.id, objective: step.objective, dependencies: step.dependencies, authoritative_files: step.authoritativeFiles,
           allowed_paths: step.allowedPaths, forbidden_paths: step.forbiddenPaths, check_ids: step.checks, acceptance_criteria: step.acceptanceCriteria,
         }));
@@ -2553,21 +2557,21 @@ async function runFacadeRepair(
     }
     try {
       const repaired = await repairDraftPlanContractAsync(store, planId, {
-        expectedSourceRevision: plan.sourceRevision,
+        expectedSourceRevision: repairBase.sourceRevision,
         scopeKey: typeof args.scope_key === 'string' ? args.scope_key : plan.scopeKey,
-        sourceRevision: typeof args.source_revision === 'string' ? args.source_revision : plan.sourceRevision,
-        goal: typeof args.objective === 'string' ? args.objective : plan.goal,
-        nonGoals: Array.isArray(args.non_goals) ? args.non_goals.map(String) : plan.nonGoals,
-        assumptions: Array.isArray(args.assumptions) ? args.assumptions.map(String) : plan.assumptions,
-        resolvedDecisions: Array.isArray(args.resolved_decisions) ? args.resolved_decisions.map(String) : plan.resolvedDecisions,
-        stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : plan.stopConditions,
-        replanConditions: Array.isArray(args.replan_conditions) ? args.replan_conditions.map(String) : plan.replanConditions,
-        integrationStrategy: typeof args.integration_strategy === 'string' ? args.integration_strategy : plan.integrationStrategy,
-        obligationDispositions: planObligationDispositionsFromArgs(args.obligation_dispositions) ?? plan.obligationDispositions,
+        sourceRevision: typeof args.source_revision === 'string' ? args.source_revision : repairBase.sourceRevision,
+        goal: typeof args.objective === 'string' ? args.objective : repairBase.goal,
+        nonGoals: Array.isArray(args.non_goals) ? args.non_goals.map(String) : repairBase.nonGoals,
+        assumptions: Array.isArray(args.assumptions) ? args.assumptions.map(String) : repairBase.assumptions,
+        resolvedDecisions: Array.isArray(args.resolved_decisions) ? args.resolved_decisions.map(String) : repairBase.resolvedDecisions,
+        stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : repairBase.stopConditions,
+        replanConditions: Array.isArray(args.replan_conditions) ? args.replan_conditions.map(String) : repairBase.replanConditions,
+        integrationStrategy: typeof args.integration_strategy === 'string' ? args.integration_strategy : repairBase.integrationStrategy,
+        obligationDispositions: planObligationDispositionsFromArgs(args.obligation_dispositions) ?? repairBase.obligationDispositions,
         steps,
       });
       const facade = buildFacadeResult({
-        summary: `PlanContract ${repaired.planId} draft repaired in place; identity and Requirement authority were preserved.`,
+        summary: pendingRevision ? `PlanContract ${repaired.planId} staged revision repaired in place; stable Plan identity and committed authority were preserved.` : `PlanContract ${repaired.planId} draft repaired in place; identity and Requirement authority were preserved.`,
         data: { operation: repairOperation, dryRun: false, plan: summarizePlanContract(repaired), repaired: true, replacementPlanCreated: false },
         suggestedNextActions: [{ label: 'Approve reviewed plan', tool: 'rh_work', operation: 'plan_approve', payload: { plan_id: repaired.planId }, risk: 'workspace_write', confidence: 'medium' }],
       });
@@ -2617,26 +2621,26 @@ async function runFacadeRepair(
           return result(facade as unknown as Record<string, unknown>, true);
         }
       }
-      const successorPlanId = typeof args.superseded_by === 'string' ? args.superseded_by.trim() : '';
+      const requestedRevisionLabel = typeof args.superseded_by === 'string' ? args.superseded_by.trim() : '';
       const requestedAllowedPaths = Array.isArray(args.allowed_paths)
         ? [...new Set([...step.allowedPaths, ...args.allowed_paths.map(String).map((value) => value.trim()).filter(Boolean)])]
         : step.allowedPaths;
-      const scopeReplanRequested = Boolean(successorPlanId) || requestedAllowedPaths.length > step.allowedPaths.length;
+      const scopeReplanRequested = Boolean(requestedRevisionLabel) || requestedAllowedPaths.length > step.allowedPaths.length;
       if (scopeReplanRequested) {
         const requestedSourceRevision = typeof args.source_revision === 'string' ? args.source_revision.trim() : '';
-        if (!successorPlanId || !requestedSourceRevision || requestedAllowedPaths.length === step.allowedPaths.length) {
+        if (!requestedRevisionLabel || !requestedSourceRevision || requestedAllowedPaths.length === step.allowedPaths.length) {
           const facade = buildFacadeResult({
             status: 'blocked',
             summary: 'PLAN_WORK_SCOPE_REPLAN_INPUT_REQUIRED: superseded_by, source_revision, and at least one new allowed_paths entry are required for an active Plan-bound Work scope replan.',
-            data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, repaired: false, successorPlanId: successorPlanId || undefined, requestedSourceRevision: requestedSourceRevision || undefined, requestedAllowedPaths },
+            data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, repaired: false, requestedRevisionLabel: requestedRevisionLabel || undefined, requestedSourceRevision: requestedSourceRevision || undefined, requestedAllowedPaths },
           });
           return result(facade as unknown as Record<string, unknown>, true);
         }
         if (repairOperation !== 'repair' || dryRun) {
           const facade = buildFacadeResult({
-            summary: `PLAN_WORK_SCOPE_REPLAN_AVAILABLE: ${planId}/${planStepId} can atomically move exact Work ${boundWork.workId} to successor Plan ${successorPlanId} while widening only allowed-path authority.`,
-            data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, successorPlanId, requestedSourceRevision, requestedAllowedPaths, repaired: false, repairRequired: true, reusedExistingWork: true },
-            suggestedNextActions: [{ label: 'Replan exact active Work scope', tool: 'rh_work', operation: 'repair', payload: { plan_id: planId, plan_step_id: planStepId, superseded_by: successorPlanId, source_revision: requestedSourceRevision, allowed_paths: requestedAllowedPaths, repair_operation: 'repair', dry_run: false }, risk: 'workspace_write', confidence: 'high' }],
+            summary: `PLAN_WORK_SCOPE_REPLAN_AVAILABLE: ${planId}/${planStepId} can atomically move exact Work ${boundWork.workId} to stable Plan ${planId} revision label ${requestedRevisionLabel} while widening only allowed-path authority.`,
+            data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, requestedRevisionLabel, requestedSourceRevision, requestedAllowedPaths, repaired: false, repairRequired: true, reusedExistingWork: true },
+            suggestedNextActions: [{ label: 'Replan exact active Work scope', tool: 'rh_work', operation: 'repair', payload: { plan_id: planId, plan_step_id: planStepId, superseded_by: requestedRevisionLabel, source_revision: requestedSourceRevision, allowed_paths: requestedAllowedPaths, repair_operation: 'repair', dry_run: false }, risk: 'workspace_write', confidence: 'high' }],
           });
           return result(facade as unknown as Record<string, unknown>);
         }
@@ -2645,7 +2649,7 @@ async function runFacadeRepair(
             planId,
             stepId: planStepId,
             workId: boundWork.workId,
-            successorPlanId,
+            requestedRevisionLabel,
             sourceRevision: requestedSourceRevision,
             allowedPaths: requestedAllowedPaths,
             reason: typeof args.reason === 'string' && args.reason.trim()
@@ -2653,18 +2657,18 @@ async function runFacadeRepair(
               : 'Explicit Controller repair widened a frozen Plan path fence after current-source evidence proved the existing Plan contract omitted a path required by its own acceptance scope.',
           });
           const facade = buildFacadeResult({
-            summary: `Replanned ${planId}/${planStepId} to ${replanned.successor.planId} and rebound the same active Work ${replanned.work.workId} atomically; semantic acceptance and checks were not widened.`,
-            data: { operation: repairOperation, dryRun: false, predecessor: summarizePlanContract(replanned.predecessor), successor: summarizePlanContract(replanned.successor), work: summarizeWorkContract(replanned.work), repaired: true, replacementWorkCreated: false, reusedExistingWork: true },
+            summary: `Replanned ${planId}/${planStepId} as ${replanned.currentPlan.planId} r${replanned.currentPlan.revision ?? 1} and retained the same active Work ${replanned.work.workId} atomically; semantic acceptance and checks were not widened.`,
+            data: { operation: repairOperation, dryRun: false, priorPlan: summarizePlanContract(replanned.priorPlan), currentPlan: summarizePlanContract(replanned.currentPlan), work: summarizeWorkContract(replanned.work), repaired: true, replacementWorkCreated: false, reusedExistingWork: true },
           });
           return result(facade as unknown as Record<string, unknown>);
         } catch (error) {
-          const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PLAN_WORK_SCOPE_REPLAN_FAILED', data: { operation: repairOperation, dryRun: false, planId, planStepId, boundWorkId: boundWork.workId, successorPlanId, repaired: false } });
+          const facade = buildFacadeResult({ status: 'blocked', summary: error instanceof Error ? error.message : 'PLAN_WORK_SCOPE_REPLAN_FAILED', data: { operation: repairOperation, dryRun: false, planId, planStepId, boundWorkId: boundWork.workId, requestedRevisionLabel, repaired: false } });
           return result(facade as unknown as Record<string, unknown>, true);
         }
       }
       const facade = buildFacadeResult({
         status: 'blocked',
-        summary: `PLAN_STEP_BOUND_WORK_STILL_EXISTS: ${planId}/${planStepId} is bound to active Work ${boundWork.workId}; continue that exact Work, or explicitly request a scope-only successor Plan replan instead of replacing the Work.`,
+        summary: `PLAN_STEP_BOUND_WORK_STILL_EXISTS: ${planId}/${planStepId} is bound to active Work ${boundWork.workId}; continue that exact Work, or explicitly request a scope-only stable Plan revision instead of replacing the Work.`,
         data: { operation: repairOperation, dryRun, planId, planStepId, boundWorkId: boundWork.workId, repaired: false, repairRequired: false },
         suggestedNextActions: [{ label: 'Continue existing Work', tool: 'rh_work', operation: 'continue', payload: { work_id: boundWork.workId }, risk: 'readonly', confidence: 'high' }],
       });
@@ -5112,21 +5116,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   });
                   return result(facade as unknown as Record<string, unknown>);
                 }
-                if (admission.reason === 'requirement_relation_required') {
-                  const facade = buildFacadeResult({
-                    summary: `PLAN_RELATION_RESOLUTION_REQUIRED: Requirement ${requestedRequirementId} already has ${admission.candidates.length} active Plan slice(s). Decide whether this scope extends one of them or is an intentional parallel slice before creating a draft.`,
-                    data: {
-                      executionStarted: false,
-                      planContractCreated: false,
-                      admissionDecision: 'resolution_required',
-                      resolutionRequired: true,
-                      candidates: admission.candidates.map(summarizePlanContract),
-                      allowedPlanRelations: admission.allowedPlanRelations ?? ['extend', 'parallel'],
-                    },
-                    suggestedNextActions: admission.candidates.slice(0, 3).map((candidate) => ({ label: `Read ${candidate.planId}`, tool: 'rh_work', operation: 'plan_get', payload: { plan_id: candidate.planId }, risk: 'readonly' as const, confidence: 'high' as const })),
-                  });
-                  return result(facade as unknown as Record<string, unknown>);
-                }
                 if (admission.reason === 'extension_target_required') {
                   const facade = buildFacadeResult({
                     summary: `PLAN_EXTENSION_TARGET_REQUIRED: select related_plan_id from the active Plan slices for Requirement ${requestedRequirementId}.`,
@@ -5135,9 +5124,9 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   return result(facade as unknown as Record<string, unknown>);
                 }
                 if (admission.reason === 'extend_existing' && admission.plan) {
-                  // plan_create + plan_relation=extend is the atomic serial-replan
-                  // path. Admission continues under the same lock so successor
-                  // creation and predecessor supersession are persisted together.
+                  // plan_create + plan_relation=extend is a compatibility transport
+                  // for revising the explicitly related stable Plan identity. Preflight
+                  // must continue into atomic admission; no successor Plan is minted.
                   return undefined;
                 }
                 throw new Error(`PLAN_ADMISSION_RESULT_INVALID: ${admission.admissionDecision}:${admission.reason}`);
@@ -5192,6 +5181,22 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   acceptanceCriteria: Array.isArray(step.acceptance_criteria) ? step.acceptance_criteria.map(String) : [],
                 })),
               });
+              if (admitted.reason === 'extend_existing' && admitted.plan) {
+                const plan = admitted.plan;
+                const requestedLabel = requestedPlanId && requestedPlanId !== plan.planId ? ` Requested compatibility plan_id ${requestedPlanId} was retained only as revision audit metadata.` : '';
+                const facade = buildFacadeResult({
+                  summary: `PLAN_REVISION_REUSED_AUTHORITY: Plan ${plan.planId} was revised in place; no successor PlanContract was created.${requestedLabel}`,
+                  data: {
+                    plan: summarizePlanContract(plan),
+                    executionStarted: false,
+                    planContractCreated: false,
+                    admissionDecision: 'reuse_existing',
+                    resolutionRequired: false,
+                  },
+                  suggestedNextActions: [{ label: 'Approve revised Plan', tool: 'rh_work', operation: 'plan_approve', payload: { plan_id: plan.planId }, risk: 'workspace_write', confidence: 'high' }],
+                });
+                return result(facade as unknown as Record<string, unknown>);
+              }
               const racedAdmissionResult = renderPlanAdmission(admitted);
               if (racedAdmissionResult) return racedAdmissionResult;
               if (!admitted.plan) throw new Error('PLAN_ADMISSION_CREATE_MISSING_PLAN');

@@ -1003,6 +1003,67 @@ export function rebindPlanBoundWorkContract(
 }
 
 /**
+ * Refresh one active Work against a newer revision of the same stable Plan.
+ * This deliberately does not change Plan identity or semantic scope. Only the
+ * source fence and an allowed-path widening may change; forbidden paths and
+ * machine checks remain exact.
+ */
+export function refreshPlanBoundWorkRevision(
+  current: WorkContract,
+  input: {
+    planId: string;
+    planStepId: string;
+    planSourceRevision: string;
+    allowedPaths: string[];
+    forbiddenPaths: string[];
+    checks: string[];
+    recordedAt: string;
+    reason: string;
+  },
+): WorkContract {
+  const canonicalCurrent = normalizeWorkContractStore({ schemaVersion: 2, updatedAt: current.updatedAt, contracts: [current] }).contracts[0]!;
+  if (isTerminalWorkContractStatus(canonicalCurrent.status) || canonicalCurrent.completionReceipt || canonicalCurrent.completionOutcome) {
+    throw new Error(`WORK_PLAN_REVISION_REFRESH_TERMINAL: ${canonicalCurrent.workId}`);
+  }
+  const planId = sanitizeFileComponent(input.planId);
+  const planStepId = sanitizeFileComponent(input.planStepId);
+  if (!planId || planId === 'unknown' || canonicalCurrent.planId !== planId || canonicalCurrent.planStepId !== planStepId) {
+    throw new Error(`WORK_PLAN_REVISION_REFRESH_SOURCE_MISMATCH: ${canonicalCurrent.workId}`);
+  }
+  const planSourceRevision = input.planSourceRevision.trim();
+  if (!planSourceRevision) throw new Error('WORK_PLAN_REVISION_REFRESH_SOURCE_REVISION_REQUIRED');
+  const allowedPaths = [...new Set(input.allowedPaths.map((value) => value.trim()).filter(Boolean))].slice(0, 50);
+  const forbiddenPaths = [...new Set(input.forbiddenPaths.map((value) => value.trim()).filter(Boolean))].slice(0, 50);
+  const checks = [...new Set(input.checks.map((value) => value.trim()).filter(Boolean))].slice(0, 30);
+  for (const path of canonicalCurrent.allowedPaths) {
+    if (!allowedPaths.includes(path)) throw new Error(`WORK_PLAN_REVISION_REFRESH_SCOPE_NARROWING_FORBIDDEN: ${path}`);
+  }
+  if (JSON.stringify(forbiddenPaths) !== JSON.stringify(canonicalCurrent.forbiddenPaths)) {
+    throw new Error('WORK_PLAN_REVISION_REFRESH_FORBIDDEN_SCOPE_CHANGE');
+  }
+  if (JSON.stringify(checks) !== JSON.stringify(canonicalCurrent.checks)) {
+    throw new Error('WORK_PLAN_REVISION_REFRESH_CHECK_CHANGE');
+  }
+  const reason = input.reason.trim().slice(0, 1_000);
+  if (!reason) throw new Error('WORK_PLAN_REVISION_REFRESH_REASON_REQUIRED');
+  const evidenceRefs = [{
+    title: 'Plan revision refreshed Work authority',
+    summary: `${planId}@${canonicalCurrent.planSourceRevision ?? 'unknown'} -> ${planId}@${planSourceRevision}: ${reason}`,
+    detailLevel: 'summary' as const,
+  }, ...canonicalCurrent.evidenceRefs].slice(0, canonicalCurrent.evidencePolicy.maxEvidenceRefs);
+  const next = validateWorkSemantics({
+    ...canonicalCurrent,
+    planSourceRevision,
+    allowedPaths,
+    forbiddenPaths,
+    checks,
+    evidenceRefs,
+    updatedAt: input.recordedAt,
+  });
+  return validateWorkSemanticTransition(canonicalCurrent, next);
+}
+
+/**
  * Retire technical Work authority when its owning Plan is no longer current.
  *
  * This is authority retirement, not history deletion. The cancelled Work and
