@@ -34,7 +34,7 @@ import {
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { buildChatgptControllerRoundPrompt } from '../../adapters/chatgpt/controller-round-host';
-import { continueChatgptControllerRoundFromSource, openChatgptControllerRoundFromSource, SOURCE_ROUND_CONTINUATION_INSTRUCTION } from '../../src/runtime/control-plane/launcher/chatgpt-round-continuation';
+import { closeChatgptControllerRoundFromSource, continueChatgptControllerRoundFromSource, openChatgptControllerRoundFromSource, SOURCE_ROUND_CONTINUATION_INSTRUCTION } from '../../src/runtime/control-plane/launcher/chatgpt-round-continuation';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { awaitExternalControllerWake, classifyChatgptWakeFailure, evaluateSchedule, externalControllerWakeTimeoutMs } from '../../src/runtime/workflow/schedules/engine';
 import { applyScheduleRetryableFailure } from '../../src/runtime/workflow/schedules/settlement';
@@ -935,6 +935,8 @@ describe('scheduled external Controller wake', () => {
     expect(dispatchedPrompt).toContain(`repository_command_execute(repo_id=${JSON.stringify(repository.repoId)}, checkout_id=${JSON.stringify(repository.activeCheckoutId)}, command=`);
     expect(dispatchedPrompt).toContain(`command=[\"bun\",\"src/cli/index.ts\",\"chatgpt\",\"round-continue\",\"--repo-id\",${JSON.stringify(repository.repoId)},\"--work-id\",${JSON.stringify(workId)}`);
     expect(dispatchedPrompt).toContain(`request_id=${JSON.stringify(`source-round-continue:${dispatchedAuthority}`)}`);
+    expect(dispatchedPrompt).toContain('round-close');
+    expect(dispatchedPrompt).toContain(`request_id=${JSON.stringify(`source-round-close:wait:${dispatchedAuthority}`)}`);
     expect(dispatchedPrompt).toContain('sole repository_command_execute exception');
     expect(dispatchedPrompt).toContain('do not pass wrapper work_id');
     expect(dispatchedPrompt).not.toContain(JSON.stringify(controllerHome));
@@ -947,6 +949,46 @@ describe('scheduled external Controller wake', () => {
   });
 
 
+
+  test('source round close reconciles an old-Runtime owner with provider outcome_unknown, records wait, releases ownership, and never creates a successor', () => {
+    const root = temp('forge-source-round-close-wait-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay close\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'source-round-close-wait' });
+    const workId = 'WORK-SOURCE-ROUND-CLOSE-WAIT';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+      objective: 'Close a source ControllerRound without dispatching a successor.', acceptanceCriteria: ['Wait is durable after source reconciliation.'],
+      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId, identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source', sessionId: 'launch-source-close' },
+    });
+    finishControllerRoundRelayDispatch(store, {
+      workId, ok: false, outcomeUnknown: true, error: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:https://chatgpt.com/c/source-close',
+    });
+    startExecutionSession(controllerHome, { sessionId: 'chatgpt-source-close-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source' });
+    updateExecutionSession(controllerHome, { sessionId: 'chatgpt-source-close-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source' }, { activeWorkId: workId });
+    claimControllerSession(store, {
+      workId, controllerId: 'chatgpt-controller', controllerType: 'chatgpt', sessionId: 'chatgpt-source-close-session',
+      principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source', leaseMs: 5 * 60_000,
+    });
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'blocked', blockedReason: 'provider_dispatch_outcome_unknown', roundCount: 1 });
+
+    const closed = closeChatgptControllerRoundFromSource({
+      controllerHome, repoId: repository.repoId, workId, controllerAuthorityId: opened.authorityId!, relayScopeId: opened.relayScopeId, disposition: 'wait', reason: 'source close canary complete',
+    });
+
+    expect(closed).toMatchObject({ disposition: 'wait', dispositionStatus: 'waiting', relayScopeId: opened.relayScopeId });
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      disposition: 'wait', status: 'waiting', lifecycleStage: 'semantic_round_closed', roundCount: 1, repeatedStateCount: 0, authorityId: opened.authorityId,
+    });
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(readExecutionSession(controllerHome, { sessionId: 'chatgpt-source-close-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source' })?.activeWorkId).toBeUndefined();
+  });
 
   test('source round reconciliation never revives an ordinary failed relay even when an exact live owner exists', async () => {
     const root = temp('forge-source-round-known-failure-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');

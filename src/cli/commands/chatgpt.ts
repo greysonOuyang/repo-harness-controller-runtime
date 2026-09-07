@@ -18,7 +18,7 @@ import {
   type ChatgptAutomationReasoning,
   type ChatgptAutomationTabPolicy,
 } from '../../runtime/control-plane/launcher/chatgpt-work-continuation';
-import { continueChatgptControllerRoundFromSource, openChatgptControllerRoundFromSource } from '../../runtime/control-plane/launcher/chatgpt-round-continuation';
+import { closeChatgptControllerRoundFromSource, continueChatgptControllerRoundFromSource, openChatgptControllerRoundFromSource } from '../../runtime/control-plane/launcher/chatgpt-round-continuation';
 
 interface BrowserCommonOptions {
   repo?: string;
@@ -116,6 +116,22 @@ interface SourceRoundContinueOptions extends BrowserCommonOptions {
   relayScopeId: string;
   reason?: string;
   timeoutMs?: string;
+}
+
+interface SourceRoundCloseOptions extends BrowserCommonOptions {
+  controllerHome?: string;
+  repoId: string;
+  workId: string;
+  controllerAuthorityId: string;
+  relayScopeId: string;
+  disposition: string;
+  handoffId?: string;
+  reason?: string;
+}
+
+function sourceRoundCloseDisposition(value: string): 'wait' | 'wait_for_user' | 'goal_complete' {
+  if (value === 'wait' || value === 'wait_for_user' || value === 'goal_complete') return value;
+  throw new Error(`CONTROLLER_RELAY_DISPOSITION_INVALID: ${value}`);
 }
 
 interface BrowserFollowupOptions extends BrowserCommonOptions {
@@ -526,6 +542,33 @@ export function buildChatgptCommand(): Command {
       });
     });
   chatgpt.addCommand(roundContinue, { hidden: true });
+
+  const roundClose = new Command('round-close')
+    .description('Internal: reconcile and close one claimed ChatGPT ControllerRound from current source without dispatching a successor')
+    .option('--controller-home <path>', 'Explicit Controller Home containing ControllerRound authority; defaults to canonical user-level Forge Controller Home')
+    .requiredOption('--repo-id <repo-id>', 'Stable Forge repository id')
+    .requiredOption('--work-id <work-id>', 'Currently claimed Forge Work id')
+    .requiredOption('--controller-authority-id <id>', 'Exact durable ControllerRound authority')
+    .requiredOption('--relay-scope-id <id>', 'Exact durable ControllerRound relay scope')
+    .requiredOption('--disposition <value>', 'Terminal semantic disposition: wait, wait_for_user, or goal_complete')
+    .option('--handoff-id <id>', 'Required active Handoff id when disposition is wait_for_user')
+    .option('--reason <text>', 'Bounded semantic close reason')
+    .action((rawOpts: SourceRoundCloseOptions) => {
+      void runChatgptAction(() => {
+        const result = closeChatgptControllerRoundFromSource({
+          controllerHome: durableControllerHome(rawOpts.controllerHome),
+          repoId: rawOpts.repoId,
+          workId: rawOpts.workId,
+          controllerAuthorityId: rawOpts.controllerAuthorityId,
+          relayScopeId: rawOpts.relayScopeId,
+          disposition: sourceRoundCloseDisposition(rawOpts.disposition),
+          handoffId: rawOpts.handoffId,
+          reason: rawOpts.reason,
+        });
+        console.log(JSON.stringify(result, null, 2));
+      });
+    });
+  chatgpt.addCommand(roundClose, { hidden: true });
 
   chatgpt
     .command('browser-open')

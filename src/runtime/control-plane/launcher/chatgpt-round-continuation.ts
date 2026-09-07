@@ -10,6 +10,7 @@ import {
   releaseControllerSessionWithAuthority,
   requireControllerOwnershipAuthority,
   submitControllerRoundDisposition,
+  type ControllerRoundDisposition,
 } from '../../../../packages/kernel/controller/api/index';
 import { chatgptControllerRoundBinding, recordChatgptControllerRoundTabSettlement, renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
 import { readExecutionSession, updateExecutionSession } from '../execution/session-store';
@@ -17,7 +18,7 @@ import { runWorkChatgptContinuation, type WorkChatgptContinuationResult } from '
 import { getRepository } from '../../../cli/repositories/registry';
 
 export const SOURCE_ROUND_CONTINUATION_INSTRUCTION =
-  '当前为 Forge V2 源码自动续跑模式。若 Goal 尚未完成且无真实 blocker，本轮不要调用已安装旧 Runtime 的普通 controller_release。必须使用本轮 prompt 提供的 exact current-source Controller lifecycle invocation；不得重新探测 Controller Home、repo/work identity、controller authority 或 relay scope。该调用会原子执行 continue_immediately、释放当前 claim，并用当前源码立即投递下一 ControllerRound。';
+  '当前为 Forge V2 源码自动续跑模式。不要用已安装旧 Runtime 直接结束本轮，因为旧 Runtime 可能只建立 Work owner 而未 reconciliation provider_dispatch_outcome_unknown。若 Goal 尚未完成且无真实 blocker，必须使用 prompt 提供的 exact current-source round-continue invocation；若本轮应 wait、wait_for_user 或 goal_complete，则必须使用 current-source round-close，它只做 canonical claim acknowledgement、semantic disposition 和 release，绝不派发 successor。不得重新探测 Controller Home、repo/work identity、controller authority 或 relay scope。';
 
 function sourceCheckoutId(controllerHome: string, repoId: string, repoRoot: string): string {
   const repository = getRepository(repoId, controllerHome);
@@ -52,10 +53,24 @@ export function renderSourceRoundContinuationInstruction(input: {
     '--relay-scope-id', input.relayScopeId,
   ];
   const requestId = `source-round-continue:${input.controllerAuthorityId}`;
+  const closeWaitCommand = [
+    'bun',
+    'src/cli/index.ts',
+    'chatgpt',
+    'round-close',
+    '--repo-id', input.repoId,
+    '--work-id', input.workId,
+    '--controller-authority-id', input.controllerAuthorityId,
+    '--relay-scope-id', input.relayScopeId,
+    '--disposition', 'wait',
+  ];
+  const closeWaitRequestId = `source-round-close:wait:${input.controllerAuthorityId}`;
   return [
     SOURCE_ROUND_CONTINUATION_INSTRUCTION,
-    `Exact current-source Controller lifecycle invocation: repository_command_execute(repo_id=${JSON.stringify(input.repoId)}, checkout_id=${JSON.stringify(checkoutId)}, command=${JSON.stringify(command)}, request_id=${JSON.stringify(requestId)}).`,
-    `This exact lifecycle invocation is the sole repository_command_execute exception: do not pass wrapper work_id; CLI --work-id=${input.workId}, --controller-authority-id=${input.controllerAuthorityId}, and --relay-scope-id=${input.relayScopeId} remain the fenced Controller lifecycle authority.`,
+    `Exact current-source continue invocation: repository_command_execute(repo_id=${JSON.stringify(input.repoId)}, checkout_id=${JSON.stringify(checkoutId)}, command=${JSON.stringify(command)}, request_id=${JSON.stringify(requestId)}).`,
+    `Exact current-source wait/close invocation: repository_command_execute(repo_id=${JSON.stringify(input.repoId)}, checkout_id=${JSON.stringify(checkoutId)}, command=${JSON.stringify(closeWaitCommand)}, request_id=${JSON.stringify(closeWaitRequestId)}).`,
+    `For wait_for_user or goal_complete use the same round-close command with only --disposition changed; wait_for_user must additionally provide --handoff-id for the active Handoff.`,
+    `These exact lifecycle invocations are the sole repository_command_execute exception: do not pass wrapper work_id; CLI --work-id=${input.workId}, --controller-authority-id=${input.controllerAuthorityId}, and --relay-scope-id=${input.relayScopeId} remain the fenced Controller lifecycle authority.`,
   ].join(' ');
 }
 
@@ -149,6 +164,111 @@ export async function openChatgptControllerRoundFromSource(
   };
 }
 
+type SourceChatgptRoundTerminalDisposition = Exclude<ControllerRoundDisposition, 'continue_immediately'>;
+
+interface ReconciledSourceRound {
+  store: { controllerHome: string; repoId: string };
+  owner: NonNullable<ReturnType<typeof getControllerSession>>;
+  ownerAuthority: ReturnType<typeof requireControllerOwnershipAuthority>;
+  relay: NonNullable<ReturnType<typeof acknowledgeControllerRoundClaim>>;
+  identity: {
+    controllerId: string;
+    controllerType: 'chatgpt';
+    principalId: string;
+    controllerInstanceId: string;
+    sessionId: string;
+    claimGeneration: number;
+  };
+  bindingId?: string;
+}
+
+function reconcileClaimedSourceRound(input: {
+  controllerHome: string; repoId: string; workId: string; controllerAuthorityId: string; relayScopeId: string;
+}): ReconciledSourceRound {
+  const store = { controllerHome: input.controllerHome, repoId: input.repoId };
+  const initialRelay = getControllerRoundRelay(store, input.workId);
+  if (!initialRelay) throw new Error(`CONTROLLER_RELAY_ROUND_NOT_OPEN: ${input.workId}`);
+  if (initialRelay.authorityId !== input.controllerAuthorityId.trim()) throw new Error(`CONTROLLER_RELAY_AUTHORITY_MISMATCH: ${input.workId}`);
+  if (initialRelay.relayScopeId !== input.relayScopeId.trim()) throw new Error(`CONTROLLER_RELAY_SCOPE_MISMATCH: ${input.workId}`);
+
+  const owner = getControllerSession(store, input.workId);
+  if (!owner) throw new Error(`CONTROLLER_RELAY_ACTIVE_CLAIM_REQUIRED: ${input.workId}`);
+  if (owner.controllerType !== 'chatgpt') throw new Error(`CONTROLLER_RELAY_CHATGPT_ONLY: ${input.workId}`);
+  const ownerAuthority = requireControllerOwnershipAuthority(owner, input.workId);
+  const relay = acknowledgeControllerRoundClaim(store, { workId: input.workId, session: owner });
+  if (!relay) throw new Error(`CONTROLLER_RELAY_ROUND_NOT_OPEN: ${input.workId}`);
+  if (relay.authorityId !== input.controllerAuthorityId.trim()) throw new Error(`CONTROLLER_RELAY_AUTHORITY_MISMATCH: ${input.workId}`);
+  if (relay.relayScopeId !== input.relayScopeId.trim()) throw new Error(`CONTROLLER_RELAY_SCOPE_MISMATCH: ${input.workId}`);
+  if (relay.status !== 'claimed') throw new Error(`CONTROLLER_RELAY_ROUND_NOT_CLAIMED: ${relay.status}`);
+  const identity = {
+    controllerId: owner.controllerId,
+    controllerType: 'chatgpt' as const,
+    principalId: ownerAuthority.principalId,
+    controllerInstanceId: ownerAuthority.controllerInstanceId,
+    sessionId: owner.sessionId,
+    claimGeneration: ownerAuthority.claimGeneration,
+  };
+  return { store, owner, ownerAuthority, relay, identity, bindingId: chatgptControllerRoundBinding(store, input.workId)?.bindingId };
+}
+
+function releaseReconciledSourceRound(input: { controllerHome: string; workId: string }, reconciled: ReconciledSourceRound, actorPrefix: string): void {
+  const released = releaseControllerSessionWithAuthority(reconciled.store, {
+    workId: input.workId,
+    actor: `${actorPrefix}:${reconciled.owner.controllerId}`,
+    authority: reconciled.ownerAuthority,
+  });
+  if (!released.allowed) throw new Error(`WORK_CONTROLLER_RELEASE_FENCED: ${input.workId}:${released.reason}`);
+  const sessionIdentity = {
+    sessionId: reconciled.owner.sessionId,
+    principalId: reconciled.ownerAuthority.principalId,
+    controllerInstanceId: reconciled.ownerAuthority.controllerInstanceId,
+  };
+  const executionSession = readExecutionSession(input.controllerHome, sessionIdentity);
+  if (executionSession?.activeWorkId === input.workId) {
+    updateExecutionSession(input.controllerHome, sessionIdentity, { activeWorkId: undefined, lastValidatedAt: new Date().toISOString() });
+  }
+}
+
+export interface SourceChatgptRoundCloseInput {
+  controllerHome: string;
+  repoId: string;
+  workId: string;
+  controllerAuthorityId: string;
+  relayScopeId: string;
+  disposition: SourceChatgptRoundTerminalDisposition;
+  handoffId?: string;
+  reason?: string;
+}
+
+export interface SourceChatgptRoundCloseResult {
+  disposition: SourceChatgptRoundTerminalDisposition;
+  dispositionStatus: string;
+  relayScopeId: string;
+}
+
+export function closeChatgptControllerRoundFromSource(input: SourceChatgptRoundCloseInput): SourceChatgptRoundCloseResult {
+  if (input.disposition === 'wait_for_user' && !input.handoffId?.trim()) {
+    throw new Error('CONTROLLER_RELAY_WAIT_FOR_USER_HANDOFF_REQUIRED');
+  }
+  const reconciled = reconcileClaimedSourceRound(input);
+  const disposition = submitControllerRoundDisposition(reconciled.store, {
+    workId: input.workId,
+    identity: reconciled.identity,
+    disposition: input.disposition,
+    relayScopeId: input.relayScopeId,
+    requirementId: reconciled.relay.requirementId,
+    bindingId: reconciled.bindingId,
+    ...(input.handoffId?.trim() ? { handoffId: input.handoffId.trim() } : {}),
+    reason: input.reason ?? `source_v2_${input.disposition}`,
+  });
+  const expectedStatus = input.disposition === 'wait' ? 'waiting' : input.disposition === 'wait_for_user' ? 'waiting_for_user' : 'goal_complete';
+  if (disposition.status !== expectedStatus) {
+    throw new Error(`CONTROLLER_RELAY_CLOSE_STATUS_INVALID: ${disposition.status}`);
+  }
+  releaseReconciledSourceRound(input, reconciled, 'source-chatgpt-round-close');
+  return { disposition: input.disposition, dispositionStatus: disposition.status, relayScopeId: disposition.relayScopeId };
+}
+
 export interface SourceChatgptRoundContinueInput {
   controllerHome: string;
   repoId: string;
@@ -171,62 +291,25 @@ export async function continueChatgptControllerRoundFromSource(
   input: SourceChatgptRoundContinueInput,
   dependencies: { dispatch?: typeof runWorkChatgptContinuation } = {},
 ): Promise<SourceChatgptRoundContinueResult> {
-  const store = { controllerHome: input.controllerHome, repoId: input.repoId };
-  const initialRelay = getControllerRoundRelay(store, input.workId);
-  if (!initialRelay) throw new Error(`CONTROLLER_RELAY_ROUND_NOT_OPEN: ${input.workId}`);
-  if (initialRelay.authorityId !== input.controllerAuthorityId.trim()) throw new Error(`CONTROLLER_RELAY_AUTHORITY_MISMATCH: ${input.workId}`);
-  if (initialRelay.relayScopeId !== input.relayScopeId.trim()) throw new Error(`CONTROLLER_RELAY_SCOPE_MISMATCH: ${input.workId}`);
-
   // The installed Runtime may be older than the source under canary. It is authoritative only
   // for establishing the exact live ControllerSession owner. Reconcile that durable owner
   // through the current source state machine before deciding whether this round is claimed.
-  const owner = getControllerSession(store, input.workId);
-  if (!owner) throw new Error(`CONTROLLER_RELAY_ACTIVE_CLAIM_REQUIRED: ${input.workId}`);
-  if (owner.controllerType !== 'chatgpt') throw new Error(`CONTROLLER_RELAY_CHATGPT_ONLY: ${input.workId}`);
-  const ownerAuthority = requireControllerOwnershipAuthority(owner, input.workId);
-  const relay = acknowledgeControllerRoundClaim(store, { workId: input.workId, session: owner });
-  if (!relay) throw new Error(`CONTROLLER_RELAY_ROUND_NOT_OPEN: ${input.workId}`);
-  if (relay.authorityId !== input.controllerAuthorityId.trim()) throw new Error(`CONTROLLER_RELAY_AUTHORITY_MISMATCH: ${input.workId}`);
-  if (relay.relayScopeId !== input.relayScopeId.trim()) throw new Error(`CONTROLLER_RELAY_SCOPE_MISMATCH: ${input.workId}`);
-  if (relay.status !== 'claimed') throw new Error(`CONTROLLER_RELAY_ROUND_NOT_CLAIMED: ${relay.status}`);
-  const identity = {
-    controllerId: owner.controllerId,
-    controllerType: owner.controllerType,
-    principalId: ownerAuthority.principalId,
-    controllerInstanceId: ownerAuthority.controllerInstanceId,
-    sessionId: owner.sessionId,
-    claimGeneration: ownerAuthority.claimGeneration,
-  };
-  const binding = chatgptControllerRoundBinding(store, input.workId);
+  const reconciled = reconcileClaimedSourceRound(input);
+  const { store, owner, relay } = reconciled;
   const disposition = submitControllerRoundDisposition(store, {
     workId: input.workId,
-    identity,
+    identity: reconciled.identity,
     disposition: 'continue_immediately',
     relayScopeId: input.relayScopeId,
     requirementId: relay.requirementId,
-    bindingId: binding?.bindingId,
+    bindingId: reconciled.bindingId,
     reason: input.reason ?? 'source_v2_immediate_continuation',
   });
   if (disposition.status !== 'pending_release') {
     throw new Error(`CONTROLLER_RELAY_CONTINUATION_NOT_PENDING_RELEASE: ${disposition.status}`);
   }
 
-  const released = releaseControllerSessionWithAuthority(store, {
-    workId: input.workId,
-    actor: `source-chatgpt-round-continue:${owner.controllerId}`,
-    authority: ownerAuthority,
-  });
-  if (!released.allowed) throw new Error(`WORK_CONTROLLER_RELEASE_FENCED: ${input.workId}:${released.reason}`);
-
-  const sessionIdentity = {
-    sessionId: owner.sessionId,
-    principalId: ownerAuthority.principalId,
-    controllerInstanceId: ownerAuthority.controllerInstanceId,
-  };
-  const executionSession = readExecutionSession(input.controllerHome, sessionIdentity);
-  if (executionSession?.activeWorkId === input.workId) {
-    updateExecutionSession(input.controllerHome, sessionIdentity, { activeWorkId: undefined, lastValidatedAt: new Date().toISOString() });
-  }
+  releaseReconciledSourceRound(input, reconciled, 'source-chatgpt-round-continue');
 
   const nextRelay = beginControllerRoundRelayAfterRelease(store, { workId: input.workId, releasedSession: owner });
   if (!nextRelay || nextRelay.status !== 'dispatching' || !nextRelay.authorityId) {
