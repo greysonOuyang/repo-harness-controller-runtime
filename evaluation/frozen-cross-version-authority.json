@@ -1,9 +1,9 @@
 {
   "schemaVersion": "forge-cross-version-freeze/v1",
-  "evaluatorImplementationDigest": "sha256:df880b860b04e6734d2c12bb0de1577f88b07bbcf0773d708053febe42b0c580",
+  "evaluatorImplementationDigest": "sha256:72f471e97008ec4b88b6132b16fdbce2f333b0997e0fec07086f0e907b1da73c",
   "corpusDigest": "sha256:cd45a4ff9b3a5a7b84aed736f72fd7d920115225c2b35fcb74fd0e80337233ee",
-  "protocolDigest": "sha256:162b56be51251f5d93297bab72020793607c60568b5b2bdc67070b8dc0c87c26",
+  "protocolDigest": "sha256:e6f593173f8de5c24b7ea4144e08a80a6b8b07e0fea1e9c880d8195069494669",
   "baselineIdentityDigest": "sha256:f5c92970634f9fc52ede66031612bb764e5198be702c597ef5bcb68923fcc007",
-  "aaCalibrationDigest": "sha256:d4b33bb06b7f44d8623d1ee0071c94e399da3535d2885cba071c37dd290188f3",
+  "aaCalibrationDigest": "sha256:deb7ef80448a15aea2e916292197cb1550c17b814bff8dfa7e7535781e783949",
   "environmentPolicyDigest": "sha256:5f740890588e533517eb8878e2326867e911d5b6a9240c7dcdba2272883c5904"
 }
