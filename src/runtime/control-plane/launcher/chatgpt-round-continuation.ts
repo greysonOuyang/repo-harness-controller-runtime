@@ -191,7 +191,7 @@ interface ReconciledSourceRound {
 
 function reconcileClaimedSourceRound(input: {
   controllerHome: string; repoId: string; workId: string; controllerAuthorityId: string; relayScopeId: string;
-}): ReconciledSourceRound {
+}, options: { allowPendingReleaseContinuation?: boolean } = {}): ReconciledSourceRound {
   const store = { controllerHome: input.controllerHome, repoId: input.repoId };
   const initialRelay = getControllerRoundRelay(store, input.workId);
   if (!initialRelay) throw new Error(`CONTROLLER_RELAY_ROUND_NOT_OPEN: ${input.workId}`);
@@ -202,11 +202,26 @@ function reconcileClaimedSourceRound(input: {
   if (!owner) throw new Error(`CONTROLLER_RELAY_ACTIVE_CLAIM_REQUIRED: ${input.workId}`);
   if (owner.controllerType !== 'chatgpt') throw new Error(`CONTROLLER_RELAY_CHATGPT_ONLY: ${input.workId}`);
   const ownerAuthority = requireControllerOwnershipAuthority(owner, input.workId);
-  const relay = acknowledgeControllerRoundClaim(store, { workId: input.workId, session: owner });
+  const resumablePendingRelease = options.allowPendingReleaseContinuation === true
+    && initialRelay.status === 'pending_release'
+    && initialRelay.disposition === 'continue_immediately'
+    && initialRelay.lifecycleStage === 'semantic_round_closed';
+  const relay = resumablePendingRelease
+    ? initialRelay
+    : acknowledgeControllerRoundClaim(store, { workId: input.workId, session: owner });
   if (!relay) throw new Error(`CONTROLLER_RELAY_ROUND_NOT_OPEN: ${input.workId}`);
   if (relay.authorityId !== input.controllerAuthorityId.trim()) throw new Error(`CONTROLLER_RELAY_AUTHORITY_MISMATCH: ${input.workId}`);
   if (relay.relayScopeId !== input.relayScopeId.trim()) throw new Error(`CONTROLLER_RELAY_SCOPE_MISMATCH: ${input.workId}`);
-  if (relay.status !== 'claimed') throw new Error(`CONTROLLER_RELAY_ROUND_NOT_CLAIMED: ${relay.status}`);
+  if (resumablePendingRelease) {
+    if (relay.controllerId !== owner.controllerId
+      || relay.controllerType !== owner.controllerType
+      || relay.principalId !== ownerAuthority.principalId
+      || relay.controllerInstanceId !== ownerAuthority.controllerInstanceId) {
+      throw new Error(`CONTROLLER_RELAY_PENDING_RELEASE_OWNER_MISMATCH: ${input.workId}`);
+    }
+  } else if (relay.status !== 'claimed') {
+    throw new Error(`CONTROLLER_RELAY_ROUND_NOT_CLAIMED: ${relay.status}`);
+  }
   const identity = {
     controllerId: owner.controllerId,
     controllerType: 'chatgpt' as const,
@@ -301,17 +316,22 @@ export async function continueChatgptControllerRoundFromSource(
   // The installed Runtime may be older than the source under canary. It is authoritative only
   // for establishing the exact live ControllerSession owner. Reconcile that durable owner
   // through the current source state machine before deciding whether this round is claimed.
-  const reconciled = reconcileClaimedSourceRound(input);
+  const reconciled = reconcileClaimedSourceRound(input, { allowPendingReleaseContinuation: true });
   const { store, owner, relay } = reconciled;
-  const disposition = submitControllerRoundDisposition(store, {
-    workId: input.workId,
-    identity: reconciled.identity,
-    disposition: 'continue_immediately',
-    relayScopeId: input.relayScopeId,
-    requirementId: relay.requirementId,
-    bindingId: reconciled.bindingId,
-    reason: input.reason ?? 'source_v2_immediate_continuation',
-  });
+  // A transport/session failure can happen after the semantic disposition is durably
+  // recorded but before owner release. Retry from that exact post-disposition boundary
+  // instead of resubmitting continue_immediately (which would double-consume round budget).
+  const disposition = relay.status === 'pending_release'
+    ? relay
+    : submitControllerRoundDisposition(store, {
+        workId: input.workId,
+        identity: reconciled.identity,
+        disposition: 'continue_immediately',
+        relayScopeId: input.relayScopeId,
+        requirementId: relay.requirementId,
+        bindingId: reconciled.bindingId,
+        reason: input.reason ?? 'source_v2_immediate_continuation',
+      });
   if (disposition.status !== 'pending_release') {
     throw new Error(`CONTROLLER_RELAY_CONTINUATION_NOT_PENDING_RELEASE: ${disposition.status}`);
   }

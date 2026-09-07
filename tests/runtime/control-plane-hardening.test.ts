@@ -962,6 +962,69 @@ describe('scheduled external Controller wake', () => {
   });
 
 
+  test('source round continue resumes exact pending_release after a post-disposition interruption without double-consuming round budget', async () => {
+    const root = temp('forge-source-round-pending-release-retry-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'source-round-pending-release-retry' });
+    const workId = 'WORK-SOURCE-ROUND-PENDING-RELEASE';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+      objective: 'Resume an interrupted continue after durable semantic closure.', acceptanceCriteria: [],
+      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    const opened = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source', sessionId: 'launch-source' },
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    startExecutionSession(controllerHome, { sessionId: 'chatgpt-source-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source' });
+    updateExecutionSession(controllerHome, { sessionId: 'chatgpt-source-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source' }, { activeWorkId: workId });
+    const owner = claimControllerSession(store, {
+      workId, controllerId: 'chatgpt-controller', controllerType: 'chatgpt', sessionId: 'chatgpt-source-session',
+      principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-source', leaseMs: 5 * 60_000,
+    });
+    const claimed = acknowledgeControllerRoundClaim(store, { workId, session: owner })!;
+    expect(claimed.status).toBe('claimed');
+    const pending = submitControllerRoundDisposition(store, {
+      workId,
+      identity: {
+        controllerId: owner.controllerId, controllerType: 'chatgpt', principalId: 'chatgpt-principal',
+        controllerInstanceId: 'runtime-source', sessionId: owner.sessionId,
+      },
+      disposition: 'continue_immediately', relayScopeId: opened.relayScopeId,
+      requirementId: claimed.requirementId, reason: 'simulate durable disposition before transport interruption',
+    });
+    expect(pending).toMatchObject({ status: 'pending_release', lifecycleStage: 'semantic_round_closed', disposition: 'continue_immediately' });
+    const roundCountAfterDisposition = pending.roundCount;
+
+    let dispatchCount = 0;
+    const result = await continueChatgptControllerRoundFromSource({
+      controllerHome, repoId: repository.repoId, repoRoot, workId,
+      controllerAuthorityId: opened.authorityId!, relayScopeId: opened.relayScopeId,
+    }, {
+      dispatch: async () => {
+        dispatchCount += 1;
+        return {
+          status: 'dispatched' as const, provider: 'controller-browser' as const,
+          browserSessionId: 'browser-pending-release-next', conversationUrl: 'https://chatgpt.com/c/pending-release-next',
+          conversationId: 'pending-release-next', localAlias: 'pending-release-next', resumedFromBinding: false,
+          model: 'gpt-5.6', reasoning: 'high' as const, tabPolicy: 'new' as const, executionPreferenceVerified: true,
+        };
+      },
+    });
+
+    expect(result).toMatchObject({ dispositionStatus: 'pending_release', relayStatus: 'dispatched', relayWorkId: workId });
+    expect(dispatchCount).toBe(1);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({ status: 'dispatched', roundCount: roundCountAfterDisposition });
+  });
+
+
 
   test('source round close reconciles an old-Runtime owner with provider outcome_unknown, records wait, releases ownership, and never creates a successor', () => {
     const root = temp('forge-source-round-close-wait-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
