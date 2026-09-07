@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { join } from 'path';
+import { realpathSync } from 'fs';
 import {
   acknowledgeControllerRoundClaim,
   beginInitialControllerRoundDispatch,
@@ -14,9 +14,23 @@ import {
 import { chatgptControllerRoundBinding, recordChatgptControllerRoundTabSettlement, renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
 import { readExecutionSession, updateExecutionSession } from '../execution/session-store';
 import { runWorkChatgptContinuation, type WorkChatgptContinuationResult } from './chatgpt-work-continuation';
+import { getRepository } from '../../../cli/repositories/registry';
 
 export const SOURCE_ROUND_CONTINUATION_INSTRUCTION =
-  '当前为 Forge V2 源码自动续跑模式。若 Goal 尚未完成且无真实 blocker，本轮不要调用已安装旧 Runtime 的普通 controller_release。必须使用本轮 prompt 提供的 exact current-source repository_command_execute 调用；不得重新探测 Controller Home、repo/work identity、controller authority 或 relay scope。该命令会原子执行 continue_immediately、释放当前 claim，并用当前源码立即投递下一 ControllerRound。';
+  '当前为 Forge V2 源码自动续跑模式。若 Goal 尚未完成且无真实 blocker，本轮不要调用已安装旧 Runtime 的普通 controller_release。必须使用本轮 prompt 提供的 exact current-source Controller lifecycle invocation；不得重新探测 Controller Home、repo/work identity、controller authority 或 relay scope。该调用会原子执行 continue_immediately、释放当前 claim，并用当前源码立即投递下一 ControllerRound。';
+
+function sourceCheckoutId(controllerHome: string, repoId: string, repoRoot: string): string {
+  const repository = getRepository(repoId, controllerHome);
+  const sourceRoot = realpathSync(repoRoot);
+  const matches = repository.checkouts.filter((checkout) => {
+    if (checkout.lifecycle === 'removed') return false;
+    try { return realpathSync(checkout.canonicalRoot) === sourceRoot; } catch { return false; }
+  });
+  if (matches.length !== 1) {
+    throw new Error(`SOURCE_ROUND_CHECKOUT_IDENTITY_AMBIGUOUS: ${repoId}:${repoRoot}:${matches.length}`);
+  }
+  return matches[0]!.checkoutId;
+}
 
 export function renderSourceRoundContinuationInstruction(input: {
   controllerHome: string;
@@ -26,21 +40,22 @@ export function renderSourceRoundContinuationInstruction(input: {
   controllerAuthorityId: string;
   relayScopeId: string;
 }): string {
+  const checkoutId = sourceCheckoutId(input.controllerHome, input.repoId, input.repoRoot);
   const command = [
     'bun',
-    join(input.repoRoot, 'src/cli/index.ts'),
+    'src/cli/index.ts',
     'chatgpt',
     'round-continue',
-    '--repo', input.repoRoot,
-    '--controller-home', input.controllerHome,
     '--repo-id', input.repoId,
     '--work-id', input.workId,
     '--controller-authority-id', input.controllerAuthorityId,
     '--relay-scope-id', input.relayScopeId,
   ];
+  const requestId = `source-round-continue:${input.controllerAuthorityId}`;
   return [
     SOURCE_ROUND_CONTINUATION_INSTRUCTION,
-    `Exact Forge invocation: repository_command_execute(repo_id=${JSON.stringify(input.repoId)}, work_id=${JSON.stringify(input.workId)}, command=${JSON.stringify(command)}).`,
+    `Exact current-source Controller lifecycle invocation: repository_command_execute(repo_id=${JSON.stringify(input.repoId)}, checkout_id=${JSON.stringify(checkoutId)}, command=${JSON.stringify(command)}, request_id=${JSON.stringify(requestId)}).`,
+    `This exact lifecycle invocation is the sole repository_command_execute exception: do not pass wrapper work_id; CLI --work-id=${input.workId}, --controller-authority-id=${input.controllerAuthorityId}, and --relay-scope-id=${input.relayScopeId} remain the fenced Controller lifecycle authority.`,
   ].join(' ');
 }
 

@@ -926,11 +926,13 @@ describe('scheduled external Controller wake', () => {
     expect(dispatchedAuthority).toStartWith('cra_');
     expect(dispatchedAuthority).not.toBe(opened.authorityId);
     expect(dispatchedPrompt).toContain(SOURCE_ROUND_CONTINUATION_INSTRUCTION);
-    expect(dispatchedPrompt).toContain(`repository_command_execute(repo_id=${JSON.stringify(repository.repoId)}, work_id=${JSON.stringify(workId)}`);
-    expect(dispatchedPrompt).toContain(JSON.stringify(controllerHome));
-    expect(dispatchedPrompt).toContain(JSON.stringify(repoRoot));
-    expect(dispatchedPrompt).toContain(JSON.stringify(join(repoRoot, 'src/cli/index.ts')));
-    expect(dispatchedPrompt).not.toContain('checkout_id=');
+    expect(dispatchedPrompt).toContain(`repository_command_execute(repo_id=${JSON.stringify(repository.repoId)}, checkout_id=${JSON.stringify(repository.activeCheckoutId)}, command=`);
+    expect(dispatchedPrompt).toContain(`command=[\"bun\",\"src/cli/index.ts\",\"chatgpt\",\"round-continue\",\"--repo-id\",${JSON.stringify(repository.repoId)},\"--work-id\",${JSON.stringify(workId)}`);
+    expect(dispatchedPrompt).toContain(`request_id=${JSON.stringify(`source-round-continue:${dispatchedAuthority}`)}`);
+    expect(dispatchedPrompt).toContain('sole repository_command_execute exception');
+    expect(dispatchedPrompt).toContain('do not pass wrapper work_id');
+    expect(dispatchedPrompt).not.toContain(JSON.stringify(controllerHome));
+    expect(dispatchedPrompt).not.toContain(JSON.stringify(repoRoot));
     expect(dispatchedPrompt).toContain(JSON.stringify(dispatchedAuthority));
     expect(dispatchedPrompt).toContain(JSON.stringify(opened.relayScopeId));
     expect(dispatchedPrompt).not.toContain('<controller-home>');

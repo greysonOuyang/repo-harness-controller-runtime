@@ -98,7 +98,7 @@ interface WorkChatgptContinueOptions extends BrowserCommonOptions {
 }
 
 interface SourceRoundOpenOptions extends BrowserCommonOptions {
-  controllerHome: string;
+  controllerHome?: string;
   repoId: string;
   workId: string;
   controllerId: string;
@@ -109,7 +109,7 @@ interface SourceRoundOpenOptions extends BrowserCommonOptions {
 }
 
 interface SourceRoundContinueOptions extends BrowserCommonOptions {
-  controllerHome: string;
+  controllerHome?: string;
   repoId: string;
   workId: string;
   controllerAuthorityId: string;
@@ -474,7 +474,7 @@ export function buildChatgptCommand(): Command {
   const roundOpen = new Command('round-open')
     .description('Internal: open and dispatch one ChatGPT ControllerRound from current source')
     .option('--repo <path>', 'Repository root used by the ChatGPT Browser delivery host', '.')
-    .requiredOption('--controller-home <path>', 'Explicit Controller Home containing ControllerRound authority')
+    .option('--controller-home <path>', 'Explicit Controller Home containing ControllerRound authority; defaults to canonical user-level Forge Controller Home')
     .requiredOption('--repo-id <repo-id>', 'Stable Forge repository id')
     .requiredOption('--work-id <work-id>', 'Forge Work id to dispatch')
     .requiredOption('--controller-id <id>', 'Authenticated ChatGPT controller id/principal identity')
@@ -503,7 +503,7 @@ export function buildChatgptCommand(): Command {
   const roundContinue = new Command('round-continue')
     .description('Internal: close one claimed ChatGPT ControllerRound and immediately dispatch its successor from current source')
     .option('--repo <path>', 'Repository root used by the ChatGPT Browser delivery host', '.')
-    .requiredOption('--controller-home <path>', 'Explicit Controller Home containing ControllerRound authority')
+    .option('--controller-home <path>', 'Explicit Controller Home containing ControllerRound authority; defaults to canonical user-level Forge Controller Home')
     .requiredOption('--repo-id <repo-id>', 'Stable Forge repository id')
     .requiredOption('--work-id <work-id>', 'Currently claimed Forge Work id')
     .requiredOption('--controller-authority-id <id>', 'Exact durable ControllerRound authority')
