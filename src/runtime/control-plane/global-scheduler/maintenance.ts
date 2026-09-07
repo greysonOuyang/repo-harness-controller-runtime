@@ -19,7 +19,7 @@ import {
 import { assertAutomatedOperationAllowed } from '../governance/external-effects';
 import { runWorkChatgptContinuation } from '../launcher/chatgpt-work-continuation';
 import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
-import { buildChatgptControllerRoundPrompt } from '../../../../adapters/chatgpt/controller-round-host';
+import { renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
 
 export async function runSchedulerPeriodicCleanup(input: {
   controllerHome: string;
@@ -181,7 +181,7 @@ export async function runSchedulerControllerRoundRecovery(input: {
           repoId: repository.repoId,
           repoRoot: repository.canonicalRoot ?? repository.localRoot,
           workId: record.originWorkId,
-          prompt: buildChatgptControllerRoundPrompt(store, record, { exactOriginWork: !record.requirementId }),
+          prompt: renderChatgptControllerRoundPrompt(store, record, { exactOriginWork: !record.requirementId }),
           browserSessionId: binding?.latestBrowserSessionId,
           conversationUrl: binding?.conversationUrl,
           model: 'gpt-5.6',

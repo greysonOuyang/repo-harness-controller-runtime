@@ -24,6 +24,7 @@ import { cleanupWorkPreservationArtifacts } from './cleanup-artifact-retention';
 import { cleanupCodegraphCaches } from './codegraph-cache-retention';
 import { cleanupRetiredRepositoryNamespaces } from './repository-namespace-retention';
 import { maintainControlPlaneDatabase, type ControlPlaneDatabaseMaintenanceReport } from './persistence/sqlite-store';
+import { cleanupExpiredExperiences } from './persistence/experience-store';
 import { retireTerminalPlanBoundWorkAuthorities } from './facade/plan-contract-store';
 import { reconcileOwnerlessWorkAuthorities } from './execution/work-authority-reconciler';
 import {
@@ -902,6 +903,12 @@ export function cleanupControllerRuntimeState(
       continue;
     }
     if (phase === 'artifacts') {
+      if (removalBudget.remaining > 0) {
+        try {
+          const removed = cleanupExpiredExperiences(home, new Date(nowMs).toISOString(), Math.min(100, removalBudget.remaining));
+          removalBudget.remaining -= removed;
+        } catch (error) { errors.push(`experience-retention: ${error instanceof Error ? error.message : 'failed'}`); }
+      }
       artifactRetention = cleanupWorkPreservationArtifacts(home, {
         nowMs,
         graceMs: options.cleanupArtifactRetentionGraceMs,

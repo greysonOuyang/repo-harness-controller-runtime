@@ -2533,7 +2533,7 @@ async function withPage<T>(
         throw new AssistantPluginError(
           'PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
           `Browser action ${actionId} reported a transient failure after dispatch. Forge refused automatic replay because the external mutation outcome is unknown; verify current browser state before retrying.`,
-          { retryable: false, details: { actionId, requestedRetries: retries } },
+          { retryable: false, effectOutcome: 'outcome_unknown', details: { actionId, requestedRetries: retries } },
         );
       }
       if (attempt >= retries) throw error;
@@ -3939,17 +3939,50 @@ async function executeBrowserPluginActionInternal(
           };
         }, { persistSession: true });
       }
+      case 'reconcile_effect': {
+        const effectRequestId = requiredString(input.args.effect_request_id, 'effect_request_id');
+        requiredString(input.args.session_id, 'session_id');
+        const observationArgs = (prefix: 'applied' | 'not_applied'): Record<string, unknown> => ({
+          session_id: input.args.session_id,
+          ...(input.args.url !== undefined ? { url: input.args.url } : {}),
+          ...(input.args.max_chars !== undefined ? { max_chars: input.args.max_chars } : {}),
+          ...(input.args.frame_url !== undefined ? { frame_url: input.args.frame_url } : {}),
+          ...(input.args.frame_name !== undefined ? { frame_name: input.args.frame_name } : {}),
+          ...(input.args.frame_index !== undefined ? { frame_index: input.args.frame_index } : {}),
+          ...(input.args[`${prefix}_url_contains_any`] !== undefined ? { url_contains_any: input.args[`${prefix}_url_contains_any`] } : {}),
+          ...(input.args[`${prefix}_url_contains_none`] !== undefined ? { url_contains_none: input.args[`${prefix}_url_contains_none`] } : {}),
+          ...(input.args[`${prefix}_text_contains_any`] !== undefined ? { text_contains_any: input.args[`${prefix}_text_contains_any`] } : {}),
+          ...(input.args[`${prefix}_text_contains_none`] !== undefined ? { text_contains_none: input.args[`${prefix}_text_contains_none`] } : {}),
+          ...(input.args[`${prefix}_selector`] !== undefined ? { selector: input.args[`${prefix}_selector`] } : {}),
+        });
+        const hasCriteria = (args: Record<string, unknown>) => Object.keys(args).some((key) => !['session_id', 'url', 'max_chars', 'frame_url', 'frame_name', 'frame_index'].includes(key));
+        const appliedArgs = observationArgs('applied');
+        if (!hasCriteria(appliedArgs)) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'reconcile_effect requires at least one applied_* observation criterion.', { retryable: false });
+        const applied = await executeBrowserPluginAction({ ...input, actionId: 'verify_state', args: appliedArgs });
+        if (applied.matched === true) return { effectRequestId, outcome: 'applied', output: applied, observation: applied };
+        const notAppliedArgs = observationArgs('not_applied');
+        if (hasCriteria(notAppliedArgs)) {
+          const notApplied = await executeBrowserPluginAction({ ...input, actionId: 'verify_state', args: notAppliedArgs });
+          if (notApplied.matched === true) return { effectRequestId, outcome: 'not_applied', observation: notApplied };
+          return { effectRequestId, outcome: 'unknown', observation: { applied, notApplied } };
+        }
+        return { effectRequestId, outcome: 'unknown', observation: { applied } };
+      }
       case 'verify_state': {
         requiredString(input.args.session_id, 'session_id');
         const target = resolveActionTarget(input.repoRoot, input.args);
         const expectedUrlRaw = stringValue(input.args.expected_url);
         const expectedUrl = expectedUrlRaw ? normalizedUrl(expectedUrlRaw) : undefined;
         const urlContains = stringValue(input.args.url_contains);
+        const urlContainsAny = stringList(input.args.url_contains_any);
+        const urlContainsNone = stringList(input.args.url_contains_none);
         const selector = stringValue(input.args.selector);
         const requireVisible = input.args.require_visible === true;
         const textContains = stringValue(input.args.text_contains);
-        if (!expectedUrl && !urlContains && !selector && !textContains) {
-          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'verify_state requires at least one of expected_url, url_contains, selector, or text_contains.', { retryable: false });
+        const textContainsAny = stringList(input.args.text_contains_any);
+        const textContainsNone = stringList(input.args.text_contains_none);
+        if (!expectedUrl && !urlContains && !urlContainsAny && !urlContainsNone && !selector && !textContains && !textContainsAny && !textContainsNone) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'verify_state requires at least one URL, selector, or text criterion.', { retryable: false });
         }
         if (requireVisible && !selector) {
           throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'require_visible requires selector.', { retryable: false });
@@ -3960,9 +3993,11 @@ async function executeBrowserPluginActionInternal(
           const checks: Array<Record<string, unknown>> = [];
           if (expectedUrl) checks.push({ criterion: 'url_exact', expected: expectedUrl, observed: observedUrl, matched: observedUrl === expectedUrl });
           if (urlContains) checks.push({ criterion: 'url_contains', expected: urlContains, observed: observedUrl, matched: observedUrl.includes(urlContains) });
+          if (urlContainsAny) checks.push({ criterion: 'url_contains_any', expected: urlContainsAny, observed: observedUrl, matched: urlContainsAny.some((value) => observedUrl.includes(value)) });
+          if (urlContainsNone) checks.push({ criterion: 'url_contains_none', expected: urlContainsNone, observed: observedUrl, matched: urlContainsNone.every((value) => !observedUrl.includes(value)) });
           let observation: { verificationVersion?: unknown; selectorExists?: unknown; visible?: unknown; textContains?: unknown; textSample?: unknown; textLength?: unknown; truncated?: unknown } | undefined;
-          if (selector || textContains) {
-            observation = await selection.scope.evaluate(verifyStateObservationScript(selector, textContains, Math.min(positiveNumber(input.args.max_chars, 2_000), 100_000)));
+          if (selector || textContains || textContainsAny || textContainsNone) {
+            observation = await selection.scope.evaluate(verifyStateObservationScript(selector, textContains, Math.min(positiveNumber(input.args.max_chars, 12_000), 100_000)));
             if (observation?.verificationVersion !== 1) {
               throw new AssistantPluginError('PLUGIN_BROWSER_VERIFY_STATE_UNAVAILABLE', 'Browser state observation returned an unsupported result.', { retryable: true });
             }
@@ -3980,6 +4015,9 @@ async function executeBrowserPluginActionInternal(
               ...(selector ? { selector } : {}),
             });
           }
+          const textSample = typeof observation?.textSample === 'string' ? observation.textSample : '';
+          if (textContainsAny) checks.push({ criterion: 'text_contains_any', expected: textContainsAny, observed: textSample, matched: textContainsAny.some((value) => textSample.includes(value)), textLength: observation?.textLength, truncated: observation?.truncated });
+          if (textContainsNone) checks.push({ criterion: 'text_contains_none', expected: textContainsNone, observed: textSample, matched: textContainsNone.every((value) => !textSample.includes(value)), textLength: observation?.textLength, truncated: observation?.truncated });
           return {
             provider: browserResultProvider(connection.provider),
             sessionId: target.sessionId,

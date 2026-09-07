@@ -505,6 +505,39 @@ describe('terminal Work cleanup', () => {
     expect(worktreeCount(fx.repositoryRoot)).toBe(1);
   });
 
+  test('reconciles a legacy cleaned handle with an incomplete receipt without regressing lifecycle', async () => {
+    const fx = fixture('legacy-cleaned-receipt');
+    const first = await cleanup(fx);
+    const legacyReceipt = {
+      ...first.receipt,
+      complete: false,
+      partial: true,
+      completedAt: undefined,
+      blockers: ['legacy incomplete receipt'],
+      processes: { ...first.receipt.processes, allTerminal: false },
+      ownership: { controllerLease: 'pending' as const, processLeases: 'pending' as const },
+      worktree: { ...first.receipt.worktree, status: 'pending' as const },
+      checkoutRegistry: { ...first.receipt.checkoutRegistry, status: 'pending' as const },
+      prune: { ...first.receipt.prune, status: 'pending' as const },
+      branchCleanup: { ...first.receipt.branchCleanup, status: 'pending' as const },
+    };
+    const legacy = writeWorkHandle(fx.controllerHome, { ...first.handle, state: 'cleaned', cleanupReceipt: legacyReceipt });
+
+    const reconciled = await cleanup(fx, legacy);
+    expect(reconciled.handle.state).toBe('cleaned');
+    expect(reconciled.receipt).toMatchObject({
+      complete: true,
+      partial: false,
+      blockers: [],
+      processes: { allTerminal: true },
+      ownership: { controllerLease: 'already_released', processLeases: 'released' },
+      worktree: { status: 'already_removed' },
+      checkoutRegistry: { status: 'already_removed' },
+      prune: { status: 'done' },
+      branchCleanup: { status: 'retained' },
+    });
+  });
+
   test('cleans a migrated managed worktree whose checkout metadata was not transferred', async () => {
     const fx = fixture('migrated-unregistered');
     const registryPath = join(fx.controllerHome, 'repositories.json');

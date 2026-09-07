@@ -28,7 +28,7 @@ export const ALL_BROWSER_PROVIDER_CAPABILITIES = [
 
 const READ_ACTIONS = new Set([
   'list_sessions', 'reconcile_sessions', 'get_handoff_status',
-  'get_text', 'get_html', 'query_selector', 'query_all', 'get_attribute', 'list_frames', 'verify_state',
+  'get_text', 'get_html', 'query_selector', 'query_all', 'get_attribute', 'list_frames', 'verify_state', 'reconcile_effect',
   'extract_links', 'extract_tables', 'extract_forms', 'snapshot_interactive', 'get_console_errors', 'get_failed_requests',
   'wait_for_load_state', 'wait_for_selector', 'await_file_transfer',
 ]);

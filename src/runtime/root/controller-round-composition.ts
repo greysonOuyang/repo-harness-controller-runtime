@@ -1,4 +1,5 @@
 import type { ControllerRoundRelayRecord } from '../../../packages/kernel/controller/api/index';
+import { renderAssistantWorkContext } from '../context/assistant-work-context';
 import { getChatgptWorkConversationBinding } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import {
   buildChatgptControllerRoundPrompt,
@@ -50,7 +51,9 @@ export function renderChatgptControllerRoundPrompt(
   relay: ControllerRoundRelayRecord,
   options: { exactOriginWork?: boolean } = {},
 ): string {
-  return buildChatgptControllerRoundPrompt(store, relay, options);
+  return buildChatgptControllerRoundPrompt({ ...store,
+    prepareAssistantContext: workId => prepareControllerAssistantContext(store, workId),
+  }, relay, options);
 }
 
 export function recordChatgptControllerRoundTabSettlement(
@@ -63,4 +66,9 @@ export function recordChatgptControllerRoundTabSettlement(
   },
 ): void {
   recordChatgptControllerRoundSettlement(store, input);
+}
+
+/** Provider-neutral context refresh used immediately after a successful claim. */
+export function prepareControllerAssistantContext(store: ControllerRoundCompositionStore, workId: string): string | undefined {
+  return renderAssistantWorkContext({ ...store, workId });
 }

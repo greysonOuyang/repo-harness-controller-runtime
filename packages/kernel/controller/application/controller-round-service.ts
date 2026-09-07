@@ -1,5 +1,6 @@
 /** Canonical provider-neutral ControllerRound application surface. */
 export * from '../domain/controller-round';
+export * from '../domain/execution-quality';
 export {
   acknowledgeControllerRoundClaim,
   beginControllerRoundRelayAfterRelease,
@@ -11,6 +12,7 @@ export {
   readControllerRoundContextSnapshot,
   readControllerRoundSemanticStateFingerprint,
   reconcileControllerRoundAfterAbandonedRelease,
+  reconcileControllerRoundAfterTerminalWork,
   recoverControllerRoundRelayAuthority,
   submitControllerRoundDisposition,
   type BeginInitialControllerRoundDispatchInput,

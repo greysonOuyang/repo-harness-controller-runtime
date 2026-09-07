@@ -604,7 +604,35 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
     || receipt.workId !== current.workId
   ) throw new Error('WORK_CLEANUP_RECEIPT_IDENTITY_MISMATCH');
 
-  if (current.state === 'cleaned' && receipt.complete) return { handle: current, receipt };
+  if (current.state === 'cleaned') {
+    if (!receipt.complete) {
+      receipt.complete = true;
+      receipt.partial = false;
+      receipt.completedAt = receipt.completedAt ?? current.updatedAt ?? nowIso();
+      receipt.blockers = [];
+      receipt.processes.allTerminal = true;
+      if (receipt.ownership.controllerLease === 'pending') receipt.ownership.controllerLease = 'already_released';
+      if (receipt.ownership.processLeases === 'pending') receipt.ownership.processLeases = 'released';
+      if (receipt.worktree.status === 'pending' || receipt.worktree.status === 'failed') {
+        receipt.worktree.status = 'already_removed';
+        receipt.worktree.reason = 'Reconciled from durable cleaned WorkHandle state.';
+      }
+      if (receipt.checkoutRegistry.status === 'pending' || receipt.checkoutRegistry.status === 'failed') {
+        receipt.checkoutRegistry.status = 'already_removed';
+        receipt.checkoutRegistry.reason = 'Reconciled from durable cleaned WorkHandle state.';
+      }
+      if (receipt.prune.status === 'pending' || receipt.prune.status === 'failed') {
+        receipt.prune.status = 'done';
+        receipt.prune.reason = 'Reconciled from durable cleaned WorkHandle state.';
+      }
+      if (receipt.branchCleanup.status === 'pending' || receipt.branchCleanup.status === 'failed') {
+        receipt.branchCleanup.status = 'retained';
+        receipt.branchCleanup.reason = 'Historical cleaned state does not prove branch deletion; branch is conservatively retained.';
+      }
+      current = writeWorkHandle(input.controllerHome, { ...current, cleanupReceipt: receipt });
+    }
+    return { handle: current, receipt };
+  }
 
   // Retryable blockers are observations, not permanent vetoes. Recompute them
   // from durable Work/Process/Git state after a controller restart or retry.
@@ -905,6 +933,65 @@ export async function cleanupTerminalWork(input: TerminalWorkCleanupInput): Prom
         finalization,
       });
   return { handle: current, receipt };
+}
+
+export interface SingleTerminalWorkCleanupResult {
+  status: 'cleaned' | 'retained' | 'blocked' | 'no_handle' | 'not_terminal';
+  workId: string;
+  handle?: WorkHandleState;
+  receipt?: WorkCleanupReceipt;
+  reason?: string;
+}
+
+/**
+ * Reconcile physical resources for one already-terminal Work without reviving its
+ * historical execution principal. WorkContract remains the terminal outcome
+ * authority; this path owns only resource cleanup and refuses active Controller
+ * ownership or unsafe branch drift.
+ */
+export async function reconcileSingleTerminalWorkCleanup(
+  controllerHome: string,
+  repositoryId: string,
+  workId: string,
+  options: { targetBranch?: string; deleteBranch?: boolean } = {},
+): Promise<SingleTerminalWorkCleanupResult> {
+  const repository = getRepository(repositoryId, controllerHome, { includeRemoved: true });
+  const contract = getWorkContract({ controllerHome, repoId: repositoryId }, workId);
+  if (!contract || !isTerminalWorkContractStatus(contract.status)) {
+    return { status: 'not_terminal', workId, reason: 'Work is not terminal.' };
+  }
+  if (getControllerSession({ controllerHome, repoId: repositoryId }, workId)) {
+    return { status: 'blocked', workId, reason: 'Active Controller ownership still exists.' };
+  }
+  const originalHandle = readWorkHandle(controllerHome, repositoryId, workId)
+    ?? recoverTerminalWorkHandle(controllerHome, repositoryId, workId);
+  if (!originalHandle) return { status: 'no_handle', workId };
+  if (cleanupRetainedByRequest(contract, originalHandle)) {
+    return { status: 'retained', workId, handle: originalHandle, receipt: originalHandle.cleanupReceipt };
+  }
+  const targetBranch = resolveWorkDeliveryTargetBranch(originalHandle, repository.defaultBranch, options.targetBranch);
+  const drift = reconcileLegacyTerminalBranchDrift(controllerHome, repository, originalHandle, targetBranch);
+  if (drift.blocker) return { status: 'blocked', workId, handle: drift.handle, reason: drift.blocker };
+  const cleaned = await cleanupTerminalWork({
+    controllerHome,
+    handle: drift.handle,
+    targetBranch,
+    deleteBranch: options.deleteBranch !== false,
+    terminalOutcome: terminalOutcomeForContract(contract),
+    failureReason: drift.handle.failureReason ?? drift.handle.finalization.lastError,
+  });
+  cleaned.receipt.ownership.controllerLease = 'already_released';
+  const persisted = writeWorkHandle(controllerHome, { ...cleaned.handle, cleanupReceipt: cleaned.receipt });
+  if (!cleaned.receipt.complete) {
+    return {
+      status: 'blocked',
+      workId,
+      handle: persisted,
+      receipt: cleaned.receipt,
+      reason: cleaned.receipt.blockers.join('; ') || cleaned.receipt.worktree.reason || cleaned.receipt.branchCleanup.reason || 'terminal cleanup incomplete',
+    };
+  }
+  return { status: 'cleaned', workId, handle: persisted, receipt: cleaned.receipt };
 }
 
 export async function reconcileTerminalWorkCleanups(

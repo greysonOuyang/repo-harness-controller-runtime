@@ -29,11 +29,14 @@ export { classifyTerminalCheckEvidence } from '../../../src/runtime/execution/pr
 import { listWorkBoundRepositoryProcessEvidence, listWorkBoundRepositoryRemoteEffectProcessEvidence } from '../../../src/runtime/control-plane/execution/work-process-evidence';
 import { completeRemoteEffectWorkFromProcessReceipt } from '../../../packages/kernel/work/api/index';
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../../src/runtime/execution/process-runtime/command-facade';
+import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';
+import { executeRegisteredWorkflow, observeAndReconcileRegisteredWorkflow } from '../../../src/runtime/workflows/runtime';
+import { ensureXiaohongshuWorkflowInstalled, XIAOHONGSHU_WORKFLOW_IDS } from '../../../src/runtime/workflows/first-party/xiaohongshu';
 import { buildJobOperationDigest } from '../../../src/runtime/control-plane/facade/operation-digest';
 import { readWorkHandle, resolveWorkDeliveryTargetBranch, transitionWorkHandle, workDeliveryBaseRevision, type WorkHandleState } from '../../../src/runtime/control-plane/execution/work-handle-store';
 import { ensureRepositoryWorkHandle, rebindRepositoryWorkHandleControllerIdentity, reconcileRepositoryWorkHandlePlacement } from '../../../src/runtime/control-plane/execution/work-handle-authority';
 import { recoverControllerAuthority } from '../../../src/runtime/control-plane/execution/controller-authority-recovery';
-import { recoverTerminalWorkHandle } from '../../../src/runtime/control-plane/execution/work-terminal-cleanup';
+import { reconcileSingleTerminalWorkCleanup, recoverTerminalWorkHandle } from '../../../src/runtime/control-plane/execution/work-terminal-cleanup';
 import { commandFingerprint, verificationInputFingerprint, workspaceValidationFingerprint } from '../../../src/runtime/control-plane/execution/verification-evidence';
 import { resolveWorkVerificationContext } from '../../../src/runtime/control-plane/execution/work-verification-context';
 import { executeWorkVerification } from '../../../src/runtime/control-plane/execution/work-verification-service';
@@ -154,7 +157,7 @@ import {
   previewRuntimeStorageRepair,
   applyRuntimeStorageRepair,
 } from '../../../src/runtime/recovery';
-import { gatewayToken, loadRecoveryConfig } from '../../../src/runtime/standalone-recovery/core';
+import { gatewayToken, loadRecoveryConfig, RECOVERY_MUTATION_IDENTITY_FIELDS } from '../../../src/runtime/standalone-recovery/core';
 import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource } from '../../../src/runtime/root/release-materialize';
 import {
   getLocalBridgeJobEventsSnapshot,
@@ -168,6 +171,7 @@ import {
   buildFacadeResult,
   classifyVerificationOutcome,
   createHandoffItem,
+  countHandoffItems,
   dismissHandoffItem,
   getHandoffItem,
   listCapabilityDescriptors,
@@ -225,6 +229,7 @@ import {
   chatgptControllerRoundRecoveryAuthorized,
   recordChatgptControllerRoundTabSettlement,
   renderChatgptControllerRoundPrompt,
+  prepareControllerAssistantContext,
 } from '../../../src/runtime/root/controller-round-composition';
 import {
   bindControllerSessionToCurrentRuntime,
@@ -244,6 +249,7 @@ import {
   beginInitialControllerRoundDispatch,
   bindControllerRoundSuccessorWork,
   reconcileControllerRoundAfterAbandonedRelease,
+  reconcileControllerRoundAfterTerminalWork,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
   submitControllerRoundDisposition,
@@ -639,6 +645,54 @@ function withRuntimeResponseMeta(
   return response;
 }
 
+function recoveryStructuredPayload(response: Awaited<ReturnType<Client['callTool']>>, operation: string): Record<string, unknown> {
+  if (response.isError) throw new Error(`RECOVERY_TOOL_FAILED: ${operation}`);
+  const payload = response.structuredContent;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error(`RECOVERY_TOOL_PROTOCOL_INVALID: ${operation}`);
+  }
+  return payload as Record<string, unknown>;
+}
+
+function recoveryMutationIdentityCarrier(status: Record<string, unknown>): Record<string, string> {
+  const identity = status.identity;
+  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) throw new Error('RECOVERY_TARGET_IDENTITY_STATUS_INVALID:identity');
+  const record = identity as Record<string, unknown>;
+  const recovery = record.recovery;
+  const targetRuntime = record.targetRuntime;
+  if (!recovery || typeof recovery !== 'object' || Array.isArray(recovery)) throw new Error('RECOVERY_TARGET_IDENTITY_STATUS_INVALID:recovery');
+  if (!targetRuntime || typeof targetRuntime !== 'object' || Array.isArray(targetRuntime)) throw new Error('RECOVERY_TARGET_IDENTITY_STATUS_INVALID:targetRuntime');
+  const recoveryRecord = recovery as Record<string, unknown>;
+  const targetRecord = targetRuntime as Record<string, unknown>;
+  const carrier = {
+    expected_host: typeof record.host === 'string' ? record.host : '',
+    expected_platform: typeof record.platform === 'string' ? record.platform : '',
+    expected_controller_home: typeof record.controllerHome === 'string' ? record.controllerHome : '',
+    expected_recovery_release: typeof recoveryRecord.releaseRevision === 'string' ? recoveryRecord.releaseRevision : 'none',
+    expected_target_runtime: typeof targetRecord.id === 'string' ? targetRecord.id : '',
+  };
+  for (const field of RECOVERY_MUTATION_IDENTITY_FIELDS) {
+    if (!carrier[field]) throw new Error(`RECOVERY_TARGET_IDENTITY_STATUS_INVALID:${field}`);
+  }
+  return carrier;
+}
+
+async function recoveryToolArguments(
+  client: Client,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const listed = await client.listTools();
+  const descriptor = listed.tools.find((tool) => tool.name === name);
+  if (!descriptor) throw new Error(`RECOVERY_TOOL_UNKNOWN: ${name}`);
+  const schema = descriptor.inputSchema as { required?: unknown } | undefined;
+  const required = Array.isArray(schema?.required) ? schema.required.filter((value): value is string => typeof value === 'string') : [];
+  const identityRequired = RECOVERY_MUTATION_IDENTITY_FIELDS.every((field) => required.includes(field));
+  if (!identityRequired) return args;
+  const status = recoveryStructuredPayload(await client.callTool({ name: 'runtime_status', arguments: {} }), 'runtime_status');
+  return { ...args, ...recoveryMutationIdentityCarrier(status) };
+}
+
 async function callStandaloneRecoveryTool(
   controllerHome: string,
   name: string,
@@ -657,9 +711,9 @@ async function callStandaloneRecoveryTool(
   const client = new Client({ name: 'forge-runtime-lifecycle-handoff', version: '1.0.0' });
   try {
     await client.connect(transport);
-    const response = await client.callTool({ name, arguments: args });
-    if (response.isError) throw new Error(`RECOVERY_TOOL_FAILED: ${name}`);
-    return (response.structuredContent ?? { content: response.content }) as Record<string, unknown>;
+    const effectiveArgs = await recoveryToolArguments(client, name, args);
+    const response = await client.callTool({ name, arguments: effectiveArgs });
+    return recoveryStructuredPayload(response, name);
   } finally {
     await client.close().catch(() => undefined);
   }
@@ -3063,6 +3117,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           }));
           const activePlanSnapshot = listPlanContracts({ ...store, status: 'active', limit: 3 }).map(summarizePlanContract);
           const pendingHandoffSnapshot = listHandoffItems({ ...store, status: 'pending', limit: 4 });
+          const pendingHandoffCount = countHandoffItems({ ...store, status: 'pending' });
           markSummaryPhase('controller_state');
           const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
           const facade = buildFacadeResult({
@@ -3142,7 +3197,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 invalidActiveWorkCount: activeWorkProjection.invalid.length,
                 invalidActiveWork: activeWorkProjection.invalid.slice(0, 3).map(summarizeInvalidActiveWorkCandidate),
                 activePlans: activePlanSnapshot,
-                pendingHandoffCount: pendingHandoffSnapshot.length,
+                pendingHandoffCount,
                 pendingHandoffs: pendingHandoffSnapshot.slice(0, 3).map((item) => ({
                   id: item.id,
                   workId: item.workId,
@@ -3291,6 +3346,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         const capabilities = listCapabilityDescriptors(manifests);
         markDetailPhase('plugins');
         const pendingHandoffs = listHandoffItems({ ...store, status: 'pending', limit: 20 });
+        const pendingHandoffCount = countHandoffItems({ ...store, status: 'pending' });
         const activeWorkProjection = readActiveWorkCandidates({ ...store, limit: 200 });
         const activeContracts = activeWorkProjection.contracts;
         markDetailPhase('work_state');
@@ -3334,7 +3390,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               domainSchemaLoading: 'static_stable_surface',
               dynamicDomainSchemaLoadingSupported: false,
             },
-            pendingHandoffCount: pendingHandoffs.length,
+            pendingHandoffCount,
             // User-facing Work count means objective-level primary lanes. Low-level
             // resumable operation handles are reported separately.
             activeWorkCount: activePrimaryWork.length,
@@ -4294,6 +4350,74 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           }
         }
 
+        if (operation === 'workflow_execute' || operation === 'workflow_reconcile') {
+          try {
+            const workId = String(args.work_id ?? '').trim();
+            const workflowId = String(args.workflow_id ?? '').trim();
+            const runId = String(args.workflow_run_id ?? '').trim();
+            if (!workId || !workflowId || !runId) throw new Error('WORKFLOW_FACADE_IDENTITY_REQUIRED');
+            const work = getWorkContract(store, workId);
+            if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+            assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+            const owner = getControllerSession(store, workId);
+            const relay = getControllerRoundRelay(store, workId);
+            if (!owner) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${workId}`);
+            const authorityId = relay?.authorityId?.trim() || (typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '');
+            if (!authorityId) throw new Error('WORKFLOW_CONTROLLER_AUTHORITY_REQUIRED');
+            const workRepository = selectRepositoryCheckout(repository, work.checkoutId);
+            const executionIdentity = executionIdentityForRepository(workRepository, { workId });
+            if (Object.values(XIAOHONGSHU_WORKFLOW_IDS).includes(workflowId as never)) {
+              ensureXiaohongshuWorkflowInstalled(ctx.controllerHome, workflowId);
+            }
+            const projectId = typeof args.workflow_scope_project_id === 'string' ? args.workflow_scope_project_id.trim() : '';
+            const registryScope = projectId ? { kind: 'project' as const, projectId } : { kind: 'controller' as const };
+            const workflowInputs = args.workflow_inputs && typeof args.workflow_inputs === 'object' && !Array.isArray(args.workflow_inputs)
+              ? args.workflow_inputs as Record<string, import('../../../packages/workflow-runtime/api/index').WorkflowJsonValue>
+              : {};
+            const base = {
+              controllerHome: ctx.controllerHome,
+              repository: workRepository,
+              executionIdentity,
+              workId,
+              controller: { controllerId: owner.controllerId, authorityId },
+              runId,
+              registryScope,
+              workflowId,
+              inputs: workflowInputs,
+              timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
+            };
+            if (operation === 'workflow_reconcile') {
+              const reconciliationRequestId = String(args.workflow_reconciliation_request_id ?? '').trim();
+              if (!reconciliationRequestId) throw new Error('WORKFLOW_RECONCILIATION_REQUEST_ID_REQUIRED');
+              const reconciled = await observeAndReconcileRegisteredWorkflow({ ...base, reconciliationRequestId });
+              if (reconciled.status === 'running') {
+                const resumed = await executeRegisteredWorkflow(base);
+                return result(buildFacadeResult({
+                  summary: `Workflow ${workflowId}/${runId} reconciled from canonical observation and resumed without replaying the uncertain effect.`,
+                  data: { workflow: resumed },
+                }) as unknown as Record<string, unknown>);
+              }
+              return result(buildFacadeResult({
+                status: reconciled.status === 'failed' ? 'blocked' : 'ok',
+                summary: `Workflow ${workflowId}/${runId} reconciliation settled as ${reconciled.status}.`,
+                data: { workflow: reconciled },
+              }) as unknown as Record<string, unknown>, reconciled.status === 'failed');
+            }
+            const executed = await executeRegisteredWorkflow(base);
+            return result(buildFacadeResult({
+              status: executed.status === 'failed' || executed.status === 'reconcile_required' ? 'blocked' : 'ok',
+              summary: `Workflow ${workflowId}/${runId} is ${executed.status}.`,
+              data: { workflow: executed },
+            }) as unknown as Record<string, unknown>, executed.status === 'failed' || executed.status === 'reconcile_required');
+          } catch (error) {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : 'Workflow execution failed.',
+              data: { workflowExecuted: false },
+            }) as unknown as Record<string, unknown>, true);
+          }
+        }
+
         if (operation === 'controller_get_owner') {
           const owner = getControllerSession(store, String(args.work_id ?? '').trim());
           return result(buildFacadeResult({ summary: owner ? `Work is claimed by ${owner.controllerId}.` : 'Work has no active controller owner.', data: { owner } }) as unknown as Record<string, unknown>);
@@ -4365,6 +4489,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               data: {
                 session,
                 relay,
+                assistantContext: prepareControllerAssistantContext(store, workId),
                 controllerAuthorityId: dispatchedRelay?.authorityId?.trim() || directAuthority?.authorityId,
                 controllerAuthorityCarrier: dispatchedRelay?.authorityId?.trim() ? 'controller_authority_id' : 'controller_authority_id_or_session_id_compat',
               },
@@ -4452,6 +4577,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                     workId,
                     identity,
                     disposition: disposition as ControllerRoundDisposition,
+                    executionQualityDecisions: args.execution_quality_decisions as Parameters<typeof submitControllerRoundDisposition>[1]['executionQualityDecisions'],
                     relayScopeId: frozenControllerDisposition?.relayScopeId ?? (typeof args.relay_scope_id === 'string' ? args.relay_scope_id : undefined),
                     requirementId: typeof args.requirement_id === 'string' ? args.requirement_id : undefined,
                     handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
@@ -5284,37 +5410,27 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               }) as unknown as Record<string, unknown>, true);
             }
             try {
-              const physical = await finalizeFacadeWorkHandle(
-                ctx,
-                repository,
-                { ...args, commit: false, merge: false, cleanup: true },
-                'stop',
+              const cleanup = await reconcileSingleTerminalWorkCleanup(
+                ctx.controllerHome,
+                repository.repoId,
+                workId,
+                {
+                  targetBranch: typeof args.target_branch === 'string' ? args.target_branch : undefined,
+                  deleteBranch: args.delete_branch !== false,
+                },
               );
-              if (!physical) {
-                return result(buildFacadeResult({
-                  status: 'ok',
-                  summary: `Terminal Work ${workId} has no managed repository resources requiring cleanup.`,
-                  data: {
-                    work: summarizeWorkContract(existingWork),
-                    finalStatus: existingWork.status,
-                    terminalizationApplied: false,
-                    cleanupOnly: true,
-                    worktreeDeleted: false,
-                    cleanupPending: false,
-                  },
-                }) as unknown as Record<string, unknown>);
-              }
-              const cleanup = contextRecord(physical.structuredContent);
-              const cleanupCompleted = cleanup.cleanupCompleted === true || contextRecord(cleanup.work).state === 'cleaned';
-              const cleanupRetained = cleanup.cleanupRetained === true;
-              const cleanupSettled = cleanupCompleted || cleanupRetained;
+              const cleanupCompleted = cleanup.status === 'cleaned';
+              const cleanupRetained = cleanup.status === 'retained';
+              const cleanupSettled = cleanupCompleted || cleanupRetained || cleanup.status === 'no_handle';
               return result(buildFacadeResult({
                 status: cleanupSettled ? 'ok' : 'blocked',
                 summary: cleanupCompleted
                   ? `Terminal Work ${workId} outcome was preserved; managed repository cleanup completed without reopening Controller ownership.`
                   : cleanupRetained
                     ? `Terminal Work ${workId} outcome was preserved; managed repository retention was recorded durably.`
-                    : `Terminal Work ${workId} outcome was preserved; managed repository cleanup remains incomplete and visible for retry.`,
+                    : cleanup.status === 'no_handle'
+                      ? `Terminal Work ${workId} has no managed repository resources requiring cleanup.`
+                      : `Terminal Work ${workId} outcome was preserved; managed repository cleanup remains incomplete and visible for retry.`,
                 data: {
                   work: summarizeWorkContract(existingWork),
                   finalStatus: existingWork.status,
@@ -5325,7 +5441,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                   cleanupRetained,
                   lifecycleCleanup: cleanup,
                 },
-              }) as unknown as Record<string, unknown>, !cleanupSettled || physical.isError === true);
+              }) as unknown as Record<string, unknown>, !cleanupSettled);
             } catch (error) {
               return result(buildFacadeResult({
                 status: 'blocked',
@@ -5341,26 +5457,49 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               }) as unknown as Record<string, unknown>, true);
             }
           }
-          try {
-            if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
-          } catch (error) {
-            const blocked = buildFacadeResult({
-              status: 'blocked',
-              summary: error instanceof Error ? error.message : `Work ${workId} controller-round authority check failed.`,
-              data: { workId, terminalizationApplied: false },
-            });
-            return result(blocked as unknown as Record<string, unknown>, true);
+          const observedOwner = workId ? getControllerSession(store, workId) : undefined;
+          const observedRelay = workId ? getControllerRoundRelay(store, workId) : undefined;
+          const activeWorkProcess = workId
+            ? processRuntimeResourceDiagnostics().activeProcessIds
+                .map((processId) => getProcessRecord(ctx.controllerHome, repository.repoId, processId))
+                .some((process) => Boolean(process && process.workId === workId && isManagedProcessActive(process)))
+            : false;
+          // Maintenance stop is intentionally narrower than ControllerRound recovery.
+          // Once no Controller owns the Work, no Process is active, and the relay is
+          // absent or terminally failed/handed-off, the obsolete round capability must
+          // not make the durable Work immortal. The ControllerSession task lock below
+          // still fences a concurrent fresh claim before Work terminalization.
+          const ownerlessMaintenanceStop = Boolean(
+            workId
+            && !observedOwner
+            && !activeWorkProcess
+            && Boolean(observedRelay)
+            && ['failed', 'handed_off'].includes(observedRelay!.status),
+          );
+          if (!ownerlessMaintenanceStop) {
+            try {
+              if (workId) assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+            } catch (error) {
+              const blocked = buildFacadeResult({
+                status: 'blocked',
+                summary: error instanceof Error ? error.message : `Work ${workId} controller-round authority check failed.`,
+                data: { workId, terminalizationApplied: false },
+              });
+              return result(blocked as unknown as Record<string, unknown>, true);
+            }
           }
-          let terminalizationAuthority: ControllerTerminalizationAuthority;
-          try {
-            terminalizationAuthority = currentFacadeTerminalizationAuthority(ctx, store, workId, args);
-          } catch (error) {
-            const blocked = buildFacadeResult({
-              status: 'blocked',
-              summary: error instanceof Error ? error.message : `Work ${workId} terminalization authority check failed.`,
-              data: { workId, terminalizationApplied: false },
-            });
-            return result(blocked as unknown as Record<string, unknown>, true);
+          let terminalizationAuthority: ControllerTerminalizationAuthority | undefined;
+          if (!ownerlessMaintenanceStop) {
+            try {
+              terminalizationAuthority = currentFacadeTerminalizationAuthority(ctx, store, workId, args);
+            } catch (error) {
+              const blocked = buildFacadeResult({
+                status: 'blocked',
+                summary: error instanceof Error ? error.message : `Work ${workId} terminalization authority check failed.`,
+                data: { workId, terminalizationApplied: false },
+              });
+              return result(blocked as unknown as Record<string, unknown>, true);
+            }
           }
 
           const fenced = withControllerSessionTerminalizationFence(
@@ -5391,6 +5530,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           const reconcileStoppedRound = () => {
             const stopped = getWorkContract(store, workId);
             if (!stopped || !['failed', 'cancelled'].includes(stopped.status) || getControllerSession(store, workId)) return undefined;
+            const terminalRelay = reconcileControllerRoundAfterTerminalWork(store, { workId, actor: 'rh-work-stop-terminal-reconcile' });
+            if (terminalRelay) return terminalRelay;
             const retained = getRetainedControllerSession(store, workId);
             if (!retained) return undefined;
             return reconcileControllerRoundAfterAbandonedRelease(

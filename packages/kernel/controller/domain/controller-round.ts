@@ -1,3 +1,4 @@
+import type { ClosedRoundObservation, ExecutionQualityDecision } from './execution-quality';
 import type { ControllerType } from './types';
 
 export const CONTROLLER_ROUND_DISPOSITIONS = [
@@ -51,6 +52,9 @@ export interface ControllerRoundRelayRecord {
   /** Opaque per-round capability. Rotates when Forge dispatches a new controller round. */
   authorityId?: string;
   stateFingerprint: string;
+  /** Round owner appends only at semantic close; oldest entries expire with this bounded record. */
+  observationWindow?: ClosedRoundObservation[];
+  qualityDecisions?: ExecutionQualityDecision[];
   roundCount: number;
   repeatedStateCount: number;
   consecutiveFailures: number;

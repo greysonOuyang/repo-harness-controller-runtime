@@ -1576,6 +1576,42 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract(store, workId)?.status).toBe('cancelled');
   }, 15_000);
 
+  test('ownerless failed ControllerRound can be explicitly stopped without obsolete round authority', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-ownerless-failed-relay-stop';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: {
+        controllerId: 'principal-stale-stop',
+        controllerType: 'chatgpt',
+        principalId: 'principal-stale-stop',
+        controllerInstanceId: 'runtime-stale-stop',
+        sessionId: 'launcher-stale-stop',
+      },
+      bindingId: 'binding-stale-stop',
+    });
+    expect(finishControllerRoundRelayDispatch(store, { workId, ok: false, error: 'synthetic dispatch failure' })).toMatchObject({ status: 'failed' });
+    expect(getControllerSession(store, workId)).toBeUndefined();
+
+    const stopped = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, 'principal-maintenance', 'transport-maintenance', 'runtime-maintenance'),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'stop',
+        work_id: workId,
+        requested_by: 'user',
+        reason: 'retire stale failed canary',
+        cleanup: false,
+      },
+    ));
+    expect(stopped.status).toBe('ok');
+    expect(getWorkContract(store, workId)?.status).toBe('cancelled');
+  }, 15_000);
+
   test('explicit user recovery rekeys an exact relay-bound failed round without resetting budgets or depending on provider dispatch', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };

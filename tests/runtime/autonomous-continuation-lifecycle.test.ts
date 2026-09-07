@@ -627,6 +627,7 @@ describe('autonomous continuation lifecycle', () => {
     const round2 = beginControllerRoundRelayAfterRelease(store, { workId, releasedSession: owner1 })!;
     expect(round2).toMatchObject({ status: 'dispatching', relayScopeId: round1.relayScopeId, bindingId: binding1.bindingId, roundCount: 2 });
     expect(round2.authorityId).not.toBe(round1.authorityId);
+    expect(round2.observationWindow).toHaveLength(1);
     const binding2 = rebindChatgptWorkConversation(store, {
       workId, previousConversationId: binding1.conversationId,
       conversationUrl: 'https://chatgpt.com/c/stage3b-round-2', latestBrowserSessionId: 'browser-stage3b-round-2',
@@ -658,6 +659,7 @@ describe('autonomous continuation lifecycle', () => {
     const round3 = beginControllerRoundRelayAfterRelease(store, { workId, releasedSession: owner2 })!;
     expect(round3).toMatchObject({ status: 'dispatching', relayScopeId: round1.relayScopeId, bindingId: binding1.bindingId, roundCount: 3 });
     expect(round3.authorityId).not.toBe(round2.authorityId);
+    expect(round3.observationWindow).toHaveLength(2);
     const binding3 = rebindChatgptWorkConversation(store, {
       workId, previousConversationId: binding2.conversationId,
       conversationUrl: 'https://chatgpt.com/c/stage3b-round-3', latestBrowserSessionId: 'browser-stage3b-round-3',
@@ -688,6 +690,7 @@ describe('autonomous continuation lifecycle', () => {
       relayScopeId: round1.relayScopeId, bindingId: binding1.bindingId, roundCount: 3,
       providerDispatchReceiptId: 'provider-receipt-stage3b-3',
     });
+    expect(terminal.observationWindow).toHaveLength(3);
     expect(getChatgptWorkConversationBinding(store, workId)).toMatchObject({
       bindingId: binding1.bindingId, conversationId: 'stage3b-round-3', latestBrowserSessionId: 'browser-stage3b-round-3',
     });

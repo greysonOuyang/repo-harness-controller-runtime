@@ -9,7 +9,7 @@ import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/
 import { createFirstPartyPluginAdapterMap } from './first-party-registry';
 import { REPOSITORY_PLUGIN_CONFIG_IDS, repositoryPluginConfigFileName, repositoryPluginConfigPath } from './config-store';
 import { getExternalPluginAdapter, listExternalPluginAdapters } from './external-adapter';
-import { AssistantPluginError, toAssistantPluginError } from './errors';
+import { AssistantPluginError, isAssistantPluginError, toAssistantPluginError, type AssistantPluginEffectOutcome } from './errors';
 import {
   findActivePluginCapabilityAuthorization,
   pluginCapabilityAuthorizationOwnerScope,
@@ -712,6 +712,8 @@ export interface PluginActionReceipt {
   actionId: string;
   semanticKey: string;
   status: 'succeeded' | 'failed';
+  /** Durable semantic disposition for an attempted external/local effect. */
+  effectOutcome?: AssistantPluginEffectOutcome;
   createdAt: string;
   workId?: string;
   origin?: { surface: string; actor?: string; correlationId?: string };
@@ -767,6 +769,17 @@ export function findPluginActionReceipt(
     /* no repositories */
   }
   return undefined;
+}
+
+/** Exact request lookup for subordinate Workflow recovery; never dispatches an action. */
+export function readPluginActionReceiptForRequest(controllerHome: string, requestId: string): PluginActionReceipt | undefined {
+  const path = pluginActionRequestPath(controllerHome, requestId);
+  if (!existsSync(path)) return undefined;
+  const index = readJsonFile<PluginActionRequestIndex>(path);
+  if (index.requestId !== requestId) throw new Error('PLUGIN_RECEIPT_REQUEST_MISMATCH');
+  const receipt = readPluginActionReceipt(controllerHome, index.repoId, index.receiptId);
+  if (!receipt || receipt.requestId !== requestId || receipt.semanticKey !== index.semanticKey) throw new Error('PLUGIN_RECEIPT_LOST');
+  return receipt;
 }
 
 export function compatibilityPluginJobFromReceipt(
@@ -1022,7 +1035,9 @@ function compatibilityJobFromReceipt(receipt: PluginActionReceipt, checkoutId: s
     repoId: receipt.repoId,
     checkoutId,
     type: 'plugin-action',
-    status: receipt.status === 'succeeded' ? 'succeeded' : 'failed',
+    status: receipt.effectOutcome === 'outcome_unknown'
+      ? 'human_attention_required'
+      : receipt.status === 'succeeded' ? 'succeeded' : 'failed',
     priority: 'P2',
     requestId: receipt.requestId,
     semanticKey: receipt.semanticKey,
@@ -1383,27 +1398,44 @@ export async function submitAssistantPluginAction(
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const code = /^([A-Z][A-Z0-9_]+)/.exec(message)?.[1] ?? 'PLUGIN_ACTION_FAILED';
+    const code = isAssistantPluginError(error)
+      ? error.code
+      : /^([A-Z][A-Z0-9_]+)/.exec(message)?.[1] ?? 'PLUGIN_ACTION_FAILED';
+    const effectOutcome: AssistantPluginEffectOutcome = isAssistantPluginError(error)
+      ? error.effectOutcome
+      : 'failed';
+    const outcomeUnknown = effectOutcome === 'outcome_unknown';
+    const outcomeResult = outcomeUnknown
+      ? { outcome: 'outcome_unknown', error: { code, message } }
+      : undefined;
     if (boundRemoteWork) {
       appendWorkEvidence({ controllerHome, repoId: workAttributionRepoId(repository, request) }, boundRemoteWork.workId, {
-        title: 'typed remote plugin effect failed',
+        title: outcomeUnknown ? 'typed remote plugin effect outcome unknown' : 'typed remote plugin effect failed',
         summary: `${request.pluginId}/${request.actionId}: ${message}`.slice(0, 1_000),
         detailLevel: 'summary',
       });
     }
     if (acceptedWork) {
-      const current = getWorkContract({ controllerHome, repoId: repository.repoId }, acceptedWork.workId);
-      updateWorkContract({ controllerHome, repoId: repository.repoId }, acceptedWork.workId, {
-        status: 'failed',
-        workKind: 'local_effect',
-        dispatchState: 'terminal',
-        evidenceState: 'failed',
-        evidenceRefs: [{
-          title: 'controller-local effect failed',
+      if (outcomeUnknown) {
+        appendWorkEvidence({ controllerHome, repoId: repository.repoId }, acceptedWork.workId, {
+          title: 'controller-local effect outcome unknown',
           summary: `${request.pluginId}/${request.actionId}: ${message}`.slice(0, 1_000),
           detailLevel: 'summary',
-        }, ...(current?.evidenceRefs ?? [])],
-      });
+        });
+      } else {
+        const current = getWorkContract({ controllerHome, repoId: repository.repoId }, acceptedWork.workId);
+        updateWorkContract({ controllerHome, repoId: repository.repoId }, acceptedWork.workId, {
+          status: 'failed',
+          workKind: 'local_effect',
+          dispatchState: 'terminal',
+          evidenceState: 'failed',
+          evidenceRefs: [{
+            title: 'controller-local effect failed',
+            summary: `${request.pluginId}/${request.actionId}: ${message}`.slice(0, 1_000),
+            detailLevel: 'summary',
+          }, ...(current?.evidenceRefs ?? [])],
+        });
+      }
     }
     const receipt: PluginActionReceipt = {
       schemaVersion: 1,
@@ -1415,6 +1447,7 @@ export async function submitAssistantPluginAction(
       actionId: request.actionId,
       semanticKey: key,
       status: 'failed',
+      effectOutcome,
       createdAt,
       ...(acceptedWork
         ? { workId: acceptedWork.workId }
@@ -1425,16 +1458,30 @@ export async function submitAssistantPluginAction(
             : {}),
       origin: request.origin,
       authorization,
+      ...(outcomeResult ? { result: outcomeResult } : {}),
       error: { code, message },
     };
     writeJsonAtomic(pluginActionReceiptPath(controllerHome, repository.repoId, receiptId), receipt);
     writeJsonAtomic(requestPath, {
       requestId: request.requestId,
       repoId: repository.repoId,
+      ...(request.workId ? { workRepoId: workAttributionRepoId(repository, request) } : {}),
       receiptId,
       semanticKey: key,
       createdAt,
     } satisfies PluginActionRequestIndex);
+    if (outcomeUnknown) {
+      return {
+        manifest,
+        action,
+        job: compatibilityJobFromReceipt(receipt, repository.activeCheckoutId),
+        deduplicated: false,
+        result: outcomeResult,
+        receipt,
+        authorization,
+        workId: acceptedWork?.workId ?? boundRemoteWork?.workId ?? attributedWork?.workId,
+      };
+    }
     throw error;
   }
 }

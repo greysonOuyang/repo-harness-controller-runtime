@@ -57,3 +57,24 @@ export function writeProjectPlacement(input: { controllerHome: string; value: Om
 export function readProjectPlacement(controllerHome: string, forgeInstanceId: string, projectId: string): ControlPlaneRecord<ProjectPlacement> | undefined {
   return readControlPlaneRecord(controllerHome, PROJECT_PLACEMENT_NAMESPACE, forgeInstanceId.trim(), projectId.trim());
 }
+
+/** Resolve semantic project through current placement; never derive identity from a path. */
+export function resolveProjectForRepositoryPlacement(input: {
+  controllerHome: string; forgeInstanceId: string; repositoryId: string; checkoutId?: string; projectId?: string;
+}): ProjectIdentity | undefined {
+  const placements = listControlPlaneRecords<ProjectPlacement>(input.controllerHome, {
+    namespace: PROJECT_PLACEMENT_NAMESPACE, scope: input.forgeInstanceId, limit: 1000,
+  });
+  if (placements.length >= 1000) throw new Error('PROJECT_PLACEMENT_LOOKUP_LIMIT');
+  const matches = placements.filter(({ value }) => value.repositoryId === input.repositoryId
+    && (!value.checkoutId || value.checkoutId === input.checkoutId)
+    && (!input.projectId || value.projectId === input.projectId));
+  if (matches.length > 1) throw new Error('PROJECT_PLACEMENT_AMBIGUOUS');
+  const placement = matches[0]?.value;
+  if (!placement) return undefined;
+  const projects = listControlPlaneRecords<ProjectIdentity>(input.controllerHome, { namespace: PROJECT_SEMANTIC_NAMESPACE, limit: 1000 });
+  if (projects.length >= 1000) throw new Error('PROJECT_IDENTITY_LOOKUP_LIMIT');
+  const identities = projects.filter(({ value }) => value.projectId === placement.projectId);
+  if (identities.length !== 1) throw new Error('PROJECT_PLACEMENT_IDENTITY_UNRESOLVED');
+  return identities[0]!.value;
+}

@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import { configuredBrainRoot } from './brain-root';
+import { addBrainAssistantCommands } from './brain-assistant';
 
 export type BrainLifecycle = 'always-sync' | 'archive-only' | 'never-sync';
 export type BrainCategory = 'decisions' | 'runbooks' | 'patterns' | 'references';
@@ -630,6 +631,7 @@ function exitCodeFor(issues: BrainIssue[]): number {
 
 export function buildBrainCommand(): Command {
   const brain = new Command('brain').description('Manage explicit repo-to-brain sync and terminal-workflow promotion');
+  addBrainAssistantCommands(brain);
 
   brain
     .command('status')

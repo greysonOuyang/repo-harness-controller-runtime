@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+  countHandoffItems,
   createHandoffItem,
   getHandoffItem,
   handoffInboxPath,
@@ -53,4 +54,30 @@ describe("HandoffItem persistence authority", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+  test("count is not truncated by bounded list previews", () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-handoff-count-"));
+    const location = { root: join(root, "handoff-inbox") };
+    try {
+      for (let index = 0; index < 37; index += 1) {
+        createHandoffItem(location, {
+          id: `pending-${index}`,
+          repoId: "repo_handoff_count",
+          title: `Pending ${index}`,
+          severity: "needs_review",
+          reason: "Pending review.",
+          creationReason: "ambiguous_outcome",
+          summary: "Pending review.",
+          currentState: { repoId: "repo_handoff_count", statusSummary: "pending" },
+          evidenceRefs: [],
+          recommendedDecision: "Review.",
+          recommendedPrompt: "Review.",
+          suggestedNextActions: [],
+        });
+      }
+      expect(countHandoffItems({ ...location, status: "pending" })).toBe(37);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
 });

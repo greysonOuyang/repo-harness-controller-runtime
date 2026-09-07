@@ -40,6 +40,11 @@ export function buildChatgptControllerRoundPrompt(
     `关联 Work 快照：\n${workLines}`,
     'origin Work 的 objective 与 acceptanceCriteria 是本轮必须显式检查的 durable semantic contract；若最新事实满足其中更具体的终态义务，不得仅凭通用 disposition 指导改写成另一种终态。',
     `Active Handoff 快照：\n${handoffLines}`,
+    ...(snapshot.assistantContext ? [snapshot.assistantContext] : []),
+    ...(snapshot.executionQualitySignals?.length ? [
+      `Execution quality evidence (advisory): ${JSON.stringify(snapshot.executionQualitySignals)}`,
+      'Review this evidence before repeating the same operation. Diagnose semantically; record whether an adjustment is justified. Do not infer a bug from edit counts, discard mandatory checks, widen authority or create another supervisor.',
+    ] : []),
     promptOptions.exactOriginWork
       ? `这是 Work-bound scheduled round。只允许 claim 并推进 origin Work ${snapshot.originWorkId}。不得选择、启动、delegate、resume sibling Work，不得新建 schedule，也不得扩大 scope。如果经过一次有界诊断或修复后仍无法安全推进，记录精确证据，提交 wait 或带 active Handoff 的 wait_for_user，释放 ownership，然后结束本轮。`
       : `上一轮 relay 的 origin Work 是 ${snapshot.originWorkId}。不要假设下一步必须继续该 Work；必须依据最新 semantic state 选择、启动或 claim 正确的 Work。`,

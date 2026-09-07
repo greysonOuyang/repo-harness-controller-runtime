@@ -16,6 +16,7 @@ import { getHandoffItem, listHandoffItems } from '../../../../src/runtime/contro
 import { getWorkContract, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
 import { isTerminalHandoffStatus } from '../../../protocols/handoff/index';
 import type { ControllerSession, ControllerType } from '../domain/types';
+import { deriveClosedRoundQualitySignals, type ClosedRoundObservation, type ExecutionQualityDecision, type ExecutionQualitySignal } from '../domain/execution-quality';
 import {
   CONTROLLER_ROUND_DISPOSITIONS,
   CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR,
@@ -29,12 +30,15 @@ export interface ControllerRoundRelayStoreOptions {
   controllerHome: string;
   repoId: string;
   now?: () => string;
+  /** Trusted composition supplies advisory data; Kernel does not read project files. */
+  prepareAssistantContext?: (workId: string) => string | undefined;
 }
 
 export interface SubmitControllerRoundDispositionInput {
   workId: string;
   identity: ControllerRoundRelayIdentity;
   disposition: ControllerRoundDisposition;
+  executionQualityDecisions?: ExecutionQualityDecision[];
   relayScopeId?: string;
   requirementId?: string;
   handoffId?: string;
@@ -403,6 +407,43 @@ export function bindControllerRoundSuccessorWork(
   });
 }
 
+function pendingQualitySignals(record: ControllerRoundRelayRecord): ExecutionQualitySignal[] {
+  const handled = new Set(record.qualityDecisions?.map(decision => decision.fingerprint) ?? []);
+  return deriveClosedRoundQualitySignals(record.observationWindow ?? [], { repeatedStateCount: record.repeatedStateCount,
+    maxRepeatedState: record.maxRepeatedState, waiting: record.status === 'waiting' || record.status === 'waiting_for_user',
+    roundRef: `${record.relayScopeId}:${record.roundCount}` }).map(signal => ({ ...signal,
+      fingerprint: createHash('sha256').update(JSON.stringify([signal.code, [...signal.evidenceRefs].sort()])).digest('hex'),
+    })).filter(signal => !handled.has(signal.fingerprint));
+}
+
+function closedRoundObservation(work: WorkContract, roundRef: string, stateFingerprint: string, waiting: boolean): ClosedRoundObservation {
+  const coverageGaps: string[] = [];
+  const verifications: ClosedRoundObservation['verifications'] = [];
+  for (const check of work.checkRefs.slice(-32)) {
+    const receipt = check.receipt;
+    // HEAD alone does not identify dirty source. Require the exact input fingerprint.
+    if (!receipt || !check.verificationInputFingerprint || !receipt.checkDefinitionDigest || !receipt.checkEnvironmentFingerprint) {
+      coverageGaps.push('check_identity_incomplete'); continue;
+    }
+    if (receipt.status !== 'passed' && receipt.status !== 'failed') continue;
+    verifications.push({ checkId: `${receipt.checkId}:${receipt.checkDefinitionDigest}`, sourceDigest: check.verificationInputFingerprint,
+      environment: receipt.checkEnvironmentFingerprint, outcome: receipt.status, evidenceRef: receipt.receiptId });
+  }
+  // Generic evidence references without content identity cannot prove absence of new knowledge.
+  if (work.evidenceRefs.length) coverageGaps.push('generic_evidence_content_identity_unavailable');
+  if (work.checkRefs.length > 32) coverageGaps.push('check_window_truncated');
+  const accepted = work.semanticAcceptanceEvidence ?? [];
+  if (accepted.length > 32) coverageGaps.push('accepted_result_window_truncated');
+  return { roundRef, workId: work.workId, requirementId: work.requirementId, planId: work.planId,
+    designVersion: work.engineeringContext?.sourceIdentity.kind === 'revision' ? work.engineeringContext.sourceIdentity.revision : undefined,
+    rootCauses: (work.engineeringContext?.blockerDispositions ?? []).slice(-32).filter(disposition => disposition.classification === 'same_root_cause')
+      .map(disposition => ({ dispositionRef: disposition.receiptId, rootCauseId: disposition.blockerId,
+        designScope: JSON.stringify([...disposition.semanticScopeKeys].sort()), controllerConfirmed: true })),
+    stateFingerprint, waiting, coverageGaps: [...new Set(coverageGaps)], verifications,
+    evidenceIdentities: work.checkRefs.slice(-32).flatMap(check => check.receipt ? [check.receipt.resultDigest] : []),
+    acceptedResultIdentities: accepted.slice(-32).map(result => createHash('sha256').update(JSON.stringify([result.criterion, [...result.evidenceIds].sort()])).digest('hex')) };
+}
+
 export function submitControllerRoundDisposition(
   options: ControllerRoundRelayStoreOptions,
   input: SubmitControllerRoundDispositionInput,
@@ -498,6 +539,17 @@ export function submitControllerRoundDisposition(
       throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_MISMATCH: ${work.workId}`);
     }
     const previous = relayHistory(options, relayScopeId)[0];
+    const qualityDecisions = input.executionQualityDecisions ?? [];
+    if (!Array.isArray(qualityDecisions) || qualityDecisions.length > 8) throw new Error('CONTROLLER_QUALITY_DECISION_LIMIT');
+    const pending = new Set(pendingQualitySignals(existing.value).map(signal => signal.fingerprint));
+    for (const decision of qualityDecisions) {
+      if (!pending.has(decision.fingerprint) || !['no_adjustment', 'adjustment'].includes(decision.action)
+        || typeof decision.reason !== 'string' || !decision.reason.trim() || decision.reason.length > 1000
+        || decision.action === 'adjustment' && (typeof decision.verificationCondition !== 'string' || !decision.verificationCondition.trim() || decision.verificationCondition.length > 1000)) {
+        throw new Error('CONTROLLER_QUALITY_DECISION_INVALID');
+      }
+      pending.delete(decision.fingerprint);
+    }
     const requestedMaxRounds = boundedInteger(input.maxRounds, DEFAULT_MAX_ROUNDS, 1, 32);
     const requestedMaxRepeatedState = boundedInteger(input.maxRepeatedState, DEFAULT_MAX_REPEATED_STATE, 1, 8);
     const requestedMaxFailures = boundedInteger(input.maxFailures, DEFAULT_MAX_FAILURES, 1, 8);
@@ -550,6 +602,8 @@ export function submitControllerRoundDisposition(
       disposition: input.disposition,
       status,
       lifecycleStage: 'semantic_round_closed',
+      qualityDecisions: [...(existing.value.qualityDecisions ?? []), ...qualityDecisions].slice(-64),
+      observationWindow: [...(previous?.observationWindow ?? []), closedRoundObservation(work, `${relayScopeId}:${existing.value.roundCount}`, stateFingerprint, input.disposition === 'wait' || input.disposition === 'wait_for_user')].slice(-8),
       controllerId: authority.controllerId,
       controllerType: authority.controllerType,
       principalId: authority.principalId,
@@ -647,6 +701,8 @@ export function beginInitialControllerRoundDispatch(
       disposition: 'continue_immediately',
       status: blockedReason ? 'blocked' : 'dispatching',
       lifecycleStage: 'dispatching',
+      observationWindow: previous?.observationWindow,
+      qualityDecisions: previous?.qualityDecisions,
       controllerId: input.identity.controllerId.trim().slice(0, 240) || 'controller-host',
       controllerType: input.identity.controllerType,
       principalId: input.identity.principalId.trim().slice(0, 240) || input.identity.controllerId.trim().slice(0, 240),
@@ -838,6 +894,53 @@ export function reconcileControllerRoundAfterAbandonedRelease(
       expectedRevision: current.revision,
     });
     return abandoned;
+  });
+}
+
+/**
+ * Mechanically retire any surviving ControllerRound once Work lifecycle authority
+ * is durably failed/cancelled and no Controller lease remains. This is cleanup,
+ * not a semantic disposition: completed Work is intentionally excluded.
+ */
+export function reconcileControllerRoundAfterTerminalWork(
+  options: ControllerRoundRelayStoreOptions,
+  input: { workId: string; actor?: string },
+): ControllerRoundRelayRecord | undefined {
+  const initial = readRelayRecord(options, input.workId);
+  if (!initial) return undefined;
+  const work = getWorkContract(options, input.workId);
+  if (!work || !['failed', 'cancelled'].includes(work.status)) return undefined;
+  if (getControllerSession(options, input.workId)) {
+    throw new Error(`CONTROLLER_RELAY_TERMINAL_WORK_ACTIVE_CLAIM: ${input.workId}`);
+  }
+  if (initial.value.status === 'failed') return initial.value;
+  return relayLock(options, initial.value.relayScopeId, input.actor ?? `controller-relay-terminal-work:${input.workId}`, () => {
+    const current = readRelayRecord(options, input.workId);
+    if (!current) return undefined;
+    const currentWork = getWorkContract(options, input.workId);
+    if (!currentWork || !['failed', 'cancelled'].includes(currentWork.status)) return undefined;
+    if (getControllerSession(options, input.workId)) {
+      throw new Error(`CONTROLLER_RELAY_TERMINAL_WORK_ACTIVE_CLAIM: ${input.workId}`);
+    }
+    if (current.value.status === 'failed') return current.value;
+    const at = nowIso(options);
+    const retired: ControllerRoundRelayRecord = {
+      ...current.value,
+      status: 'failed',
+      lastError: `CONTROLLER_RELAY_TERMINAL_WORK_RETIRED:${input.workId}`,
+      claimedAt: undefined,
+      updatedAt: at,
+    };
+    writeControlPlaneRecord(options.controllerHome, {
+      namespace: NAMESPACE,
+      scope: options.repoId,
+      key: input.workId,
+      schemaVersion: SCHEMA_VERSION,
+      value: retired,
+      action: 'controller_round_relay_terminal_work_retired',
+      expectedRevision: current.revision,
+    });
+    return retired;
   });
 }
 
@@ -1389,6 +1492,8 @@ export interface ControllerRoundContextSnapshot {
     maxFailures: number;
   };
   recoveryReason?: string;
+  assistantContext?: string;
+  executionQualitySignals?: ExecutionQualitySignal[];
 }
 
 /** Provider-neutral launch context. ControllerHost adapters decide how to render it. */
@@ -1407,6 +1512,8 @@ export function readControllerRoundContextSnapshot(
     repoId: record.repoId,
     relayScopeId: record.relayScopeId,
     originWorkId: record.originWorkId,
+    assistantContext: options.prepareAssistantContext?.(record.originWorkId),
+    executionQualitySignals: pendingQualitySignals(record),
     ...(requirement ? {
       requirement: {
         requirementId: requirement.requirementId,

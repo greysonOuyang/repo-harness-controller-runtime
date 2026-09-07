@@ -22,6 +22,9 @@ export interface WorkflowCapabilityBinding {
   capabilityId: string;
   providerId?: string;
   integrationId?: string;
+  /** Concrete existing typed action target. Workflow Runtime does not own plugin authorization. */
+  pluginId?: string;
+  actionId?: string;
 }
 
 export interface WorkflowRegistryEntry extends WorkflowContentIdentity {
@@ -51,8 +54,11 @@ function validateBinding(binding: WorkflowCapabilityBinding): WorkflowCapability
   const capabilityId = boundedRef(binding.capabilityId, 'CAPABILITY_ID');
   const providerId = binding.providerId === undefined ? undefined : boundedRef(binding.providerId, 'PROVIDER_ID');
   const integrationId = binding.integrationId === undefined ? undefined : boundedRef(binding.integrationId, 'INTEGRATION_ID');
+  const pluginId = binding.pluginId === undefined ? undefined : boundedRef(binding.pluginId, 'PLUGIN_ID');
+  const actionId = binding.actionId === undefined ? undefined : boundedRef(binding.actionId, 'ACTION_ID');
   if (providerId && integrationId) throw new Error('WORKFLOW_REGISTRY_BINDING_PROVIDER_INTEGRATION_CONFLICT');
-  return { capabilityId, providerId, integrationId };
+  if (Boolean(pluginId) !== Boolean(actionId)) throw new Error('WORKFLOW_REGISTRY_BINDING_PLUGIN_ACTION_PAIR_REQUIRED');
+  return { capabilityId, providerId, integrationId, pluginId, actionId };
 }
 
 function validateEntry(value: WorkflowRegistryEntry): WorkflowRegistryEntry {

@@ -361,13 +361,17 @@ const required = [
 ];
 for (const path of required) text(path);
 requireAcyclicProductionTypeScript();
-// Stage7F permits exactly one Controller-local derived Memory persistence adapter
-// and one bounded mechanical consumer. Kernel Memory remains pure and there is
-// still no Context/Brain/MCP authority path.
+// Operational priors retain their bounded mechanical consumers. The accepted
+// assistant-loop ADR adds semantic experience through its own API/adapter;
+// neither consumer may move persistence or semantic acceptance into the reducer.
 const stage7fMemoryImports = staticTypeScriptImportRecords(productionTypeScriptFiles());
 const stage7fKernelMemoryConsumers = new Set([
   'src/runtime/evidence/operational-shadow.ts',
   'src/runtime/control-plane/persistence/operational-prior-store.ts',
+  'src/runtime/context/assistant-context.ts',
+  'src/runtime/context/assistant-work-context.ts',
+  'src/runtime/control-plane/persistence/experience-store.ts',
+  'src/cli/commands/brain-assistant.ts',
 ]);
 const stage7fOperationalStoreConsumers = new Set([
   'src/runtime/control-plane/execution/work-verification-service.ts',

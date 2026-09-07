@@ -91,3 +91,8 @@ export function readWorkflowAssetContent(
   const parsed = JSON.parse(readFileSync(path, 'utf8')) as WorkflowAssetDefinition;
   return { asset: validateWorkflowAsset(parsed), path };
 }
+
+export function readWorkflowAssetContentFile(path: string): WorkflowAssetDefinition {
+  const parsed = JSON.parse(readFileSync(resolve(path), 'utf8')) as WorkflowAssetDefinition;
+  return validateWorkflowAsset(parsed);
+}
