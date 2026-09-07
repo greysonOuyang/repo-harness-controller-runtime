@@ -888,6 +888,8 @@ describe('scheduled external Controller wake', () => {
 
     let dispatchedPrompt = '';
     let dispatchedAuthority = '';
+    let dispatchedTabPolicy = '';
+    let dispatchedTransportConversation = '';
     const result = await continueChatgptControllerRoundFromSource({
       controllerHome,
       repoId: repository.repoId,
@@ -900,6 +902,8 @@ describe('scheduled external Controller wake', () => {
       dispatch: async (input) => {
         dispatchedPrompt = input.prompt;
         dispatchedAuthority = input.controllerAuthorityId ?? '';
+        dispatchedTabPolicy = input.tabPolicy ?? '';
+        dispatchedTransportConversation = input.transportConversation ?? '';
         return {
           status: 'dispatched' as const,
           provider: 'controller-browser' as const,
@@ -910,7 +914,7 @@ describe('scheduled external Controller wake', () => {
           resumedFromBinding: false,
           model: 'gpt-5.6',
           reasoning: 'high' as const,
-          tabPolicy: 'reuse' as const,
+          tabPolicy: 'new' as const,
           executionPreferenceVerified: true,
         };
       },
@@ -925,6 +929,8 @@ describe('scheduled external Controller wake', () => {
     })?.activeWorkId).toBeUndefined();
     expect(dispatchedAuthority).toStartWith('cra_');
     expect(dispatchedAuthority).not.toBe(opened.authorityId);
+    expect(dispatchedTabPolicy).toBe('new');
+    expect(dispatchedTransportConversation).toBe('fresh');
     expect(dispatchedPrompt).toContain(SOURCE_ROUND_CONTINUATION_INSTRUCTION);
     expect(dispatchedPrompt).toContain(`repository_command_execute(repo_id=${JSON.stringify(repository.repoId)}, checkout_id=${JSON.stringify(repository.activeCheckoutId)}, command=`);
     expect(dispatchedPrompt).toContain(`command=[\"bun\",\"src/cli/index.ts\",\"chatgpt\",\"round-continue\",\"--repo-id\",${JSON.stringify(repository.repoId)},\"--work-id\",${JSON.stringify(workId)}`);

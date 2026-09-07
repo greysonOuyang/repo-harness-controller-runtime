@@ -75,6 +75,8 @@ export interface WorkChatgptContinuationInput {
   model?: string;
   reasoning?: ChatgptAutomationReasoning;
   tabPolicy?: ChatgptAutomationTabPolicy;
+  /** Transport-only conversation policy. `fresh` starts a new ChatGPT conversation while preserving the same durable Work/ControllerRound authority. */
+  transportConversation?: 'bound' | 'fresh';
   timeoutMs?: number;
   /** Authorization provenance for Browser actions. Immediate/source launches default to chatgpt-action; Scheduler resume must pass schedule. */
   originSurface?: 'chatgpt-action' | 'schedule';
@@ -282,10 +284,11 @@ export async function runWorkChatgptContinuation(
 ): Promise<WorkChatgptContinuationResult> {
   const store = { controllerHome: input.controllerHome, repoId: input.repoId };
   const existing = getChatgptWorkConversationBinding(store, input.workId);
-  const seedUrl = input.conversationUrl?.trim() || existing?.conversationUrl;
+  const transportConversation = input.transportConversation ?? 'bound';
+  const seedUrl = transportConversation === 'fresh' ? undefined : input.conversationUrl?.trim() || existing?.conversationUrl;
   const model = normalizeModel(input.model);
   const reasoning = normalizeReasoning(input.reasoning);
-  const tabPolicy = normalizeTabPolicy(input.tabPolicy);
+  const tabPolicy = transportConversation === 'fresh' ? 'new' : normalizeTabPolicy(input.tabPolicy);
   const bridgeRuntime = dependencies.bridgeRuntime ?? isWslWindowsRuntime();
   const authorityInputError = controllerRoundAuthorityInputError(input);
   if (authorityInputError) {
@@ -342,7 +345,7 @@ export async function runWorkChatgptContinuation(
         localAlias: input.title,
       });
     }
-    const targetUrl = binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/';
+    const targetUrl = transportConversation === 'fresh' ? 'https://chatgpt.com/' : binding?.conversationUrl ?? seedUrl ?? 'https://chatgpt.com/';
     const renderedPrompt = `${workflowToolAttributionInstruction(input)}\n\n${input.prompt}`;
     const host = bridgeRuntime
       ? dependencies.wslHost ?? createChatgptWslBridgeDeliveryHost()

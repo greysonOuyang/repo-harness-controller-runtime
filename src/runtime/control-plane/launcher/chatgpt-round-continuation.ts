@@ -233,8 +233,6 @@ export async function continueChatgptControllerRoundFromSource(
     throw new Error(`CONTROLLER_RELAY_IMMEDIATE_DISPATCH_NOT_READY: ${nextRelay?.status ?? 'missing'}`);
   }
   const relayWorkId = nextRelay.originWorkId;
-  const relayBinding = chatgptControllerRoundBinding(store, relayWorkId);
-  const predecessorBinding = relayWorkId !== input.workId ? chatgptControllerRoundBinding(store, input.workId) : undefined;
   const prompt = `${renderChatgptControllerRoundPrompt(store, nextRelay)}\n\n${renderSourceRoundContinuationInstruction({
     controllerHome: input.controllerHome,
     repoId: input.repoId,
@@ -252,9 +250,8 @@ export async function continueChatgptControllerRoundFromSource(
     prompt,
     controllerAuthorityId: nextRelay.authorityId,
     relayScopeId: nextRelay.relayScopeId,
-    browserSessionId: relayBinding?.browserSessionId ?? predecessorBinding?.browserSessionId,
-    conversationUrl: relayBinding?.conversationUrl ?? predecessorBinding?.conversationUrl,
-    tabPolicy: 'reuse',
+    tabPolicy: 'new',
+    transportConversation: 'fresh',
     timeoutMs: input.timeoutMs,
   });
   if (dispatched.status === 'failed') {

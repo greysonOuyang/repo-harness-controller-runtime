@@ -749,6 +749,56 @@ describe('ChatGPT Work conversation binding', () => {
     expect(getChatgptWorkConversationBinding(store, 'WORK-FAILED-VALID-CONVERSATION')).toBeUndefined();
   });
 
+  test('fresh transport starts from ChatGPT root and CAS-rebinds the durable Work to the newly observed conversation', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-fresh-transport-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'fresh@example.test'], ['config', 'user.name', 'Fresh Transport Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'fresh transport fixture\n');
+    execFileSync('git', ['add', '.'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-fresh-transport' });
+    const store = { controllerHome, repoId: repository.repoId };
+    createWorkContract(store, {
+      workId: 'WORK-FRESH-TRANSPORT', repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+      objective: 'Isolate ControllerRound transport conversations.', acceptanceCriteria: ['Use a fresh transport conversation without changing Work authority.'],
+      allowedPaths: ['**/*'], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    bindChatgptWorkConversation(store, {
+      workId: 'WORK-FRESH-TRANSPORT', conversationUrl: 'https://chatgpt.com/c/old-transport', latestBrowserSessionId: 'browser-old-transport', localAlias: 'Forge fresh transport',
+    });
+    let targetUrl = '';
+    let dispatchedSessionId = '';
+    const result = await runWorkChatgptContinuation({
+      controllerHome, repoId: repository.repoId, repoRoot, workId: 'WORK-FRESH-TRANSPORT', prompt: 'continue in a fresh transport',
+      controllerAuthorityId: 'cra_44444444444444444444444444444444', relayScopeId: 'goal:WORK-FRESH-TRANSPORT',
+      browserSessionId: 'browser-old-transport', conversationUrl: 'https://chatgpt.com/c/old-transport', tabPolicy: 'reuse', transportConversation: 'fresh',
+    }, {
+      bridgeRuntime: false,
+      browserHost: { dispatch: async (input) => {
+        targetUrl = input.targetUrl; dispatchedSessionId = input.browserSessionId;
+        return {
+          status: 'outcome_unknown' as const, provider: 'controller-browser' as const, browserSessionId: input.browserSessionId,
+          conversationUrl: 'https://chatgpt.com/c/new-transport', executionPreferenceVerified: true,
+          error: { code: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED', message: 'fresh transport submission confirmation is ambiguous' },
+        };
+      } },
+    });
+    expect(targetUrl).toBe('https://chatgpt.com/');
+    expect(dispatchedSessionId).not.toBe('browser-old-transport');
+    expect(result).toMatchObject({
+      status: 'failed', providerDeliveryStatus: 'outcome_unknown', conversationId: 'new-transport',
+      conversationUrl: 'https://chatgpt.com/c/new-transport', tabPolicy: 'new',
+    });
+    expect(getChatgptWorkConversationBinding(store, 'WORK-FRESH-TRANSPORT')).toMatchObject({
+      conversationId: 'new-transport', conversationUrl: 'https://chatgpt.com/c/new-transport', latestBrowserSessionId: dispatchedSessionId, localAlias: 'Forge fresh transport',
+    });
+  });
+
   test('keeps automation in Chat mode, prefixes @forge, and submits from the stable prompt editor', () => {
     const source = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
     const browserRuntime = readFileSync(join(process.cwd(), 'adapters/chatgpt/browser-delivery-runtime.ts'), 'utf8');
