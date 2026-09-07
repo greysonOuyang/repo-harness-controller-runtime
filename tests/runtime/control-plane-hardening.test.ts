@@ -1338,11 +1338,18 @@ describe('scheduled external Controller wake', () => {
     for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
     writeFileSync(join(repoRoot, 'README.md'), 'stable periodic work state\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-relay-fresh-external-wake' });
+    const requirementId = 'REQ-RELAY-FRESH-EXTERNAL-WAKE';
+    createRequirement({ controllerHome }, {
+      requirementId,
+      title: 'Repeated-state rearm after Requirement progress',
+      outcomeStatement: 'A blocked Requirement relay re-arms only after linked Work state actually changes.',
+    });
     const workId = 'WORK-RELAY-FRESH-EXTERNAL-WAKE';
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
+      requirementId,
       mode: 'goal_workloop',
       objective: 'Run bounded periodic maintenance whose mechanical Work state may remain unchanged between occurrences.',
       acceptanceCriteria: ['A later explicit occurrence gets a fresh relay budget without weakening same-chain fencing.'],
@@ -1454,6 +1461,36 @@ describe('scheduled external Controller wake', () => {
       relayScopeId: second.relayScopeId,
     });
     expect(blocked).toMatchObject({ status: 'blocked', repeatedStateCount: 2, blockedReason: 'repeated_state:2>=2' });
+    releaseControllerSession(store, workId, thirdSession.controllerId);
+    const afterBlockedGrace = Date.parse(blocked.updatedAt) + 2 * 60_000;
+    expect(claimStalledControllerRoundRelays(store, { nowMs: afterBlockedGrace, graceMs: 60_000 })).toEqual([]);
+
+    const childWorkId = 'WORK-RELAY-FRESH-EXTERNAL-WAKE-CHILD';
+    createWorkContract(store, {
+      workId: childWorkId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      requirementId,
+      mode: 'goal_workloop',
+      objective: 'Represent real Requirement progress after the Supervisor repeated-state guard fired.',
+      acceptanceCriteria: ['The Requirement-wide fingerprint changes without weakening same-state suppression.'],
+      allowedPaths: ['**/*'],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      status: 'running',
+    });
+    const rearmed = claimStalledControllerRoundRelays(store, { nowMs: afterBlockedGrace + 1, graceMs: 60_000 });
+    expect(rearmed).toHaveLength(1);
+    expect(rearmed[0]).toMatchObject({
+      status: 'dispatching',
+      roundCount: 4,
+      repeatedStateCount: 0,
+      reason: 'semantic_state_changed_after_repeated_state_block',
+    });
+    expect(rearmed[0]?.blockedReason).toBeUndefined();
+    expect(rearmed[0]?.authorityId).not.toBe(blocked.authorityId);
   });
 
   test('starts a fresh launch-failure budget for a later external wake after the prior closed chain exhausted it', () => {

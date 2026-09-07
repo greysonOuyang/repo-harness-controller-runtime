@@ -1245,7 +1245,8 @@ export function claimStalledControllerRoundRelays(
 
   for (const candidate of latestRelayRecordsByScope(options)) {
     if (claimed.length >= limit) break;
-    if (!['pending_release', 'dispatching', 'dispatched', 'claimed'].includes(candidate.status)) continue;
+    const repeatedStateBlocked = candidate.status === 'blocked' && candidate.blockedReason?.startsWith('repeated_state:') === true;
+    if (!['pending_release', 'dispatching', 'dispatched', 'claimed'].includes(candidate.status) && !repeatedStateBlocked) continue;
     if (input.controllerTypes && !input.controllerTypes.includes(relayControllerType(candidate))) continue;
     const scheduledRecoveryAtMs = candidate.nextRecoveryAt ? Date.parse(candidate.nextRecoveryAt) : Number.NaN;
     if (Number.isFinite(scheduledRecoveryAtMs)) {
@@ -1260,10 +1261,19 @@ export function claimStalledControllerRoundRelays(
     const activeCandidateWorks = candidateWorks.filter((work) => !isTerminalWorkContractStatus(work.status));
     if (activeCandidateWorks.length === 0) continue;
     if (activeCandidateWorks.some((work) => workHasActiveExecution(options.controllerHome, options.repoId, work.workId) || controllerSessionBlocksRecovery(options, work.workId, { nowMs, graceMs }))) continue;
+    if (repeatedStateBlocked) {
+      const fingerprintWork = activeCandidateWorks[0] ?? getWorkContract(options, candidate.originWorkId);
+      const currentFingerprint = fingerprintWork
+        ? mechanicalStateFingerprint(options, fingerprintWork, candidate.requirementId, candidate.relayScopeId)
+        : candidate.stateFingerprint;
+      if (currentFingerprint === candidate.stateFingerprint) continue;
+    }
 
     const next = relayLock(options, candidate.relayScopeId, `controller-relay-recover:${candidate.originWorkId}`, () => {
       const latest = relayHistory(options, candidate.relayScopeId)[0];
       if (!latest || latest.originWorkId !== candidate.originWorkId || latest.updatedAt !== candidate.updatedAt || latest.status !== candidate.status) return undefined;
+      const latestRepeatedStateBlocked = latest.status === 'blocked' && latest.blockedReason?.startsWith('repeated_state:') === true;
+      if (latest.status === 'blocked' && !latestRepeatedStateBlocked) return undefined;
       if (input.controllerTypes && !input.controllerTypes.includes(relayControllerType(latest))) return undefined;
       const latestRecoveryAtMs = latest.nextRecoveryAt ? Date.parse(latest.nextRecoveryAt) : Number.NaN;
       if (Number.isFinite(latestRecoveryAtMs)) {
@@ -1285,6 +1295,7 @@ export function claimStalledControllerRoundRelays(
       const stateFingerprint = fingerprintWork
         ? mechanicalStateFingerprint(options, fingerprintWork, latest.requirementId, latest.relayScopeId)
         : latest.stateFingerprint;
+      if (latestRepeatedStateBlocked && stateFingerprint === latest.stateFingerprint) return undefined;
       const resumesUndispatchedRound = latest.status === 'pending_release' || latest.status === 'dispatching';
       const roundCount = latest.roundCount + (resumesUndispatchedRound ? 0 : 1);
       const repeatedStateCount = resumesUndispatchedRound
@@ -1309,13 +1320,16 @@ export function claimStalledControllerRoundRelays(
         stateFingerprint,
         roundCount,
         repeatedStateCount,
-        lastError: latest.nextRecoveryAt
-          ? latest.lastError
-          : latest.status === 'pending_release'
-            ? 'CONTROLLER_RELAY_RELEASE_TRANSITION_INCOMPLETE'
-            : latest.status === 'dispatching'
-              ? 'CONTROLLER_RELAY_DISPATCH_TRANSITION_INCOMPLETE'
-              : latest.status === 'claimed' ? 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED' : 'CONTROLLER_RELAY_ROUND_UNCLOSED',
+        lastError: latestRepeatedStateBlocked
+          ? undefined
+          : latest.nextRecoveryAt
+            ? latest.lastError
+            : latest.status === 'pending_release'
+              ? 'CONTROLLER_RELAY_RELEASE_TRANSITION_INCOMPLETE'
+              : latest.status === 'dispatching'
+                ? 'CONTROLLER_RELAY_DISPATCH_TRANSITION_INCOMPLETE'
+                : latest.status === 'claimed' ? 'CONTROLLER_RELAY_CLAIMED_ROUND_UNCLOSED' : 'CONTROLLER_RELAY_ROUND_UNCLOSED',
+        reason: latestRepeatedStateBlocked ? 'semantic_state_changed_after_repeated_state_block' : latest.reason,
         nextRecoveryAt: undefined,
         claimedAt: undefined,
         ...(blockedReason ? { blockedReason } : { blockedReason: undefined }),

@@ -181,7 +181,7 @@ export async function runSchedulerControllerRoundRecovery(input: {
           repoId: repository.repoId,
           repoRoot: repository.canonicalRoot ?? repository.localRoot,
           workId: record.originWorkId,
-          prompt: buildChatgptControllerRoundPrompt(store, record, { exactOriginWork: true }),
+          prompt: buildChatgptControllerRoundPrompt(store, record, { exactOriginWork: !record.requirementId }),
           browserSessionId: binding?.latestBrowserSessionId,
           conversationUrl: binding?.conversationUrl,
           model: 'gpt-5.6',
