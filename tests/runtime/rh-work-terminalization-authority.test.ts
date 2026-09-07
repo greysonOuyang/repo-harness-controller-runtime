@@ -17,7 +17,7 @@ import { acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease,
 import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
-import { inspectCleanupOnlyMergedHead } from '../../src/runtime/control-plane/execution/work-finalization-service';
+import { implementationReviewCommittedBaseRevision, inspectCleanupOnlyMergedHead } from '../../src/runtime/control-plane/execution/work-finalization-service';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 
@@ -3284,6 +3284,41 @@ describe('rh_work terminalization authority', () => {
     expect(execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: fx.repoRoot, encoding: 'utf8' })).not.toContain(workspace.root!);
   }, 15_000);
 
+
+  test('managed implementation review excludes only target history already incorporated into the candidate', () => {
+    const fx = fixture();
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const branch = 'work/managed-review-target-base';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: 'managed-review-target-base',
+      title: 'Managed Review Target Base',
+      branchName: branch,
+    });
+    const canonicalRepository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const selectedWorktree = selectRepositoryCheckout(canonicalRepository, workspace.checkoutId!);
+    const handle = {
+      workId: 'work-managed-review-target-base',
+      managedWorktree: true,
+      deliveryTargetBranch: 'main',
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+    };
+
+    writeFileSync(join(fx.repoRoot, 'target-only.txt'), 'target advance\n');
+    execFileSync('git', ['add', 'target-only.txt'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'target advance before managed review'], { cwd: fx.repoRoot });
+    const incorporatedTarget = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    execFileSync('git', ['merge', '--ff-only', 'main'], { cwd: workspace.root! });
+    const candidateHead = repositoryGitStatus(selectedWorktree).head!;
+
+    expect(implementationReviewCommittedBaseRevision(selectedWorktree, handle, baseRevision, candidateHead, 'main')).toBe(incorporatedTarget);
+    expect(handle.deliveryBaseCommit).toBe(baseRevision);
+
+    writeFileSync(join(fx.repoRoot, 'target-later.txt'), 'later target advance\n');
+    execFileSync('git', ['add', 'target-later.txt'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'target advance not in candidate'], { cwd: fx.repoRoot });
+    expect(implementationReviewCommittedBaseRevision(selectedWorktree, handle, baseRevision, candidateHead, 'main')).toBe(baseRevision);
+  }, 15_000);
 
   test('isolated WorkHandle preserves approved review when physical validation only reuses exact current check evidence', async () => {
     const fx = fixture();

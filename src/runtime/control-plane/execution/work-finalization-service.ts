@@ -350,10 +350,33 @@ function workOwnedDirtyPaths(
 }
 
 
+export function implementationReviewCommittedBaseRevision(
+  repository: Pick<RepositoryRecord, 'canonicalRoot' | 'defaultBranch'>,
+  handle: Pick<WorkHandleState, 'workId' | 'managedWorktree' | 'deliveryTargetBranch' | 'baseCommit' | 'deliveryBaseCommit'>,
+  fallbackBaseRevision: string | undefined,
+  head: string | undefined,
+  explicitTargetBranch?: string,
+): string | undefined {
+  const base = workDeliveryBaseRevision(handle) ?? fallbackBaseRevision;
+  if (!base || !head || !handle.managedWorktree) return base;
+  const targetBranch = resolveWorkDeliveryTargetBranch(handle, repository.defaultBranch, explicitTargetBranch);
+  const targetHead = gitRevision(repository.canonicalRoot, targetBranch);
+  if (!targetHead || targetHead === base) return base;
+  // Review may exclude canonical target-only history only after proving that the
+  // recorded delivery base advances linearly to the exact target and that this
+  // target is already contained by the managed candidate. This is a read-only
+  // review baseline; deliveryBaseCommit remains persisted later by the existing
+  // target-advance delivery transition.
+  if (!gitIsAncestor(repository.canonicalRoot, base, targetHead)) return base;
+  if (!gitIsAncestor(repository.canonicalRoot, targetHead, head)) return base;
+  return targetHead;
+}
+
 function currentWorkReviewChangedPaths(
   repository: RepositoryRecord,
   handle: WorkHandleState,
   contract: NonNullable<ReturnType<typeof contractFor>>,
+  explicitTargetBranch?: string,
 ): string[] {
   const status = repositoryGitStatus(repository);
   const { dirtyPaths, ownedPaths } = workOwnedDirtyPaths(contract, status);
@@ -362,7 +385,7 @@ function currentWorkReviewChangedPaths(
     throw new Error(`WORK_IMPLEMENTATION_REVIEW_UNOWNED_DIRTY_PATH: ${unowned.join(', ')}`);
   }
   const head = status.head?.trim();
-  const base = workDeliveryBaseRevision(handle) ?? contract.baseRevision;
+  const base = implementationReviewCommittedBaseRevision(repository, handle, contract.baseRevision, head, explicitTargetBranch);
   const committedPaths = head && base && head !== base
     ? gitChangedPaths(repository.canonicalRoot, base, head)
     : [];
@@ -381,11 +404,12 @@ function assertPhysicalImplementationReviewGate(input: {
   contract: NonNullable<ReturnType<typeof contractFor>>;
   /** Use the exact strict verification identity observed before repository staging. */
   verificationWorkspaceFingerprint?: string;
+  targetBranch?: string;
 }): ImplementationReviewCandidateIdentity {
   const status = repositoryGitStatus(input.repository);
   const sourceRevision = status.head?.trim();
   if (!sourceRevision) throw new Error('WORK_IMPLEMENTATION_REVIEW_SOURCE_IDENTITY_REQUIRED');
-  const changedPaths = currentWorkReviewChangedPaths(input.repository, input.handle, input.contract);
+  const changedPaths = currentWorkReviewChangedPaths(input.repository, input.handle, input.contract, input.targetBranch);
   const verificationWorkspaceFingerprint = input.verificationWorkspaceFingerprint?.trim()
     || workspaceValidationFingerprint(input.repository.canonicalRoot, status);
   const workspaceFingerprint = implementationReviewContentFingerprint(input.repository.canonicalRoot, changedPaths);
@@ -2009,6 +2033,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
       handle: current,
       contract,
       verificationWorkspaceFingerprint: exactValidationInput?.workspaceFingerprint,
+      targetBranch: resolveWorkDeliveryTargetBranch(current, validated.worktreeRepository.defaultBranch, explicitTargetBranch),
     });
     const reviewedCommitPaths = normalizeImplementationReviewChangedPaths(preCommitReviewCandidate.changedPaths);
     const exactCommitPaths = normalizeImplementationReviewChangedPaths(commitPaths);
@@ -2228,15 +2253,15 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     const contract = contractFor(ctx, current);
     if (contract?.constraints.allowMerge === false) throw new Error('WORK_MERGE_NOT_ALLOWED: WorkContract disallows merge');
     if (!contract) throw new Error(`WORK_IMPLEMENTATION_REVIEW_CONTRACT_REQUIRED: ${current.workId}`);
+    const target = selectWorkFinalizationTarget(getRepository(current.repositoryId, ctx.controllerHome), current);
+    const deleteAfterWorktreeCleanup = current.managedWorktree && deleteBranchRequested;
+    const targetBranch = resolveWorkDeliveryTargetBranch(current, target.defaultBranch, explicitTargetBranch);
     // Re-read the exact Work candidate immediately before any merge-path mutation
     // (including target-advance rebase). The finalizer is an independent physical
     // gate; semantic finalize authority is not trusted as a cached boolean.
     assertPhysicalImplementationReviewGate({
-      ctx, repository: mergeValidated.worktreeRepository, handle: current, contract,
+      ctx, repository: mergeValidated.worktreeRepository, handle: current, contract, targetBranch,
     });
-    const target = selectWorkFinalizationTarget(getRepository(current.repositoryId, ctx.controllerHome), current);
-    const deleteAfterWorktreeCleanup = current.managedWorktree && deleteBranchRequested;
-    const targetBranch = resolveWorkDeliveryTargetBranch(current, target.defaultBranch, explicitTargetBranch);
     const activeMergeHead = retryStage === 'merge' ? gitRevision(target.canonicalRoot, 'MERGE_HEAD') : undefined;
     if (!activeMergeHead && current.managedWorktree && current.expectedHead) {
       const targetHead = gitRevision(target.canonicalRoot, targetBranch);

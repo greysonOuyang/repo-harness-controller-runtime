@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 5,
+  "id": "ISS-20260907-8F31C2",
+  "title": "Fix managed review target-advance baseline",
+  "slug": "fix-managed-review-target-advance-baseline",
+  "kind": "bug",
+  "status": "implementation",
+  "summary": "Managed isolated Work review incorrectly attributes already-incorporated target-only commits to the Work when deliveryBaseCommit still points at the preparation base, causing false WORK_IMPLEMENTATION_REVIEW_SCOPE_VIOLATION before finalize can persist target-advance provenance.",
+  "goals": [
+    "Use an exact target-relative review base only when the recorded delivery base linearly reaches the current target and that target is already contained by the managed candidate.",
+    "Keep review baseline reconciliation read-only; persist deliveryBaseCommit only through existing delivery transitions.",
+    "Preserve fail-closed behavior for unincorporated, rewritten, or conflicting target history and out-of-scope Work changes."
+  ],
+  "nonGoals": [
+    "Relax implementation review scope enforcement.",
+    "Create a second Work delivery authority.",
+    "Rewrite historical Work baseRevision."
+  ],
+  "acceptanceCriteria": [
+    "Managed implementation review excludes target-only commits already incorporated into the candidate.",
+    "Unincorporated later target advances are not silently excluded from the review base.",
+    "No Work allowed-path widening or baseRevision mutation is used as a workaround.",
+    "Focused regression and TypeScript checks pass."
+  ],
+  "relatedArtifacts": [
+    "src/runtime/control-plane/execution/work-finalization-service.ts",
+    "tests/runtime/rh-work-terminalization-authority.test.ts",
+    "work:work-forge-v2-plan-work-semantic-admi-591f72ae",
+    "work:work-managed-isolated-work-target-bra-53391473"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Reconcile managed review baseline after contained target advance",
+      "objective": "Exclude only proven target-owned history from managed Work implementation-review changed paths before finalization.",
+      "status": "implementation",
+      "dependsOn": [],
+      "allowedPaths": [
+        "src/runtime/control-plane/execution/work-finalization-service.ts",
+        "tests/runtime/rh-work-terminalization-authority.test.ts",
+        "tasks/issues/**"
+      ],
+      "forbiddenPaths": [],
+      "checks": [
+        "package:check:type"
+      ],
+      "acceptanceCriteria": [
+        "Managed implementation review excludes target-only commits already incorporated into the candidate.",
+        "Unincorporated later target advances are not silently excluded from the review base.",
+        "No Work allowed-path widening or baseRevision mutation is used as a workaround.",
+        "Focused regression and TypeScript checks pass."
+      ],
+      "risk": "medium",
+      "notes": [
+        "Root cause reproduced during Plan architecture delivery: Work base 601a50cb incorporated canonical 6a8b28fd, but implementation review still diffed from the stale delivery base and reported adapters/chatgpt/controller-host.ts as Work-owned."
+      ],
+      "runIds": [],
+      "createdAt": "2026-09-07T08:33:11.869235Z",
+      "updatedAt": "2026-09-07T08:33:11.869235Z"
+    }
+  ],
+  "createdAt": "2026-09-07T08:33:11.869235Z",
+  "updatedAt": "2026-09-07T08:33:11.869235Z"
+}
