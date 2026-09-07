@@ -15,7 +15,8 @@ import {
   getControllerRoundRelay,
   submitControllerRoundDisposition,
 } from '../../src/runtime/control-plane/facade/controller-round-relay';
-import { classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
+import { ChatgptProviderDeliveryError, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
+import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser-delivery-host';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { bootstrapWslWindowsBridgeBrowser, chatgptBridgeTargetMatchesPage, findInstalledWslWindowsBridgeBrowser, isWslWindowsRuntime, observeWslWindowsBridgeBrowser, openWslWindowsBridgeTarget } from '../../src/cli/chatgpt-browser/bridge-provider';
@@ -70,6 +71,64 @@ describe('ChatGPT Browser action result contract', () => {
 });
 
 describe('ChatGPT provider delivery classification', () => {
+  test('preserves typed observed conversation identity across ambiguous browser submission confirmation', async () => {
+    const host = createChatgptBrowserDeliveryHost({
+      ensureBrowser: async () => undefined,
+      navigate: async (_controllerHome, _workId, browserSessionId, targetUrl) => ({
+        submissionTargetUrl: targetUrl,
+        recoveredFromStaleBinding: false,
+        browserSessionId,
+      }),
+      ensureExecutionPreference: async () => true,
+      submitPrompt: async () => {
+        throw new ChatgptProviderDeliveryError(
+          'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED',
+          'submission confirmation is ambiguous',
+          { conversationUrl: 'https://chatgpt.com/c/typed-observed-conversation' },
+        );
+      },
+    });
+    const ambiguous = await host.dispatch({
+      controllerHome: '/tmp/controller',
+      repoId: 'repo-test',
+      repoRoot: '/tmp/repo',
+      workId: 'WORK-TYPED-CONVERSATION',
+      prompt: 'continue',
+      browserSessionId: 'browser-typed-conversation',
+      targetUrl: 'https://chatgpt.com/',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+    });
+    expect(ambiguous).toMatchObject({
+      status: 'outcome_unknown',
+      conversationUrl: 'https://chatgpt.com/c/typed-observed-conversation',
+      error: { code: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED' },
+    });
+
+    const failedHost = createChatgptBrowserDeliveryHost({
+      ensureBrowser: async () => undefined,
+      navigate: async (_controllerHome, _workId, browserSessionId, targetUrl) => ({
+        submissionTargetUrl: targetUrl,
+        recoveredFromStaleBinding: false,
+        browserSessionId,
+      }),
+      ensureExecutionPreference: async () => true,
+      submitPrompt: async () => { throw new Error('CHATGPT_BRIDGE_DISPATCH_FAILED:known failure'); },
+    });
+    const failed = await failedHost.dispatch({
+      controllerHome: '/tmp/controller',
+      repoId: 'repo-test',
+      repoRoot: '/tmp/repo',
+      workId: 'WORK-KNOWN-FAILURE',
+      prompt: 'continue',
+      browserSessionId: 'browser-known-failure',
+      targetUrl: 'https://chatgpt.com/',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+    });
+    expect(failed).toMatchObject({ status: 'failed', conversationUrl: 'https://chatgpt.com/' });
+  });
+
   test('separates ambiguous mutation, user blockers, and ordinary provider failure', () => {
     expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN')).toBe('outcome_unknown');
     expect(classifyChatgptProviderFailure('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED')).toBe('outcome_unknown');

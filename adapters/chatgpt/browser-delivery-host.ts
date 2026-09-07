@@ -59,7 +59,7 @@ export function createChatgptBrowserDeliveryHost(operations: ChatgptBrowserDeliv
           status: classifyChatgptProviderFailure(providerError.code, providerError.message),
           provider: 'controller-browser',
           browserSessionId: input.browserSessionId,
-          conversationUrl: input.targetUrl,
+          conversationUrl: providerError.conversationUrl ?? input.targetUrl,
           executionPreferenceVerified: false,
           error: providerError,
         };

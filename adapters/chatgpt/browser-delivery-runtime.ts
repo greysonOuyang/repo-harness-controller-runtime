@@ -6,6 +6,7 @@ import { executeControllerScopedPluginAction } from '../../src/runtime/plugins/s
 import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
 import {
   CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN,
+  ChatgptProviderDeliveryError,
   DEFAULT_CHATGPT_AUTOMATION_MODEL,
   type ChatgptAutomationReasoning,
   type ChatgptAutomationTabCleanupStatus,
@@ -691,6 +692,13 @@ export async function submitChatgptPrompt(
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   } while (Date.now() < deadline);
-  throw new Error(`${submitOutcomeUnknown ? CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN : 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED'}:${observedUrl}`);
+  const failureCode = submitOutcomeUnknown
+    ? CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN
+    : 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED';
+  throw new ChatgptProviderDeliveryError(
+    failureCode,
+    `${failureCode}:${observedUrl}`,
+    { conversationUrl: observedUrl },
+  );
 }
 

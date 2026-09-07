@@ -13,6 +13,24 @@ export type ChatgptProviderFailureDisposition = 'outcome_unknown' | 'wait_for_us
 export type ChatgptProviderDeliveryStatus = 'dispatch_confirmed' | ChatgptProviderFailureDisposition;
 export type ChatgptProviderKind = 'controller-browser' | 'chatgpt-bridge';
 
+export class ChatgptProviderDeliveryError extends Error {
+  readonly code: string;
+  readonly conversationUrl?: string;
+
+  constructor(code: string, message: string, options: { conversationUrl?: string } = {}) {
+    super(message);
+    this.name = 'ChatgptProviderDeliveryError';
+    this.code = code;
+    this.conversationUrl = options.conversationUrl;
+  }
+}
+
+export interface ChatgptProviderErrorEvidence {
+  code: string;
+  message: string;
+  conversationUrl?: string;
+}
+
 export interface ChatgptProviderDeliveryInput {
   controllerHome: string;
   repoId: string;
@@ -78,10 +96,18 @@ export function chatgptProviderDispatchReceiptId(input: {
   return `chatgpt-dispatch:${digest}`;
 }
 
-export function chatgptProviderError(error: unknown, fallbackCode: string): { code: string; message: string } {
+export function chatgptProviderError(error: unknown, fallbackCode: string): ChatgptProviderErrorEvidence {
   const message = error instanceof Error ? error.message : String(error);
-  const code = error instanceof Error && error.message.includes(':')
-    ? error.message.split(':', 1)[0]
-    : fallbackCode;
-  return { code, message };
+  const code = error instanceof ChatgptProviderDeliveryError
+    ? error.code
+    : error instanceof Error && error.message.includes(':')
+      ? error.message.split(':', 1)[0]
+      : fallbackCode;
+  return {
+    code,
+    message,
+    ...(error instanceof ChatgptProviderDeliveryError && error.conversationUrl
+      ? { conversationUrl: error.conversationUrl }
+      : {}),
+  };
 }
