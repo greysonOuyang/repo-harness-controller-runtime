@@ -41,7 +41,7 @@ import { commandFingerprint, verificationInputFingerprint, workspaceValidationFi
 import { resolveWorkVerificationContext } from '../../../src/runtime/control-plane/execution/work-verification-context';
 import { executeWorkVerification } from '../../../src/runtime/control-plane/execution/work-verification-service';
 import { implementationReviewContentFingerprint } from '../../../src/runtime/control-plane/execution/implementation-review-content';
-import { reconcileDirectCanonicalTargetAdvanceCommand } from '../../../src/runtime/control-plane/execution/work-finalization-service';
+import { implementationReviewCommittedBaseRevision, reconcileDirectCanonicalTargetAdvanceCommand } from '../../../src/runtime/control-plane/execution/work-finalization-service';
 import { acceptReviewedDirectEditWorkReconciliation, completeReviewedDirectEditWorkAfterCommit, prepareReviewedDirectEditWorkCommit, type ReviewedDirectEditWorkCommitPlan } from '../../../src/runtime/control-plane/execution/direct-edit-work-completion';
 import { readJobEvents } from '../../../src/runtime/evidence/event-ledger';
 import { readExecutionArtifact } from '../../../src/runtime/evidence/artifact-store';
@@ -2996,6 +2996,14 @@ function reconcileTerminalFacadeWorkVerifications(
     }
   }
 
+  deliveryBaseRevision = verificationHandle
+    ? implementationReviewCommittedBaseRevision(
+        verificationRepository,
+        verificationHandle,
+        workContract.baseRevision,
+        sourceRevision,
+      )
+    : workContract.baseRevision;
   const committedPaths = deliveryBaseRevision
     ? workChangedPaths(verificationRepository.canonicalRoot, deliveryBaseRevision, sourceRevision)
     : workContract.repositoryBaseState === 'unborn'
