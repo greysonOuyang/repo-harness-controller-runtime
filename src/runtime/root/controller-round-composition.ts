@@ -1,5 +1,7 @@
-import type { ControllerRoundRelayRecord } from '../../../packages/kernel/controller/api/index';
-import { renderAssistantWorkContext } from '../context/assistant-work-context';
+import { createHash } from 'crypto';
+import type { AssistantContextSnapshot, ControllerRoundRelayRecord } from '../../../packages/kernel/controller/api/index';
+import { prepareAssistantWorkContext } from '../context/assistant-work-context';
+import { renderAssistantContext, type AssistantContextResolution } from '../context/assistant-context';
 import { getChatgptWorkConversationBinding } from '../../../adapters/chatgpt/work-conversation-binding-store';
 import {
   buildChatgptControllerRoundPrompt,
@@ -68,7 +70,38 @@ export function recordChatgptControllerRoundTabSettlement(
   recordChatgptControllerRoundSettlement(store, input);
 }
 
+function controllerAssistantContextSnapshot(resolution: AssistantContextResolution): AssistantContextSnapshot {
+  const items = resolution.items.map((item) => ({
+    kind: item.kind,
+    itemId: item.id,
+    digest: item.provenance.digest,
+    revision: item.provenance.revision,
+    sourceRevision: item.provenance.sourceRevision,
+  }));
+  const identity = {
+    projectId: resolution.projectId,
+    items,
+    gaps: resolution.gaps,
+    missingRequiredSources: resolution.missingRequiredSources,
+    truncated: resolution.truncated,
+  };
+  return {
+    digest: `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`,
+    ...identity,
+  };
+}
+
+/** Resolve once at claim so rendered context and retained round evidence share one identity. */
+export function prepareControllerAssistantContextBundle(
+  store: ControllerRoundCompositionStore,
+  workId: string,
+): { rendered: string; snapshot: AssistantContextSnapshot; resolution: AssistantContextResolution } | undefined {
+  const resolution = prepareAssistantWorkContext({ ...store, workId });
+  if (!resolution) return undefined;
+  return { rendered: renderAssistantContext(resolution), snapshot: controllerAssistantContextSnapshot(resolution), resolution };
+}
+
 /** Provider-neutral context refresh used immediately after a successful claim. */
 export function prepareControllerAssistantContext(store: ControllerRoundCompositionStore, workId: string): string | undefined {
-  return renderAssistantWorkContext({ ...store, workId });
+  return prepareControllerAssistantContextBundle(store, workId)?.rendered;
 }

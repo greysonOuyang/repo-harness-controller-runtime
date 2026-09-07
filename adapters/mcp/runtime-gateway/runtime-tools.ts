@@ -230,8 +230,10 @@ import {
   recordChatgptControllerRoundTabSettlement,
   renderChatgptControllerRoundPrompt,
   prepareControllerAssistantContext,
+  prepareControllerAssistantContextBundle,
 } from '../../../src/runtime/root/controller-round-composition';
 import {
+  assertControllerOwnershipAuthority,
   bindControllerSessionToCurrentRuntime,
   claimControllerSession,
   controllerSessionAuthorityMatches,
@@ -1384,6 +1386,33 @@ function currentFacadeTerminalizationAuthority(
     controllerInstanceId: reboundInstanceId,
     claimGeneration: owner.claimGeneration,
   };
+}
+
+function currentTerminalCleanupAuthority(
+  ctx: MultiRepositoryMcpToolContext,
+  store: { controllerHome: string; repoId: string },
+  workId: string,
+  args: Record<string, unknown>,
+): ControllerTerminalizationAuthority {
+  const owner = getControllerSession(store, workId);
+  if (!owner) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${workId}`);
+  const identity = authenticatedFacadeControllerIdentity(ctx, args);
+  const authority = assertControllerOwnershipAuthority(owner, {
+    workId,
+    controllerId: identity.controllerId,
+    controllerType: identity.controllerType,
+    principalId: identity.principalId,
+    controllerInstanceId: identity.controllerInstanceId,
+  });
+  const relay = getControllerRoundRelay(store, workId);
+  if (relay) {
+    // A dispatched/claimed round carries a separate per-round capability. It
+    // proves semantic round authority; it is not the digest of the Work owner.
+    assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+  } else if (identity.controllerAuthorityId && !controllerSessionAuthorityMatches(owner, identity.controllerAuthorityId)) {
+    throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; explicit Work-bound controller authority does not match.`);
+  }
+  return authority;
 }
 
 function ensureFacadeWorkHandle(
@@ -4490,9 +4519,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               permissionSnapshotVersion,
               lastValidatedAt: new Date().toISOString(),
             });
+            const assistantContextBundle = prepareControllerAssistantContextBundle(store, workId);
             const relay = acknowledgeControllerRoundClaim(
               { controllerHome: ctx.controllerHome, repoId: repository.repoId },
-              { workId, session },
+              { workId, session, assistantContextSnapshot: assistantContextBundle?.snapshot ?? null },
             );
             return result(buildFacadeResult({
               summary: relay?.status === 'claimed'
@@ -4501,7 +4531,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               data: {
                 session,
                 relay,
-                assistantContext: prepareControllerAssistantContext(store, workId),
+                assistantContext: assistantContextBundle?.rendered ?? prepareControllerAssistantContext(store, workId),
+                assistantContextSnapshot: assistantContextBundle?.snapshot,
                 controllerAuthorityId: dispatchedRelay?.authorityId?.trim() || directAuthority?.authorityId,
                 controllerAuthorityCarrier: dispatchedRelay?.authorityId?.trim() ? 'controller_authority_id' : 'controller_authority_id_or_session_id_compat',
               },
@@ -4590,6 +4621,8 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                     identity,
                     disposition: disposition as ControllerRoundDisposition,
                     executionQualityDecisions: args.execution_quality_decisions as Parameters<typeof submitControllerRoundDisposition>[1]['executionQualityDecisions'],
+                    assistantContextDigest: typeof args.assistant_context_digest === 'string' ? args.assistant_context_digest : undefined,
+                    assistantContextUsage: args.assistant_context_usage as Parameters<typeof submitControllerRoundDisposition>[1]['assistantContextUsage'],
                     relayScopeId: frozenControllerDisposition?.relayScopeId ?? (typeof args.relay_scope_id === 'string' ? args.relay_scope_id : undefined),
                     requirementId: typeof args.requirement_id === 'string' ? args.requirement_id : undefined,
                     handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
@@ -5407,12 +5440,17 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             // cleanup path, while the lower terminal cleanup authority preserves
             // dirty/unique source before removing Work-owned resources.
             const owner = getControllerSession(store, workId);
+            let cleanupAuthority: ControllerTerminalizationAuthority | undefined;
             if (owner) {
-              return result(buildFacadeResult({
-                status: 'blocked',
-                summary: `WORK_TERMINAL_CLEANUP_ACTIVE_CONTROLLER: ${workId} is still owned by ${owner.controllerId}.`,
-                data: { workId, terminalizationApplied: false, cleanupOnly: true },
-              }) as unknown as Record<string, unknown>, true);
+              try {
+                cleanupAuthority = currentTerminalCleanupAuthority(ctx, store, workId, args);
+              } catch (error) {
+                return result(buildFacadeResult({
+                  status: 'blocked',
+                  summary: error instanceof Error ? error.message : `Work ${workId} terminal cleanup authority check failed.`,
+                  data: { workId, terminalizationApplied: false, cleanupOnly: true },
+                }) as unknown as Record<string, unknown>, true);
+              }
             }
             const relay = getControllerRoundRelay(store, workId);
             if (relay && !['goal_complete', 'handed_off', 'failed'].includes(relay.status)) {
@@ -5430,6 +5468,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 {
                   targetBranch: typeof args.target_branch === 'string' ? args.target_branch : undefined,
                   deleteBranch: args.delete_branch !== false,
+                  controllerAuthority: cleanupAuthority,
                 },
               );
               const cleanupCompleted = cleanup.status === 'cleaned';

@@ -1994,6 +1994,118 @@ describe('rh_work terminalization authority', () => {
     expect(getControllerSession(store, workB)?.sessionId).toBe('transport-b-frozen-stop');
   }, 15_000);
 
+  test('terminal cleanup releases the exact leftover owner from a terminalization crash window', async () => {
+    const fx = fixture();
+    const caller = ctx(fx.controllerHome, fx.repository, 'principal-terminal-owner', 'transport-terminal-owner', 'runtime-terminal-owner');
+    const cleanupCaller = ctx(fx.controllerHome, fx.repository, 'principal-terminal-owner', 'transport-terminal-owner-retry', 'runtime-terminal-owner');
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-terminal-cleanup-leftover-owner';
+    const branch = 'work/terminal-cleanup-leftover-owner';
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'terminal cleanup leftover owner regression',
+      baseRef: baseRevision,
+      branchName: branch,
+    });
+    const now = new Date().toISOString();
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      principalId: caller.principalId!,
+      controllerInstanceId: caller.controllerInstanceId!,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Release the terminalization owner before retrying resource cleanup.',
+      acceptanceCriteria: [],
+      constraints: { requireWorktree: true, directMainProhibited: true },
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      status: 'ready',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+    });
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const preservedAfterTerminalizationCrash = true;\n');
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId: caller.sessionId!,
+      principalId: caller.principalId!,
+      repositoryId: fx.repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      deliveryTargetBranch: 'main',
+      worktreePath: workspace.root!,
+      branch,
+      managedWorktree: true,
+      baseCommit: baseRevision,
+      expectedHead: baseRevision,
+      permissionSnapshotVersion: 1,
+      state: 'prepared',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: {
+        validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending',
+      },
+    });
+    claimControllerSession(store, {
+      workId,
+      controllerId: caller.principalId!,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId!,
+      principalId: caller.principalId!,
+      controllerInstanceId: caller.controllerInstanceId!,
+      leaseMs: 60_000,
+    });
+    // Simulate the durable semantic transition succeeding immediately before a
+    // crash, leaving the original ControllerSession for cleanup retry.
+    transitionWorkContractPhase(store, workId, {
+      status: 'cancelled',
+      phase: 'cleanup',
+      state: 'skipped',
+      summary: 'terminalization committed before cleanup process exited',
+    });
+
+    const wrongOwnerCaller = ctx(fx.controllerHome, fx.repository, 'principal-terminal-owner', 'transport-terminal-owner-wrong', 'runtime-terminal-owner-wrong');
+    const rejected = structured(await callRuntimeTool(wrongOwnerCaller, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: workId,
+      cleanup: true,
+      delete_branch: true,
+      target_branch: 'main',
+      authorize_destructive_cleanup: true,
+    }));
+    expect(rejected.status).toBe('blocked');
+    expect(rejected.summary).toContain('WORK_CONTROLLER_INSTANCE_MISMATCH');
+    expect(getControllerSession(store, workId)?.sessionId).toBe(caller.sessionId);
+    expect(existsSync(workspace.root!)).toBe(true);
+
+    const cleaned = structured(await callRuntimeTool(cleanupCaller, 'rh_work', {
+      repo_id: fx.repository.repoId,
+      operation: 'stop',
+      work_id: workId,
+      cleanup: true,
+      delete_branch: true,
+      target_branch: 'main',
+      authorize_destructive_cleanup: true,
+    }));
+    expect(cleaned.status).toBe('ok');
+    expect(cleaned.data.cleanupOnly).toBe(true);
+    expect(cleaned.data.worktreeDeleted).toBe(true);
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, workId)?.cleanupReceipt).toMatchObject({
+      complete: true,
+      ownership: { controllerLease: 'released' },
+    });
+  }, 20_000);
+
   test('terminal cleanup resolves legacy exact-id WorkHandles without workContractId', async () => {
     const fx = fixture();
     const workId = 'work-legacy-handle-terminal-cleanup';

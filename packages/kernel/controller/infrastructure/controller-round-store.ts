@@ -16,7 +16,7 @@ import { getHandoffItem, listHandoffItems } from '../../../../src/runtime/contro
 import { getWorkContract, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
 import { isTerminalHandoffStatus } from '../../../protocols/handoff/index';
 import type { ControllerSession, ControllerType } from '../domain/types';
-import { deriveClosedRoundQualitySignals, type ClosedRoundObservation, type ExecutionQualityDecision, type ExecutionQualitySignal } from '../domain/execution-quality';
+import { deriveClosedRoundQualitySignals, type AssistantContextSnapshot, type AssistantContextUsage, type ClosedRoundObservation, type ExecutionQualityDecision, type ExecutionQualitySignal } from '../domain/execution-quality';
 import {
   CONTROLLER_ROUND_DISPOSITIONS,
   CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR,
@@ -46,6 +46,8 @@ export interface SubmitControllerRoundDispositionInput {
   identity: ControllerRoundRelayIdentity;
   disposition: ControllerRoundDisposition;
   executionQualityDecisions?: ExecutionQualityDecision[];
+  assistantContextDigest?: string;
+  assistantContextUsage?: AssistantContextUsage[];
   relayScopeId?: string;
   requirementId?: string;
   handoffId?: string;
@@ -438,6 +440,68 @@ export function bindControllerRoundSuccessorWork(
   });
 }
 
+function sameAssistantContextSnapshot(
+  left: AssistantContextSnapshot | undefined,
+  right: AssistantContextSnapshot | null | undefined,
+): boolean {
+  if (right === undefined) return true;
+  if (right === null) return left === undefined;
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function validatedAssistantContextUsage(
+  record: ControllerRoundRelayRecord,
+  input: SubmitControllerRoundDispositionInput,
+): AssistantContextUsage[] {
+  const usage = input.assistantContextUsage ?? [];
+  if (!Array.isArray(usage) || usage.length > 32) throw new Error('CONTROLLER_ASSISTANT_CONTEXT_USAGE_LIMIT');
+  const snapshot = record.assistantContextSnapshot;
+  const digest = input.assistantContextDigest?.trim();
+  if (usage.length > 0 && (!snapshot || !digest)) throw new Error('CONTROLLER_ASSISTANT_CONTEXT_SNAPSHOT_REQUIRED');
+  if (digest && (!snapshot || digest !== snapshot.digest)) throw new Error('CONTROLLER_ASSISTANT_CONTEXT_DIGEST_MISMATCH');
+  if (!usage.length) return [];
+  const expected = new Map(snapshot!.items.map((item) => [`${item.kind}:${item.itemId}`, item]));
+  const seen = new Set<string>();
+  for (const item of usage) {
+    const key = `${item.kind}:${item.itemId}`;
+    if (!expected.has(key) || seen.has(key) || !['used', 'rejected'].includes(item.decision)
+      || typeof item.reason !== 'string' || !item.reason.trim() || item.reason.length > 1_000) {
+      throw new Error('CONTROLLER_ASSISTANT_CONTEXT_USAGE_INVALID');
+    }
+    seen.add(key);
+  }
+  if (seen.size !== expected.size) throw new Error('CONTROLLER_ASSISTANT_CONTEXT_USAGE_INCOMPLETE');
+  return usage.map((item) => ({ ...item, reason: item.reason.trim() }));
+}
+
+function persistClaimedAssistantContextSnapshot(
+  options: ControllerRoundRelayStoreOptions,
+  record: ControllerRoundRelayRecord,
+  requested: AssistantContextSnapshot | null | undefined,
+  at: string,
+): ControllerRoundRelayRecord {
+  if (requested === undefined || sameAssistantContextSnapshot(record.assistantContextSnapshot, requested)) return record;
+  if (record.assistantContextSnapshot) {
+    throw new Error(`CONTROLLER_ASSISTANT_CONTEXT_CLAIM_MISMATCH: ${record.originWorkId}`);
+  }
+  if (requested === null) return record;
+  const current = readRelayRecord(options, record.originWorkId);
+  if (!current || current.value.relayScopeId !== record.relayScopeId || current.value.status !== 'claimed'
+    || current.value.claimGeneration !== record.claimGeneration) {
+    throw new Error(`CONTROLLER_ASSISTANT_CONTEXT_CLAIM_STALE: ${record.originWorkId}`);
+  }
+  if (current.value.assistantContextSnapshot) {
+    if (sameAssistantContextSnapshot(current.value.assistantContextSnapshot, requested)) return current.value;
+    throw new Error(`CONTROLLER_ASSISTANT_CONTEXT_CLAIM_MISMATCH: ${record.originWorkId}`);
+  }
+  const next: ControllerRoundRelayRecord = { ...current.value, assistantContextSnapshot: requested, updatedAt: at };
+  writeControlPlaneRecord(options.controllerHome, {
+    namespace: NAMESPACE, scope: options.repoId, key: record.originWorkId, schemaVersion: SCHEMA_VERSION, value: next,
+    action: 'controller_round_assistant_context_bound', expectedRevision: current.revision,
+  });
+  return next;
+}
+
 function pendingQualitySignals(record: ControllerRoundRelayRecord): ExecutionQualitySignal[] {
   const handled = new Set(record.qualityDecisions?.map(decision => decision.fingerprint) ?? []);
   return deriveClosedRoundQualitySignals(record.observationWindow ?? [], { repeatedStateCount: record.repeatedStateCount,
@@ -447,7 +511,7 @@ function pendingQualitySignals(record: ControllerRoundRelayRecord): ExecutionQua
     })).filter(signal => !handled.has(signal.fingerprint));
 }
 
-function closedRoundObservation(work: WorkContract, roundRef: string, stateFingerprint: string, waiting: boolean): ClosedRoundObservation {
+function closedRoundObservation(work: WorkContract, roundRef: string, stateFingerprint: string, waiting: boolean, assistantContext: AssistantContextSnapshot | undefined, assistantContextUsage: AssistantContextUsage[]): ClosedRoundObservation {
   const coverageGaps: string[] = [];
   const verifications: ClosedRoundObservation['verifications'] = [];
   for (const check of work.checkRefs.slice(-32)) {
@@ -463,6 +527,8 @@ function closedRoundObservation(work: WorkContract, roundRef: string, stateFinge
   // Generic evidence references without content identity cannot prove absence of new knowledge.
   if (work.evidenceRefs.length) coverageGaps.push('generic_evidence_content_identity_unavailable');
   if (work.checkRefs.length > 32) coverageGaps.push('check_window_truncated');
+  if (!assistantContext) coverageGaps.push('assistant_context_snapshot_unavailable');
+  else if (assistantContext.items.length > 0 && assistantContextUsage.length === 0) coverageGaps.push('assistant_context_usage_unreported');
   const accepted = work.semanticAcceptanceEvidence ?? [];
   if (accepted.length > 32) coverageGaps.push('accepted_result_window_truncated');
   return { roundRef, workId: work.workId, requirementId: work.requirementId, planId: work.planId,
@@ -470,7 +536,7 @@ function closedRoundObservation(work: WorkContract, roundRef: string, stateFinge
     rootCauses: (work.engineeringContext?.blockerDispositions ?? []).slice(-32).filter(disposition => disposition.classification === 'same_root_cause')
       .map(disposition => ({ dispositionRef: disposition.receiptId, rootCauseId: disposition.blockerId,
         designScope: JSON.stringify([...disposition.semanticScopeKeys].sort()), controllerConfirmed: true })),
-    stateFingerprint, waiting, coverageGaps: [...new Set(coverageGaps)], verifications,
+    stateFingerprint, waiting, coverageGaps: [...new Set(coverageGaps)], verifications, assistantContext, assistantContextUsage,
     evidenceIdentities: work.checkRefs.slice(-32).flatMap(check => check.receipt ? [check.receipt.resultDigest] : []),
     acceptedResultIdentities: accepted.slice(-32).map(result => createHash('sha256').update(JSON.stringify([result.criterion, [...result.evidenceIds].sort()])).digest('hex')) };
 }
@@ -570,6 +636,7 @@ export function submitControllerRoundDisposition(
       throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_MISMATCH: ${work.workId}`);
     }
     const previous = relayHistory(options, relayScopeId)[0];
+    const assistantContextUsage = validatedAssistantContextUsage(existing.value, input);
     const qualityDecisions = input.executionQualityDecisions ?? [];
     if (!Array.isArray(qualityDecisions) || qualityDecisions.length > 8) throw new Error('CONTROLLER_QUALITY_DECISION_LIMIT');
     const pending = new Set(pendingQualitySignals(existing.value).map(signal => signal.fingerprint));
@@ -597,7 +664,7 @@ export function submitControllerRoundDisposition(
     const at = nowIso(options);
     const observationWindow = [
       ...(existing.value.observationWindow ?? []),
-      closedRoundObservation(work, `${relayScopeId}:${existing.value.roundCount}`, stateFingerprint, input.disposition === 'wait' || input.disposition === 'wait_for_user'),
+      closedRoundObservation(work, `${relayScopeId}:${existing.value.roundCount}`, stateFingerprint, input.disposition === 'wait' || input.disposition === 'wait_for_user', existing.value.assistantContextSnapshot, assistantContextUsage),
     ].slice(-8);
     const accumulatedQualityDecisions = [...(existing.value.qualityDecisions ?? []), ...qualityDecisions].slice(-64);
     return applyControllerRoundTransition(options, existing, {
@@ -829,7 +896,7 @@ export function finishControllerRoundRelayDispatch(
 
 export function acknowledgeControllerRoundClaim(
   options: ControllerRoundRelayStoreOptions,
-  input: { workId: string; session: ControllerSession },
+  input: { workId: string; session: ControllerSession; assistantContextSnapshot?: AssistantContextSnapshot | null },
 ): ControllerRoundRelayRecord | undefined {
   const initial = readRelayRecord(options, input.workId);
   if (!initial) return undefined;
@@ -842,7 +909,8 @@ export function acknowledgeControllerRoundClaim(
     if (current.value.status === 'claimed'
       && current.value.controllerId === input.session.controllerId
       && current.value.sessionId === input.session.sessionId
-      && current.value.claimGeneration === input.session.claimGeneration) return current.value;
+      && current.value.claimGeneration === input.session.claimGeneration
+      && sameAssistantContextSnapshot(current.value.assistantContextSnapshot, input.assistantContextSnapshot)) return current.value;
 
     const blocker = controllerRoundBlockerClass(current.value);
     const policyClaimable = ['dispatching', 'dispatched', 'claimed'].includes(current.value.status)
@@ -877,14 +945,16 @@ export function acknowledgeControllerRoundClaim(
       const work = getWorkContract(options, input.workId);
       if (!work || isTerminalWorkContractStatus(work.status)) return current.value;
       const stateFingerprint = mechanicalStateFingerprint(options, work, current.value.requirementId, current.value.relayScopeId);
-      return applyControllerRoundTransition(options, current, {
+      const transitioned = applyControllerRoundTransition(options, current, {
         type: 'semantic_state_changed', at, stateFingerprint, session, principalId: ownerPrincipal!, controllerInstanceId,
       });
+      return persistClaimedAssistantContextSnapshot(options, transitioned, input.assistantContextSnapshot, at);
     }
 
-    return applyControllerRoundTransition(options, current, {
+    const transitioned = applyControllerRoundTransition(options, current, {
       type: 'controller_claim_observed', at, session, principalId: ownerPrincipal!, controllerInstanceId,
     });
+    return persistClaimedAssistantContextSnapshot(options, transitioned, input.assistantContextSnapshot, at);
   });
 }
 

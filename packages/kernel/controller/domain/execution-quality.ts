@@ -63,6 +63,30 @@ export function deriveExecutionQualitySignals(input: {
   return signals.slice(0, 8);
 }
 
+export interface AssistantContextItemEvidence {
+  kind: 'knowledge' | 'experience';
+  itemId: string;
+  digest?: string;
+  revision?: number;
+  sourceRevision?: string;
+}
+
+export interface AssistantContextSnapshot {
+  digest: string;
+  projectId: string;
+  items: AssistantContextItemEvidence[];
+  gaps: string[];
+  missingRequiredSources: string[];
+  truncated: boolean;
+}
+
+export interface AssistantContextUsage {
+  kind: AssistantContextItemEvidence['kind'];
+  itemId: string;
+  decision: 'used' | 'rejected';
+  reason: string;
+}
+
 export interface ClosedRoundObservation {
   roundRef: string;
   workId: string;
@@ -74,6 +98,8 @@ export interface ClosedRoundObservation {
   acceptedResultIdentities: string[];
   verifications: VerificationObservation[];
   rootCauses?: RootCauseObservation[];
+  assistantContext?: AssistantContextSnapshot;
+  assistantContextUsage?: AssistantContextUsage[];
   waiting: boolean;
   coverageGaps: string[];
 }

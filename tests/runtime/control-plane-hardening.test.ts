@@ -1276,6 +1276,70 @@ describe('scheduled external Controller wake', () => {
     expect(claimed?.authorityId).toBe(opened.authorityId);
   });
 
+  test('binds the exact assistant context snapshot to claim and requires complete disposition usage evidence', () => {
+    const root = temp('forge-controller-assistant-context-evidence-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'relay\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'controller-assistant-context-evidence' });
+    const workId = 'WORK-ASSISTANT-CONTEXT-EVIDENCE';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
+      objective: 'Retain exact assistant context usage evidence for the claimed round.',
+      acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt', status: 'running',
+    });
+    const store = { controllerHome, repoId: repository.repoId };
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-test', sessionId: 'launch-session' },
+    });
+    finishControllerRoundRelayDispatch(store, { workId, ok: true });
+    startExecutionSession(controllerHome, { sessionId: 'claimed-session', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-test' });
+    const session = claimControllerSession(store, {
+      workId, controllerId: 'chatgpt-controller', controllerType: 'chatgpt', sessionId: 'claimed-session',
+      principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-test', leaseMs: 5 * 60_000,
+    });
+    const snapshot = {
+      digest: 'sha256:assistant-context-fixture', projectId: 'project-fixture',
+      items: [
+        { kind: 'knowledge' as const, itemId: 'knowledge:1', digest: 'knowledge-digest', sourceRevision: 'source-a' },
+        { kind: 'experience' as const, itemId: 'experience:1', revision: 2 },
+      ],
+      gaps: [], missingRequiredSources: [], truncated: false,
+    };
+    const claimed = acknowledgeControllerRoundClaim(store, { workId, session, assistantContextSnapshot: snapshot });
+    expect(claimed).toMatchObject({ status: 'claimed', assistantContextSnapshot: snapshot });
+    expect(() => acknowledgeControllerRoundClaim(store, {
+      workId, session, assistantContextSnapshot: { ...snapshot, digest: 'sha256:different-claim-context' },
+    })).toThrow('CONTROLLER_ASSISTANT_CONTEXT_CLAIM_MISMATCH');
+    expect(acknowledgeControllerRoundClaim(store, { workId, session, assistantContextSnapshot: snapshot })?.assistantContextSnapshot).toEqual(snapshot);
+    const identity = {
+      controllerId: session.controllerId, controllerType: session.controllerType,
+      principalId: session.principalId!, controllerInstanceId: session.controllerInstanceId!, sessionId: session.sessionId,
+    };
+    const completeUsage = [
+      { kind: 'knowledge' as const, itemId: 'knowledge:1', decision: 'used' as const, reason: 'Applied the durable project constraint.' },
+      { kind: 'experience' as const, itemId: 'experience:1', decision: 'rejected' as const, reason: 'Not applicable to this exact round.' },
+    ];
+    expect(() => submitControllerRoundDisposition(store, {
+      workId, identity, disposition: 'wait', assistantContextDigest: 'sha256:stale', assistantContextUsage: completeUsage,
+    })).toThrow('CONTROLLER_ASSISTANT_CONTEXT_DIGEST_MISMATCH');
+    expect(() => submitControllerRoundDisposition(store, {
+      workId, identity, disposition: 'wait', assistantContextDigest: snapshot.digest, assistantContextUsage: completeUsage.slice(0, 1),
+    })).toThrow('CONTROLLER_ASSISTANT_CONTEXT_USAGE_INCOMPLETE');
+    const waiting = submitControllerRoundDisposition(store, {
+      workId, identity, disposition: 'wait', assistantContextDigest: snapshot.digest, assistantContextUsage: completeUsage,
+    });
+    expect(waiting.status).toBe('waiting');
+    expect(waiting.observationWindow?.at(-1)).toMatchObject({
+      assistantContext: snapshot,
+      assistantContextUsage: completeUsage,
+    });
+    expect(waiting.observationWindow?.at(-1)?.coverageGaps).not.toContain('assistant_context_usage_unreported');
+  });
+
   test('acknowledges a dispatched ChatGPT round only after an exact Work claim and only recovers liveness when that claimed round is abandoned', () => {
     const root = temp('forge-controller-relay-claim-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
