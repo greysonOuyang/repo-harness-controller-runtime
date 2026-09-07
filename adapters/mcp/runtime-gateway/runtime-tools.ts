@@ -4051,6 +4051,17 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         if (frozenControllerRoundOperation) {
           args.relay_scope_id = frozenControllerRoundOperation.relayScopeId;
           args.controller_authority_id = frozenControllerRoundOperation.authorityId;
+          if (frozenControllerRoundOperation.operation === 'review') {
+            if (args.review_decision !== undefined || args.review_rationale !== undefined) {
+              return result(buildFacadeResult({
+                status: 'blocked',
+                summary: 'CONTROLLER_ROUND_REVIEW_COMPATIBILITY_CONFLICT: native review fields cannot be combined with the frozen review carrier.',
+                data: {},
+              }) as unknown as Record<string, unknown>, true);
+            }
+            args.review_decision = frozenControllerRoundOperation.reviewDecision;
+            args.review_rationale = typeof args.reason === 'string' ? args.reason : '';
+          }
         }
         if (frozenControllerDisposition) {
           args.relay_scope_id = frozenControllerDisposition.relayScopeId;

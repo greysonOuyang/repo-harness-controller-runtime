@@ -9,6 +9,7 @@ import { executionToolDefinitions } from '../src/runtime/gateway/mcp/execution-t
 import { processToolDefinitions } from '../src/runtime/gateway/mcp/process-tools';
 import {
   buildPlanObligationCompatibilityCapability,
+  parseControllerRoundCompatibilityCapability,
   parsePlanObligationCompatibilityCapability,
 } from '../adapters/mcp/controller-round-compatibility';
 import {
@@ -128,6 +129,38 @@ try {
   }
 } catch (error) {
   failures.push(`frozen Plan obligation compatibility failed: ${error instanceof Error ? error.message : String(error)}`);
+}
+
+try {
+  const authorityId = `cra_${'a'.repeat(32)}`;
+  const relayScopeId = 'goal:work-frozen-review-compatibility';
+  const parsedReview = parseControllerRoundCompatibilityCapability(
+    'repair',
+    `controller.round:review:approved:${authorityId}:${relayScopeId}`,
+  );
+  if (JSON.stringify(parsedReview) !== JSON.stringify({ operation: 'review', authorityId, relayScopeId, reviewDecision: 'approved' })) {
+    failures.push('frozen ControllerRound review compatibility changed authority, scope, or review decision');
+  }
+  const parsedVerify = parseControllerRoundCompatibilityCapability(
+    'repair',
+    `controller.round:verify:${authorityId}:${relayScopeId}`,
+  );
+  if (JSON.stringify(parsedVerify) !== JSON.stringify({ operation: 'verify', authorityId, relayScopeId })) {
+    failures.push('legacy ControllerRound compatibility changed non-review operation semantics');
+  }
+  for (const invalid of [
+    `controller.round:review:${authorityId}:${relayScopeId}`,
+    `controller.round:review:maybe:${authorityId}:${relayScopeId}`,
+  ]) {
+    try {
+      parseControllerRoundCompatibilityCapability('repair', invalid);
+      failures.push('frozen ControllerRound review compatibility accepted a missing or invalid explicit decision');
+    } catch {
+      // Expected: frozen review must carry one explicit canonical review decision.
+    }
+  }
+} catch (error) {
+  failures.push(`frozen ControllerRound review compatibility failed: ${error instanceof Error ? error.message : String(error)}`);
 }
 
 try {

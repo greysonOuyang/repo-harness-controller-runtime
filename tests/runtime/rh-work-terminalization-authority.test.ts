@@ -1677,6 +1677,107 @@ describe('rh_work terminalization authority', () => {
     expect(invalidDecision.summary).toContain('WORK_IMPLEMENTATION_REVIEW_COMPATIBILITY_INVALID');
   }, 15_000);
 
+  test('frozen ControllerRound review carrier preserves exact authority and explicit review decision in one canonical call', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const principalId = 'principal-frozen-controller-review';
+    const runtimeInstanceId = 'runtime-frozen-controller-review';
+    const sessionId = 'transport-frozen-controller-review';
+    const workId = 'work-frozen-controller-review';
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    const now = new Date().toISOString();
+
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      baseRevision,
+      mode: 'goal_workloop',
+      objective: 'Prove frozen ControllerRound review transport keeps one authority.',
+      acceptanceCriteria: ['Exact verified candidate is explicitly reviewed through the frozen carrier.'],
+      constraints: { requireHandoffOnAmbiguity: true },
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      status: 'running',
+      phase: 'review',
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1,
+      workId,
+      workContractId: workId,
+      sessionId,
+      principalId,
+      repositoryId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      sourceCheckoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repoRoot,
+      branch: 'main',
+      deliveryTargetBranch: 'main',
+      managedWorktree: false,
+      baseCommit: baseRevision,
+      deliveryBaseCommit: baseRevision,
+      expectedHead: baseRevision,
+      permissionSnapshotVersion: 1,
+      state: 'validating',
+      createdAt: now,
+      updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'done', commit: 'pending', merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'pending' },
+    });
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+    writeFileSync(join(fx.repoRoot, 'src', 'index.ts'), 'export const ready = 2;\n');
+    const workspaceFingerprint = workspaceValidationFingerprint(fx.repoRoot, repositoryGitStatus(fx.repository));
+    updateWorkContract(store, workId, {
+      checkRefs: [exactVerification({
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        sourceRevision: baseRevision,
+        workspaceFingerprint,
+        checkId: 'frozen-controller-review-check',
+      })],
+    });
+
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId,
+      identity: { controllerId: principalId, controllerType: 'chatgpt', principalId, controllerInstanceId: runtimeInstanceId, sessionId },
+      bindingId: `chatgpt:${fx.repository.repoId}:${workId}`,
+    });
+    const claimed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, sessionId, runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'repair',
+        work_id: workId,
+        capability_id: `controller.round:controller_claim:${relay.authorityId}:${relay.relayScopeId}`,
+      },
+    ));
+    expect(claimed.status).toBe('ok');
+
+    const reviewed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, sessionId, runtimeInstanceId),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId,
+        operation: 'repair',
+        work_id: workId,
+        capability_id: `controller.round:review:approved:${relay.authorityId}:${relay.relayScopeId}`,
+        reason: 'Exact verified frozen-client candidate is approved under the durable round authority.',
+      },
+    ));
+    expect(reviewed.status).toBe('ok');
+    expect(reviewed.data?.review).toMatchObject({ decision: 'approved' });
+    expect(getWorkContract(store, workId)).toMatchObject({
+      phase: 'delivery',
+      phaseEvidence: { review: { state: 'satisfied' } },
+    });
+  }, 15_000);
+
   test('same-principal concurrent ChatGPT conversations cannot claim or stop each other while the owning round survives transport rotation', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };

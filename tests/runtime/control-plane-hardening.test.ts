@@ -1155,6 +1155,8 @@ describe('scheduled external Controller wake', () => {
     expect(scheduledPrompt).toContain(`controller_authority_id=${opened.authorityId}`);
     expect(scheduledPrompt).toContain(`relay_scope_id=${opened.relayScopeId}`);
     expect(scheduledPrompt).toContain(`controller.round:<operation>:${opened.authorityId}:${opened.relayScopeId}`);
+    expect(scheduledPrompt).toContain(`controller.round:review:<approved|changes_required|blocked>:${opened.authorityId}:${opened.relayScopeId}`);
+    expect(scheduledPrompt).toContain('通过 reason 携带 review rationale');
     expect(scheduledPrompt).toContain('这是新的 ChatGPT controller round。');
     expect(scheduledPrompt).not.toContain('This is a new ChatGPT controller round.');
     expect(scheduledPrompt).toContain('不得选择、启动、delegate、resume sibling Work');
@@ -1846,11 +1848,17 @@ describe('scheduled external Controller wake', () => {
       'repair',
       `controller.round:plan_accept_step:${authorityId}:goal:work-compat`,
     )).toEqual({ operation: 'plan_accept_step', authorityId, relayScopeId: 'goal:work-compat' });
+    expect(parseControllerRoundCompatibilityCapability(
+      'repair',
+      `controller.round:review:changes_required:${authorityId}:goal:work-compat`,
+    )).toEqual({ operation: 'review', authorityId, relayScopeId: 'goal:work-compat', reviewDecision: 'changes_required' });
     expect(parseControllerRoundCompatibilityCapability('continue', `controller.round:continue:${authorityId}:goal:work-compat`)).toBeUndefined();
     expect(parseControllerRoundCompatibilityCapability('repair', 'controller.disposition:wait:goal:work-compat')).toBeUndefined();
     expect(() => parseControllerRoundCompatibilityCapability('repair', `controller.round:delegate:${authorityId}:goal:work-compat`)).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);
     expect(() => parseControllerRoundCompatibilityCapability('repair', 'controller.round:continue:not-authority:goal:work-compat')).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);
     expect(() => parseControllerRoundCompatibilityCapability('repair', `controller.round:continue:${authorityId}:`)).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);
+    expect(() => parseControllerRoundCompatibilityCapability('repair', `controller.round:review:${authorityId}:goal:work-compat`)).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);
+    expect(() => parseControllerRoundCompatibilityCapability('repair', `controller.round:review:maybe:${authorityId}:goal:work-compat`)).toThrow(/CONTROLLER_ROUND_COMPATIBILITY_INVALID/);
   });
 
   test('allows only the exact same-principal ChatGPT authority to record goal_complete after release/reclaim runtime rotation', () => {
