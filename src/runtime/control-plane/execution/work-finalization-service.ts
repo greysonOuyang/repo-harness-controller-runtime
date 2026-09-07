@@ -367,7 +367,11 @@ export function implementationReviewCommittedBaseRevision(
   // unchanged approved review appear stale. Preserve only the already-durable
   // delivery base in this exact catch-up state; without that durable fence, keep
   // the previous fail-closed behavior below.
-  if (targetHead === head && handle.deliveryBaseCommit?.trim()) return base;
+  if (
+    targetHead === head
+    && handle.deliveryBaseCommit?.trim()
+    && handle.deliveryBaseCommit.trim() !== (handle.baseCommit?.trim() || fallbackBaseRevision?.trim())
+  ) return base;
   // Review may exclude canonical target-only history only after proving that the
   // recorded delivery base advances linearly to the exact target and that this
   // target is already contained by the managed candidate. This is a read-only
@@ -376,6 +380,67 @@ export function implementationReviewCommittedBaseRevision(
   if (!gitIsAncestor(repository.canonicalRoot, base, targetHead)) return base;
   if (!gitIsAncestor(repository.canonicalRoot, targetHead, head)) return base;
   return targetHead;
+}
+
+function implementationReviewCommittedChangedPaths(input: {
+  repository: Pick<RepositoryRecord, 'canonicalRoot' | 'defaultBranch'>;
+  handle: WorkHandleState;
+  contract: NonNullable<ReturnType<typeof contractFor>>;
+  head: string | undefined;
+  explicitTargetBranch?: string;
+  review?: NonNullable<ReturnType<typeof latestImplementationReview>>;
+}): string[] {
+  const committedBase = implementationReviewCommittedBaseRevision(
+    input.repository,
+    input.handle,
+    input.contract.baseRevision,
+    input.head,
+    input.explicitTargetBranch,
+  );
+  if (!input.head || !committedBase) return [];
+  const pathsFrom = (base: string) => normalizeImplementationReviewChangedPaths(
+    input.head === base ? [] : gitChangedPaths(input.repository.canonicalRoot, base, input.head!),
+  );
+  const committedPaths = pathsFrom(committedBase);
+  if (!input.review) return committedPaths;
+
+  // Review preparation, pre-delivery finalization, branch-cleanup retry, and
+  // cleaned-completion catch-up must share one committed review-baseline
+  // authority. The canonical target may legitimately move after review because
+  // this candidate was merged (making the current helper base equal HEAD), or
+  // it may already have contained the candidate before review. Only select
+  // between the current proven helper base and the durable delivery base when
+  // one exactly reproduces the immutable reviewed changed-path identity. A real
+  // source/path drift therefore still fails closed in the caller.
+  const reviewedDigest = implementationReviewChangedPathDigest(
+    normalizeImplementationReviewChangedPaths(input.review.changedPaths),
+  );
+  if (implementationReviewChangedPathDigest(committedPaths) === reviewedDigest) return committedPaths;
+
+  const recordedBase = workDeliveryBaseRevision(input.handle) ?? input.contract.baseRevision;
+  if (recordedBase && recordedBase !== committedBase) {
+    const recordedPaths = pathsFrom(recordedBase);
+    if (implementationReviewChangedPathDigest(recordedPaths) === reviewedDigest) return recordedPaths;
+  }
+
+  // New reviews intentionally preserve the durable delivery base once target has
+  // caught the exact candidate (implementationReviewCommittedBaseRevision). A
+  // review already persisted by an older Runtime may, however, legitimately
+  // carry the former exact-target-relative empty identity. Recovery may honor
+  // that historical identity only when the current canonical target is exactly
+  // the immutable reviewed source HEAD and its path digest matches. This branch
+  // is review-only compatibility; it can never create a new empty review.
+  const targetBranch = resolveWorkDeliveryTargetBranch(
+    input.handle,
+    input.repository.defaultBranch,
+    input.explicitTargetBranch,
+  );
+  const targetHead = gitRevision(input.repository.canonicalRoot, targetBranch);
+  if (targetHead === input.head && input.review.sourceRevision === input.head) {
+    const exactTargetPaths = pathsFrom(targetHead);
+    if (implementationReviewChangedPathDigest(exactTargetPaths) === reviewedDigest) return exactTargetPaths;
+  }
+  return committedPaths;
 }
 
 function currentWorkReviewChangedPaths(
@@ -391,10 +456,9 @@ function currentWorkReviewChangedPaths(
     throw new Error(`WORK_IMPLEMENTATION_REVIEW_UNOWNED_DIRTY_PATH: ${unowned.join(', ')}`);
   }
   const head = status.head?.trim();
-  const base = implementationReviewCommittedBaseRevision(repository, handle, contract.baseRevision, head, explicitTargetBranch);
-  const committedPaths = head && base && head !== base
-    ? gitChangedPaths(repository.canonicalRoot, base, head)
-    : [];
+  const committedPaths = implementationReviewCommittedChangedPaths({
+    repository, handle, contract, head, explicitTargetBranch,
+  });
   const observed = normalizeImplementationReviewChangedPaths([...committedPaths, ...ownedPaths]);
   const scopeViolation = findWorkPathScopeViolation(contract, observed);
   if (scopeViolation) {
@@ -468,13 +532,11 @@ function assertPhysicalBranchCleanupImplementationReviewGate(input: {
   if (input.handle.expectedHead && branchHead !== input.handle.expectedHead) {
     throw new Error('WORK_IMPLEMENTATION_REVIEW_BRANCH_SOURCE_CHANGED');
   }
-  const deliveryBase = workDeliveryBaseRevision(input.handle) ?? input.contract.baseRevision;
-  if (!deliveryBase) throw new Error('WORK_IMPLEMENTATION_REVIEW_BASE_REQUIRED');
-  const changedPaths = branchHead === deliveryBase
-    ? []
-    : completionReceiptChangedPaths(input.target.canonicalRoot, deliveryBase, branchHead);
-  if (!workRequiresImplementationReview(input.contract.workKind, changedPaths)) return;
   const review = latestImplementationReview(input.contract.implementationReviews);
+  const changedPaths = implementationReviewCommittedChangedPaths({
+    repository: input.target, handle: input.handle, contract: input.contract, head: branchHead, review,
+  });
+  if (!workRequiresImplementationReview(input.contract.workKind, changedPaths)) return;
   if (!review) throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
   if (review.sourceRevision !== branchHead) throw new Error('WORK_IMPLEMENTATION_REVIEW_STALE: branch source revision changed');
   const verification = authoritativeImplementationReviewVerificationEvidence({
@@ -524,11 +586,9 @@ function assertCleanedCompletionImplementationReviewGate(input: {
   if (review.sourceRevision !== deliveryRevision) {
     throw new Error('WORK_IMPLEMENTATION_REVIEW_STALE: cleaned delivery source revision changed');
   }
-  const deliveryBase = workDeliveryBaseRevision(input.handle) ?? input.contract.baseRevision;
-  if (!deliveryBase) throw new Error('WORK_IMPLEMENTATION_REVIEW_BASE_REQUIRED');
-  const changedPaths = deliveryRevision === deliveryBase
-    ? []
-    : completionReceiptChangedPaths(input.target.canonicalRoot, deliveryBase, deliveryRevision);
+  const changedPaths = implementationReviewCommittedChangedPaths({
+    repository: input.target, handle: input.handle, contract: input.contract, head: deliveryRevision, review,
+  });
   const reviewedPaths = normalizeImplementationReviewChangedPaths(review.changedPaths);
   if (implementationReviewChangedPathDigest(reviewedPaths) !== implementationReviewChangedPathDigest(changedPaths)) {
     throw new Error('WORK_IMPLEMENTATION_REVIEW_STALE: cleaned delivery changed-path identity changed');

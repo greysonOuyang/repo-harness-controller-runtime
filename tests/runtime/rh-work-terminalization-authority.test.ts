@@ -4228,6 +4228,191 @@ describe('rh_work terminalization authority', () => {
     expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(candidate);
   }, 20_000);
 
+  test('finalize preserves an exact target-relative empty review after cleanup removed the already-integrated Work checkout', async () => {
+    const fx = fixture();
+    const workId = 'work-exact-target-cleaned-empty-review';
+    const caller = {
+      principalId: 'principal-exact-target-cleaned',
+      sessionId: 'transport-exact-target-cleaned',
+      controllerInstanceId: 'runtime-exact-target-cleaned',
+    };
+    const branch = 'work/exact-target-cleaned-empty-review';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId, title: 'Exact Target Cleaned Empty Review', branchName: branch,
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const store = { controllerHome: fx.controllerHome, repoId: repository.repoId };
+    const base = workspace.baseRevision!;
+    const now = new Date().toISOString();
+
+    writeFileSync(join(workspace.root!, 'owned.txt'), 'reviewed changed delivery\n');
+    execFileSync('git', ['add', 'owned.txt'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'reviewed changed delivery'], { cwd: workspace.root! });
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    execFileSync('git', ['merge', '--ff-only', candidate], { cwd: fx.repoRoot });
+
+    createWorkContract(store, {
+      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, mode: 'goal_workloop',
+      objective: 'Recover semantic completion when target already contained the exact reviewed candidate before cleanup.',
+      acceptanceCriteria: ['The target-relative empty reviewed candidate is terminalized without replaying Git mutation.'],
+      allowedPaths: ['owned.txt'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true, requireWorktree: true },
+      requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'verification', worktreeRef: workspace.root,
+      scopeEvidence: { initialLikelyPaths: ['owned.txt'], inspectedPaths: ['owned.txt'], actualChangedPaths: ['owned.txt'], recordedAt: now },
+    });
+    transitionWorkContractPhase(store, workId, {
+      phase: 'verification', status: 'running', state: 'satisfied', summary: 'Exact target-contained candidate verification is satisfied before review.',
+    });
+    requestWorkImplementationReview(store, workId, 'Exact target-contained candidate requires review before semantic completion.');
+    recordWorkImplementationReview(store, workId, {
+      schemaVersion: 1, reviewId: 'REV-exact-target-cleaned-empty', workId, reviewerPrincipalId: caller.principalId,
+      reviewerControllerSessionId: caller.sessionId, decision: 'approved',
+      rationale: 'Canonical target already equals the immutable candidate, so the committed review delta is empty before physical cleanup.', findings: [],
+      sourceRevision: candidate, workspaceFingerprint: 'exact-target-cleaned-content', verificationWorkspaceFingerprint: 'exact-target-cleaned-verification',
+      changedPaths: [], changedPathDigest: implementationReviewChangedPathDigest([]),
+      acceptanceCriteriaSummary: 'Exact target-relative empty reviewed candidate is terminalized.', verificationEvidence: [], architectureEvidence: [], recordedAt: now,
+    });
+    transitionWorkContractPhase(store, workId, {
+      phase: 'verification', status: 'running', state: 'satisfied',
+      summary: 'Simulate a late exact validation projection after the approved review.',
+    });
+    requestWorkImplementationReview(store, workId, 'Late validation projection reopened the exact target-relative review before the crash.');
+    expect(getWorkContract(store, workId)).toMatchObject({
+      phase: 'review',
+      phaseEvidence: { review: { state: 'active' } },
+      implementationReviews: [{ reviewId: 'REV-exact-target-cleaned-empty', decision: 'approved', sourceRevision: candidate }],
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1, workId, workContractId: workId, sessionId: caller.sessionId, principalId: caller.principalId,
+      repositoryId: repository.repoId, checkoutId: workspace.checkoutId!, sourceCheckoutId: repository.activeCheckoutId,
+      worktreePath: workspace.root!, branch, deliveryTargetBranch: 'main', managedWorktree: true, baseCommit: base,
+      deliveryBaseCommit: base, expectedHead: candidate, permissionSnapshotVersion: 1, state: 'cleaned',
+      validatedInputFingerprint: 'cleaned-changed-validation', createdAt: now, updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'done', commit: 'done', merge: 'done', branchCleanup: 'done', worktreeCleanup: 'done' },
+    });
+    execFileSync('git', ['worktree', 'remove', '--force', workspace.root!], { cwd: fx.repoRoot });
+    execFileSync('git', ['branch', '-D', branch], { cwd: fx.repoRoot });
+    setRepositoryCheckoutLifecycle({
+      controllerHome: fx.controllerHome, repoId: repository.repoId, checkoutId: workspace.checkoutId!, lifecycle: 'removed',
+      reason: 'simulate exact-target crash after physical cleanup but before Work completion receipt persistence',
+    });
+    claimControllerSession(store, {
+      workId, controllerId: caller.principalId, controllerType: 'chatgpt', sessionId: caller.sessionId, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+    });
+
+    const context = ctx(fx.controllerHome, getRepository(repository.repoId, fx.controllerHome), caller.principalId, caller.sessionId, caller.controllerInstanceId);
+    const finalized = structured(await callRuntimeTool(context, 'rh_work', {
+      repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt',
+      completion_outcome: 'completed_changed', commit: false, merge: false, cleanup: true, target_branch: 'main',
+    }));
+    expect(finalized.status).toBe('ok');
+    expect(getWorkContract(store, workId)).toMatchObject({
+      status: 'completed', completionOutcome: 'completed_changed',
+      completionReceipt: { targetBranch: 'main', sourceRevision: candidate, changedPaths: ['owned.txt'] },
+    });
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(candidate);
+
+    const repeated = structured(await callRuntimeTool(context, 'rh_work', {
+      repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt',
+      completion_outcome: 'completed_changed', commit: false, merge: false, cleanup: true, target_branch: 'main',
+    }));
+    expect(repeated.status).toBe('ok');
+    expect(getWorkContract(store, workId)?.completionReceipt).toMatchObject({ sourceRevision: candidate });
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(candidate);
+  }, 20_000);
+
+
+  test('branch cleanup preserves an exact target-relative empty review after worktree cleanup', async () => {
+    const fx = fixture();
+    const workId = 'work-exact-target-branch-cleanup-empty-review';
+    const caller = {
+      principalId: 'principal-exact-target-branch-cleanup',
+      sessionId: 'transport-exact-target-branch-cleanup',
+      controllerInstanceId: 'runtime-exact-target-branch-cleanup',
+    };
+    const branch = 'work/exact-target-branch-cleanup-empty-review';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId, title: 'Exact Target Branch Cleanup Empty Review', branchName: branch,
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const store = { controllerHome: fx.controllerHome, repoId: repository.repoId };
+    const base = workspace.baseRevision!;
+    const now = new Date().toISOString();
+
+    writeFileSync(join(workspace.root!, 'owned.txt'), 'reviewed changed delivery\n');
+    execFileSync('git', ['add', 'owned.txt'], { cwd: workspace.root! });
+    execFileSync('git', ['commit', '-m', 'reviewed changed delivery'], { cwd: workspace.root! });
+    const candidate = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+    execFileSync('git', ['merge', '--ff-only', candidate], { cwd: fx.repoRoot });
+
+    createWorkContract(store, {
+      workId, repoId: repository.repoId, checkoutId: workspace.checkoutId!, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, baseRevision: base, mode: 'goal_workloop',
+      objective: 'Recover semantic completion when target already contained the exact reviewed candidate before cleanup.',
+      acceptanceCriteria: ['The target-relative empty reviewed candidate is terminalized without replaying Git mutation.'],
+      allowedPaths: ['owned.txt'], forbiddenPaths: [], checks: [], constraints: { requireHandoffOnAmbiguity: true, requireWorktree: true },
+      requestedBy: 'chatgpt', workKind: 'repository_change', status: 'running', phase: 'verification', worktreeRef: workspace.root,
+      scopeEvidence: { initialLikelyPaths: ['owned.txt'], inspectedPaths: ['owned.txt'], actualChangedPaths: ['owned.txt'], recordedAt: now },
+    });
+    transitionWorkContractPhase(store, workId, {
+      phase: 'verification', status: 'running', state: 'satisfied', summary: 'Exact target-contained candidate verification is satisfied before review.',
+    });
+    requestWorkImplementationReview(store, workId, 'Exact target-contained candidate requires review before semantic completion.');
+    recordWorkImplementationReview(store, workId, {
+      schemaVersion: 1, reviewId: 'REV-exact-target-branch-cleanup-empty', workId, reviewerPrincipalId: caller.principalId,
+      reviewerControllerSessionId: caller.sessionId, decision: 'approved',
+      rationale: 'Canonical target already equals the immutable candidate, so the committed review delta is empty before physical cleanup.', findings: [],
+      sourceRevision: candidate, workspaceFingerprint: 'exact-target-branch-cleanup-content', verificationWorkspaceFingerprint: 'exact-target-branch-cleanup-verification',
+      changedPaths: [], changedPathDigest: implementationReviewChangedPathDigest([]),
+      acceptanceCriteriaSummary: 'Exact target-relative empty reviewed candidate is terminalized.', verificationEvidence: [], architectureEvidence: [], recordedAt: now,
+    });
+    writeWorkHandle(fx.controllerHome, {
+      schemaVersion: 1, workId, workContractId: workId, sessionId: caller.sessionId, principalId: caller.principalId,
+      repositoryId: repository.repoId, checkoutId: workspace.checkoutId!, sourceCheckoutId: repository.activeCheckoutId,
+      worktreePath: workspace.root!, branch, deliveryTargetBranch: 'main', managedWorktree: true, baseCommit: base,
+      deliveryBaseCommit: base, expectedHead: candidate, permissionSnapshotVersion: 1, state: 'merged',
+      validatedInputFingerprint: 'cleaned-changed-validation', createdAt: now, updatedAt: now,
+      cleanupResponsibility: { owner: 'work_finalizer', registeredAt: now },
+      finalization: { validation: 'done', commit: 'done', merge: 'done', branchCleanup: 'pending', worktreeCleanup: 'done' },
+    });
+    execFileSync('git', ['worktree', 'remove', '--force', workspace.root!], { cwd: fx.repoRoot });
+    setRepositoryCheckoutLifecycle({
+      controllerHome: fx.controllerHome, repoId: repository.repoId, checkoutId: workspace.checkoutId!, lifecycle: 'removed',
+      reason: 'simulate exact-target worktree cleanup before branch cleanup and semantic completion',
+    });
+    claimControllerSession(store, {
+      workId, controllerId: caller.principalId, controllerType: 'chatgpt', sessionId: caller.sessionId, principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId, leaseMs: 60_000,
+    });
+
+    const context = ctx(fx.controllerHome, getRepository(repository.repoId, fx.controllerHome), caller.principalId, caller.sessionId, caller.controllerInstanceId);
+    const finalized = structured(await callRuntimeTool(context, 'rh_work', {
+      repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt',
+      completion_outcome: 'completed_changed', commit: false, merge: false, cleanup: true, target_branch: 'main',
+    }));
+    expect(finalized.status).toBe('ok');
+    expect(getWorkContract(store, workId)).toMatchObject({
+      status: 'completed', completionOutcome: 'completed_changed',
+      completionReceipt: { targetBranch: 'main', sourceRevision: candidate, changedPaths: ['owned.txt'] },
+    });
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(candidate);
+    expect(execFileSync('git', ['branch', '--list', branch], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe('');
+
+    const repeated = structured(await callRuntimeTool(context, 'rh_work', {
+      repo_id: repository.repoId, operation: 'finalize', work_id: workId, requested_by: 'chatgpt',
+      completion_outcome: 'completed_changed', commit: false, merge: false, cleanup: true, target_branch: 'main',
+    }));
+    expect(repeated.status).toBe('ok');
+    expect(getWorkContract(store, workId)?.completionReceipt).toMatchObject({ sourceRevision: candidate });
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim()).toBe(candidate);
+  }, 20_000);
+
+
+
   test('exact rh_work repair does not run broad maintenance against unrelated stale Work', async () => {
     const fx = fixture();
     const targetWorkId = 'work-exact-repair-target';
