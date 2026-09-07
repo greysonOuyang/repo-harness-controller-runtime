@@ -238,6 +238,23 @@ export function findActivePluginCapabilityAuthorization(
     .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))[0];
 }
 
+/**
+ * Resolve one exact grant reference for a trusted Workflow/Controller caller.
+ * The caller still has to validate plugin, capability, target, scope and risk;
+ * this helper only enforces that the referenced grant is live and unrevoked.
+ */
+export function findActivePluginCapabilityAuthorizationById(
+  controllerHome: string,
+  grantId: string,
+  at = new Date(),
+): PluginCapabilityAuthorizationGrant | undefined {
+  const normalizedGrantId = required(grantId, 'grantId');
+  const atMs = at.getTime();
+  const grant = loadStore(controllerHome).grants.find((entry) => entry.grantId === normalizedGrantId);
+  if (!grant || grant.revokedAt || Date.parse(grant.expiresAt) <= atMs) return undefined;
+  return structuredClone(grant);
+}
+
 export function recordPluginCapabilityAuthorization(
   controllerHome: string,
   input: RecordPluginCapabilityAuthorizationInput,

@@ -11,12 +11,14 @@ import { REPOSITORY_PLUGIN_CONFIG_IDS, repositoryPluginConfigFileName, repositor
 import { getExternalPluginAdapter, listExternalPluginAdapters } from './external-adapter';
 import { AssistantPluginError, isAssistantPluginError, toAssistantPluginError, type AssistantPluginEffectOutcome } from './errors';
 import {
+  findActivePluginCapabilityAuthorizationById,
   findActivePluginCapabilityAuthorization,
   pluginCapabilityAuthorizationOwnerScope,
   recordPluginCapabilityAuthorization,
   type PluginCapabilityAuthorizationGrant,
 } from './capability-authorization-grants';
 import { markControllerContextProjectionDirty } from '../projections/controller-context';
+import { acquireExecutionLeases, releaseExactExecutionLeases } from '../resources/leases/store';
 import { classifyRepositoryCommand } from '../../cli/repositories/command-classifier';
 import {
   acceptSubmittedWorkContract,
@@ -387,6 +389,71 @@ export function claimsForAssistantPluginAction(
   }));
 }
 
+async function withAssistantPluginResourceLeases<T>(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  action: AssistantPluginActionDescriptor,
+  request: AssistantPluginActionRequest,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const claims = claimsForAssistantPluginAction(action, repository, request.pluginId).map((claim) => ({
+    ...claim,
+    repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+  }));
+  if (claims.length === 0) return operation();
+
+  const ownerJobId = `plugin:${request.requestId}`;
+  const timeoutMs = Math.max(5_000, Math.min(10 * 60_000, request.timeoutMs ?? action.defaultTimeoutMs));
+  const acquisition = acquireExecutionLeases(controllerHome, repository.repoId, ownerJobId, claims, {
+    ttlMs: timeoutMs + 60_000,
+    ownerIdentity: {
+      repositoryId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      worktreeId: repository.activeCheckoutId,
+      branch: 'workflow-plugin-action',
+      principalId: request.origin.actor?.trim() || 'workflow-plugin-action',
+      controllerInstanceId: process.env.FORGE_RUNTIME_INSTANCE_ID?.trim()
+        || process.env.FORGE_WRITER_INSTANCE_ID?.trim()
+        || process.env.FORGE_DAEMON_INSTANCE_ID?.trim()
+        || `process:${process.pid}`,
+      controllerGeneration: process.env.FORGE_WRITER_GENERATION?.trim()
+        || process.env.FORGE_ACTIVE_RUNTIME_REVISION?.trim()
+        || 'unbound',
+    },
+  });
+  if (!acquisition.acquired) {
+    throw new AssistantPluginError(
+      'PLUGIN_RESOURCE_CONTENTION',
+      `${request.pluginId}/${request.actionId} could not acquire its declared resource claims before dispatch.`,
+      { retryable: true, details: { blockers: acquisition.blockers } },
+    );
+  }
+  const expected = acquisition.leases.map((lease) => ({
+    leaseId: lease.leaseId,
+    fencingToken: lease.fencingToken,
+    repoId: lease.repoId,
+    checkoutId: lease.checkoutId,
+    resourceKey: lease.resourceKey,
+    ownerIdentityDigest: lease.ownerIdentityDigest,
+  }));
+  let retainForReconciliation = false;
+  try {
+    const result = await operation();
+    const nestedResult = result && typeof result === 'object' && !Array.isArray(result)
+      ? (result as Record<string, unknown>).result
+      : undefined;
+    retainForReconciliation = Boolean(nestedResult && typeof nestedResult === 'object' && !Array.isArray(nestedResult)
+      && (nestedResult as Record<string, unknown>).outcome === 'outcome_unknown');
+    return result;
+  } catch (error) {
+    retainForReconciliation = isAssistantPluginError(error) && error.effectOutcome === 'outcome_unknown';
+    throw error;
+  } finally {
+    if (!retainForReconciliation) releaseExactExecutionLeases(controllerHome, repository.repoId, ownerJobId, expected);
+  }
+}
+
 function semanticKey(repository: RepositoryRecord, pluginId: string, actionId: string, args: Record<string, unknown>): string {
   const digest = createHash('sha256').update(JSON.stringify(canonical(args))).digest('hex').slice(0, 20);
   return `plugin-action:${repository.repoId}:${pluginId}:${actionId}:${digest}`;
@@ -488,6 +555,92 @@ function originMayEstablishCapabilityAuthorization(origin: AssistantPluginAction
   return INTERACTIVE_PLUGIN_AUTHORIZATION_SURFACES.has(origin.surface);
 }
 
+function requiresAutomatedWriteAuthorization(origin: AssistantPluginActionExecutionInput['origin']): boolean {
+  return ['schedule', 'reconciliation', 'system'].includes(origin.surface);
+}
+
+const AUTHORIZATION_RISK_RANK: Record<AssistantPluginActionDescriptor['risk'], number> = {
+  readonly: 0,
+  workspace_write: 1,
+  remote_write: 2,
+  destructive: 3,
+};
+
+function authorizationTargetMatches(
+  left: PluginCapabilityAuthorizationGrant['target'],
+  right: PluginCapabilityAuthorizationGrant['target'],
+): boolean {
+  return left.kind === right.kind
+    && left.id === right.id
+    && (left.identityFingerprint ?? '') === (right.identityFingerprint ?? '');
+}
+
+async function resolveAutomatedWriteAuthorization(input: {
+  controllerHome: string;
+  repository: RepositoryRecord;
+  adapter: AssistantPluginAdapter;
+  manifest: AssistantPluginManifest;
+  action: AssistantPluginActionDescriptor;
+  args: Record<string, unknown>;
+  origin: AssistantPluginActionExecutionInput['origin'];
+  requestId: string;
+  jobId?: string;
+  authorizationGrantRefs?: readonly string[];
+}): Promise<PluginCapabilityAuthorizationGrant | undefined> {
+  if (input.action.readOnly) return undefined;
+  if (input.action.confirmation === 'strong_confirmation') {
+    throw new AssistantPluginError(
+      'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
+      `${input.manifest.pluginId}/${input.action.actionId} requires an interactive strong confirmation.`,
+      { retryable: false },
+    );
+  }
+  const refs = [...new Set((input.authorizationGrantRefs ?? []).map((ref) => ref.trim()).filter(Boolean))];
+  if (refs.length === 0 || !input.adapter.resolveAuthorizationContext) {
+    throw new AssistantPluginError(
+      'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED',
+      `${input.manifest.pluginId}/${input.action.actionId} requires an active Workflow capability grant.`,
+      { retryable: false },
+    );
+  }
+  const targetContext = await input.adapter.resolveAuthorizationContext({
+    controllerHome: input.controllerHome,
+    repoId: input.repository.repoId,
+    repoRoot: input.repository.canonicalRoot,
+    pluginId: input.manifest.pluginId,
+    actionId: input.action.actionId,
+    requestId: input.requestId,
+    args: input.args,
+    origin: input.origin,
+    jobId: input.jobId,
+  });
+  if (!targetContext) {
+    throw new AssistantPluginError(
+      'PLUGIN_CAPABILITY_GRANT_TARGET_UNAVAILABLE',
+      `${input.manifest.pluginId}/${input.action.actionId} did not resolve an exact authorization target.`,
+      { retryable: false },
+    );
+  }
+  const capabilityId = reusableCapabilityId(input.manifest, input.action);
+  const grant = refs
+    .map((ref) => findActivePluginCapabilityAuthorizationById(input.controllerHome, ref))
+    .find((candidate) => candidate
+      && candidate.repoId === input.repository.repoId
+      && candidate.pluginId === input.manifest.pluginId
+      && candidate.capabilityId === capabilityId
+      && authorizationTargetMatches(candidate.target, targetContext.target)
+      && input.action.scopes.every((scope) => candidate.scopes.includes(scope))
+      && AUTHORIZATION_RISK_RANK[candidate.riskCeiling] >= AUTHORIZATION_RISK_RANK[input.action.risk]);
+  if (!grant) {
+    throw new AssistantPluginError(
+      'PLUGIN_CAPABILITY_GRANT_NOT_FOUND',
+      `${input.manifest.pluginId}/${input.action.actionId} has no active grant for this exact target.`,
+      { retryable: false },
+    );
+  }
+  return grant;
+}
+
 function authorizationTargetSummary(context: AssistantPluginAuthorizationContext): { kind: string; id: string } {
   return { kind: context.target.kind, id: context.target.id };
 }
@@ -507,12 +660,6 @@ function initialAuthorizationEvidence(
     return { source: 'strong_confirmation', reusable: false, capabilityId };
   }
   return { source: 'host_permission_model', reusable: false, capabilityId };
-}
-
-function denyAutomatedWrite(manifest: AssistantPluginManifest, action: AssistantPluginActionDescriptor, origin: AssistantPluginActionExecutionInput['origin']): void {
-  if (!['schedule', 'reconciliation', 'system'].includes(origin.surface)) return;
-  if (action.readOnly) return;
-  throw new Error(`EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED: ${manifest.pluginId}/${action.actionId} cannot run from ${origin.surface}`);
 }
 
 export type ListAssistantPluginManifestsOptions = {
@@ -1132,6 +1279,29 @@ export async function submitAssistantPluginAction(
   let authorization = initialAuthorizationEvidence(manifest, action);
   let authorizationContext: AssistantPluginAuthorizationContext | undefined;
   let activeAuthorizationGrant: PluginCapabilityAuthorizationGrant | undefined;
+  if (requiresAutomatedWriteAuthorization(request.origin)) {
+    activeAuthorizationGrant = await resolveAutomatedWriteAuthorization({
+      controllerHome,
+      repository,
+      adapter,
+      manifest,
+      action,
+      args: normalizedArgs,
+      origin: request.origin,
+      requestId: request.requestId,
+      jobId: receiptId,
+      authorizationGrantRefs: request.authorizationGrantRefs,
+    });
+    if (activeAuthorizationGrant) {
+      authorization = {
+        source: 'capability_grant',
+        reusable: true,
+        capabilityId,
+        target: activeAuthorizationGrant.target,
+        grantId: activeAuthorizationGrant.grantId,
+      };
+    }
+  }
   const requiresLocalEffectWork = localSystemActionRequiresWork(
     repository,
     request.pluginId,
@@ -1253,22 +1423,29 @@ export async function submitAssistantPluginAction(
       }
     }
 
-    const result = await executeAssistantPluginAction({
+    const result = await withAssistantPluginResourceLeases(
       controllerHome,
-      repoId: repository.repoId,
-      repoRoot: repository.canonicalRoot,
-      pluginId: request.pluginId,
-      actionId: request.actionId,
-      requestId: request.requestId,
-      args: normalizedArgs,
-      origin: request.origin,
-      jobId: receiptId,
-      timeoutMs: request.timeoutMs,
-      signal: request.signal,
-      deadlineAtMs: typeof request.timeoutMs === 'number'
-        ? Date.now() + Math.max(1, Math.trunc(request.timeoutMs))
-        : undefined,
-    });
+      repository,
+      action,
+      request,
+      () => executeAssistantPluginAction({
+        controllerHome,
+        repoId: repository.repoId,
+        repoRoot: repository.canonicalRoot,
+        pluginId: request.pluginId,
+        actionId: request.actionId,
+        requestId: request.requestId,
+        args: normalizedArgs,
+        origin: request.origin,
+        jobId: receiptId,
+        timeoutMs: request.timeoutMs,
+        signal: request.signal,
+        authorizationGrantRefs: request.authorizationGrantRefs,
+        deadlineAtMs: typeof request.timeoutMs === 'number'
+          ? Date.now() + Math.max(1, Math.trunc(request.timeoutMs))
+          : undefined,
+      }),
+    );
     if (action.confirmation === 'authorization'
       && authorizationContext
       && !activeAuthorizationGrant
@@ -1510,8 +1687,21 @@ export async function executeAssistantPluginAction(
   const manifestLookup = getAssistantPluginManifestForExecution(input.controllerHome, repository, input.pluginId, adapter);
   const manifest = manifestLookup.manifest;
   const action = actionForManifest(manifest, input.actionId);
-  denyAutomatedWrite(manifest, action, input.origin);
   const normalizedArgs = validateActionArguments(action, input.args);
+  if (requiresAutomatedWriteAuthorization(input.origin)) {
+    await resolveAutomatedWriteAuthorization({
+      controllerHome: input.controllerHome,
+      repository,
+      adapter,
+      manifest,
+      action,
+      args: normalizedArgs,
+      origin: input.origin,
+      requestId: input.requestId,
+      jobId: input.jobId,
+      authorizationGrantRefs: input.authorizationGrantRefs,
+    });
+  }
   try {
     const result = await adapter.executeAction({
       ...input,

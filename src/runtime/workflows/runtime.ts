@@ -32,6 +32,7 @@ import {
   readPluginActionReceiptForRequest,
   findPluginActionReceipt,
 } from '../plugins/store';
+import { isAssistantPluginError } from '../plugins/errors';
 import { listControlPlaneRecords } from '../control-plane/persistence/sqlite-store';
 import type { WorkflowRunRecord } from '../control-plane/persistence/workflow-run-store';
 import {
@@ -42,6 +43,7 @@ import {
 } from '../execution/process-runtime/command-facade';
 import { getLightweightProcessHandle } from '../execution/process-runtime/lightweight-managed';
 import { getProcessRecord, getProcessRequestBinding } from '../execution/process-runtime/store';
+import { releaseExecutionLeases } from '../resources/leases/store';
 
 export interface WorkflowRuntimeExecutionDependencies {
   submitPluginAction?: typeof submitAssistantPluginAction;
@@ -251,11 +253,16 @@ async function executeRegisteredWorkflowLocked(
           workRepoId: input.repository.repoId,
           args,
           timeoutMs: input.timeoutMs,
+          authorizationGrantRefs: registry.value.capabilityGrantRefs,
           origin: { surface: 'system', actor: 'workflow-runtime', correlationId: input.runId },
         });
         return pluginOutcome(submitted.receipt, submitted.result);
       } catch (error) {
-        return { outcome: step.idempotency === 'non_idempotent' ? 'outcome_unknown' : 'failed', error: { code: 'WORKFLOW_CAPABILITY_EXECUTION_FAILED', message: error instanceof Error ? error.message : String(error) } };
+        const effectOutcome = isAssistantPluginError(error) ? error.effectOutcome : undefined;
+        return {
+          outcome: step.idempotency === 'non_idempotent' && effectOutcome !== 'failed' ? 'outcome_unknown' : 'failed',
+          error: { code: isAssistantPluginError(error) ? error.code : 'WORKFLOW_CAPABILITY_EXECUTION_FAILED', message: error instanceof Error ? error.message : String(error) },
+        };
       }
     },
     executeScript: async ({ step, script, arguments: args }) => {
@@ -391,6 +398,7 @@ async function reconcileRegisteredWorkflowLocked(
     if (output.effectRequestId !== originalRequestId) throw new Error('WORKFLOW_RECONCILIATION_NOT_PROVEN');
     if (output.outcome === 'not_applied') {
       // Exact negative observation clears the unresolved effect but never retries it. Controller chooses whether a new run is justified.
+      releaseExecutionLeases(input.controllerHome, input.repository.repoId, `plugin:${originalRequestId}`);
       return writeWorkflowRunCheckpoint({ controllerHome: input.controllerHome, inputs: input.inputs, expectedRevision: stored.revision,
         checkpoint: { schemaVersion: 1, binding: { workId: input.workId, runId: input.runId }, workflowId: asset.workflowId, version: asset.version, contentDigest: asset.contentDigest,
           status: 'failed', nextStepIndex: stored.value.nextStepIndex, outputs: stored.value.outputs,
@@ -399,6 +407,7 @@ async function reconcileRegisteredWorkflowLocked(
     if (output.outcome !== 'applied' || !output.output || typeof output.output !== 'object' || Array.isArray(output.output)) throw new Error('WORKFLOW_RECONCILIATION_NOT_PROVEN');
     output = output.output as Record<string, unknown>;
   }
+  releaseExecutionLeases(input.controllerHome, input.repository.repoId, `plugin:${originalRequestId}`);
   const outputs = { ...stored.value.outputs, [step.stepId]: retainWorkflowOutput(step, output) };
   return writeWorkflowRunCheckpoint({ controllerHome: input.controllerHome, inputs: input.inputs, expectedRevision: stored.revision,
     checkpoint: { schemaVersion: 1, binding: { workId: input.workId, runId: input.runId }, workflowId: asset.workflowId, version: asset.version, contentDigest: asset.contentDigest,
@@ -465,6 +474,7 @@ export async function observeAndReconcileRegisteredWorkflow(
         workRepoId: input.repository.repoId,
         args: reconciliationArguments(asset, input.inputs, step, stored.value.outputs, originalRequestId),
         timeoutMs: input.timeoutMs,
+        authorizationGrantRefs: registry.value.capabilityGrantRefs,
         origin: { surface: 'system', actor: 'workflow-runtime-reconciliation', correlationId: input.runId },
       });
       if (observed.receipt.status !== 'succeeded') throw new Error('WORKFLOW_RECONCILIATION_OBSERVATION_FAILED');

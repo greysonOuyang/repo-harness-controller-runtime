@@ -131,6 +131,8 @@ export interface AssistantPluginActionRequest {
   args: Record<string, unknown>;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Exact reusable grants bound to the Workflow asset. Never accepts grant contents. */
+  authorizationGrantRefs?: readonly string[];
   confirmAuthorization?: boolean;
   confirmationText?: string;
   origin: ExecutionJobOrigin;
@@ -148,6 +150,8 @@ export interface AssistantPluginActionExecutionInput {
   jobId?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Exact reusable grants bound to the Workflow asset. Never accepts grant contents. */
+  authorizationGrantRefs?: readonly string[];
   /** Internal absolute request deadline; propagated only across nested adapter actions. */
   deadlineAtMs?: number;
   /** Internal proof that this exact adapter instance just built and validated the live provider manifest. */
