@@ -574,6 +574,12 @@ describe('ChatGPT Work conversation binding', () => {
     expect(chatgptOutboundMessageMatchesPrompt(`prefix ${prompt}`, prompt)).toBe(false);
     expect(chatgptOutboundMessageMatchesPrompt(`${prompt.slice(0, 160)} but wrong tail`, prompt)).toBe(false);
     expect(chatgptOutboundMessageMatchesPrompt('', prompt)).toBe(false);
+    const largePrompt = `@forge ${'durable-controller-contract '.repeat(8_000)}`;
+    const boundedPrefix = largePrompt.slice(0, 100_000);
+    expect(chatgptOutboundMessageMatchesPrompt(boundedPrefix, largePrompt, { truncated: true })).toBe(true);
+    expect(chatgptOutboundMessageMatchesPrompt(`${boundedPrefix.slice(0, -1)}X`, largePrompt, { truncated: true })).toBe(false);
+    expect(chatgptOutboundMessageMatchesPrompt(largePrompt.slice(0, 200), largePrompt, { truncated: true })).toBe(false);
+    expect(chatgptOutboundMessageMatchesPrompt(boundedPrefix, largePrompt)).toBe(false);
   });
 
   test('scheduled WSL continuation uses semantic outbound dispatch confirmation instead of Browser replay', () => {
@@ -852,7 +858,7 @@ describe('ChatGPT Work conversation binding', () => {
     expect(source).toContain('本轮每一次 repository_command_execute 和 repository_safe_patch_apply 都必须显式传 work_id=${workId}');
     const maintenance = readFileSync(join(process.cwd(), 'src/runtime/control-plane/global-scheduler/maintenance.ts'), 'utf8');
     expect(maintenance).toContain('exactOriginWork: !record.requirementId');
-    expect(browserRuntime).toContain('CHATGPT_USER_MESSAGE_SELECTOR'); expect(browserRuntime).toContain("from_end: true"); expect(browserRuntime).toContain("browserMutationOutcomeUnknown(error, 'click')"); expect(browserRuntime).toContain('chatgptOutboundMessageMatchesPrompt(fullText, renderedPrompt)');
+    expect(browserRuntime).toContain('CHATGPT_USER_MESSAGE_SELECTOR'); expect(browserRuntime).toContain("from_end: true"); expect(browserRuntime).toContain("browserMutationOutcomeUnknown(error, 'click')"); expect(browserRuntime).toContain('chatgptOutboundMessageMatchesPrompt(fullText.text, renderedPrompt, { truncated: fullText.truncated })');
     expect(browserRuntime).toContain("controllerBrowserAction(controllerHome, workId, 'close_page'");
     expect(source).toContain('closeChatgptAutomationTabAfterDispatch');
     expect(browserRuntime).toContain('settleWorkChatgptAutomationTab');

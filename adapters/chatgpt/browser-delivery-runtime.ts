@@ -121,13 +121,27 @@ function normalizeChatgptOutboundText(value: string): string {
 }
 
 const CHATGPT_OUTBOUND_MESSAGE_UI_SUFFIXES = ['收起', 'Collapse', 'Show less'] as const;
+const MAX_CHATGPT_OUTBOUND_VERIFICATION_CHARS = 100_000;
+const MIN_TRUNCATED_CHATGPT_OUTBOUND_PREFIX_CHARS = 256;
 
-export function chatgptOutboundMessageMatchesPrompt(messageText: string, prompt: string): boolean {
+export function chatgptOutboundMessageMatchesPrompt(
+  messageText: string,
+  prompt: string,
+  options: { truncated?: boolean } = {},
+): boolean {
   const message = normalizeChatgptOutboundText(messageText);
   const normalizedPrompt = normalizeChatgptOutboundText(prompt);
   if (!message || !normalizedPrompt) return false;
   if (message === normalizedPrompt) return true;
-  return CHATGPT_OUTBOUND_MESSAGE_UI_SUFFIXES.some((suffix) => message === `${normalizedPrompt} ${suffix}`);
+  if (CHATGPT_OUTBOUND_MESSAGE_UI_SUFFIXES.some((suffix) => message === `${normalizedPrompt} ${suffix}`)) return true;
+  // Browser text extraction is deliberately bounded. A large ControllerRound
+  // prompt can exceed that bound, so requiring exact equality makes successful
+  // submissions mechanically unverifiable. Accept only an explicitly reported
+  // truncation of a substantial exact prefix; ordinary partial/mismatched text
+  // remains insufficient evidence.
+  return options.truncated === true
+    && message.length >= MIN_TRUNCATED_CHATGPT_OUTBOUND_PREFIX_CHARS
+    && normalizedPrompt.startsWith(message);
 }
 
 async function latestChatgptUserMessage(
@@ -153,15 +167,18 @@ async function fullChatgptMessageText(
   browserSessionId: string,
   message: { selector?: string; preview: string },
   timeoutMs?: number,
-): Promise<string> {
-  if (!message.selector) return message.preview;
+): Promise<{ text: string; truncated: boolean }> {
+  if (!message.selector) return { text: message.preview, truncated: false };
   const result = await controllerBrowserAction(controllerHome, workId, 'get_text', {
     session_id: browserSessionId,
     selector: message.selector,
-    max_chars: 20_000,
+    max_chars: MAX_CHATGPT_OUTBOUND_VERIFICATION_CHARS,
     timeout_ms: Math.min(timeoutMs ?? 3_000, 3_000),
   }, timeoutMs).catch(() => undefined);
-  return stringField(result?.text) ?? message.preview;
+  return {
+    text: stringField(result?.text) ?? message.preview,
+    truncated: result?.truncated === true,
+  };
 }
 
 function chatgptSendControlUnavailable(error: unknown): boolean {
@@ -649,6 +666,7 @@ export async function submitChatgptPrompt(
 
   let observedUrl = targetUrl;
   let submitOutcomeUnknown = false;
+  let observedNewOutbound = false;
   try {
     const sent = await controllerBrowserAction(controllerHome, workId, 'click', {
       session_id: browserSessionId,
@@ -687,15 +705,17 @@ export async function submitChatgptPrompt(
         || latest.preview !== before.preview,
       );
       if (isNewOutbound) {
+        observedNewOutbound = true;
         const fullText = await fullChatgptMessageText(controllerHome, workId, browserSessionId, latest, timeoutMs);
-        if (chatgptOutboundMessageMatchesPrompt(fullText, renderedPrompt) && /\/c\/[^/?#]+/.test(observedUrl)) {
+        if (chatgptOutboundMessageMatchesPrompt(fullText.text, renderedPrompt, { truncated: fullText.truncated }) && /\/c\/[^/?#]+/.test(observedUrl)) {
           return observedUrl;
         }
       }
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   } while (Date.now() < deadline);
-  const failureCode = submitOutcomeUnknown
+  const hasConversationIdentity = /\/c\/[^/?#]+/.test(observedUrl);
+  const failureCode = submitOutcomeUnknown || (observedNewOutbound && hasConversationIdentity)
     ? CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN
     : 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED';
   throw new ChatgptProviderDeliveryError(

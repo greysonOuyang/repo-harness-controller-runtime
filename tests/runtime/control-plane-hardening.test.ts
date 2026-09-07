@@ -15,6 +15,7 @@ import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
+import { assertRepositoryCommandInputAllowed } from '../../src/cli/repositories/command-scope';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
 import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
@@ -77,6 +78,18 @@ function passingDiagnostics() {
     mcpEndToEnd: { outcome: 'pass' as const },
   };
 }
+
+describe('repository command managed-worktree authority', () => {
+  test('requires rh_work ownership for temporary git worktree creation while preserving read-only worktree inspection', () => {
+    expect(() => assertRepositoryCommandInputAllowed(['git', 'worktree', 'add', '/tmp/forge-repair', '-b', 'fix/repair'])).toThrow(
+      /MANAGED_WORKSPACE_REQUIRED:.*use rh_work.*terminal cleanup authority/,
+    );
+    expect(() => assertRepositoryCommandInputAllowed('git worktree add /tmp/forge-repair -b fix/repair')).toThrow(
+      /MANAGED_WORKSPACE_REQUIRED:.*use rh_work.*terminal cleanup authority/,
+    );
+    expect(() => assertRepositoryCommandInputAllowed(['git', 'worktree', 'list', '--porcelain'])).not.toThrow();
+  });
+});
 
 describe('control-plane hardening', () => {
   test('normalizes Scheduler configuration outside the runtime lifecycle constructor', () => {
@@ -1047,7 +1060,7 @@ describe('scheduled external Controller wake', () => {
     });
     const store = { controllerHome, repoId: repository.repoId };
 
-    await expect(openChatgptControllerRoundFromSource({
+    const openedUnknown = await openChatgptControllerRoundFromSource({
       controllerHome,
       repoId: repository.repoId,
       repoRoot,
@@ -1072,7 +1085,9 @@ describe('scheduled external Controller wake', () => {
           message: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED:https://chatgpt.com/c/source-unknown',
         },
       }),
-    })).rejects.toThrow('CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED');
+    });
+    expect(openedUnknown.relayStatus).toBe('blocked');
+    expect(openedUnknown.dispatch.providerDeliveryStatus).toBe('outcome_unknown');
 
     expect(getControllerRoundRelay(store, workId)).toMatchObject({
       status: 'blocked',

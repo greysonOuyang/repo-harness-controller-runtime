@@ -5,6 +5,7 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { getRepository, registerRepository } from '../../src/cli/repositories/registry';
+import { assertRepositoryCommandInputAllowed } from '../../src/cli/repositories/command-scope';
 import type { CompletionReceipt } from '../../src/cli/controller/types';
 import { createWorkContract, getWorkContract, recordWorkCompletionReceipt } from '../../src/runtime/control-plane/facade/work-contract-store';
 import type { WorkContract } from '../../src/runtime/control-plane/facade/types';
@@ -111,6 +112,16 @@ async function cleanup(fx: ReturnType<typeof fixture>, handle: WorkHandleState =
 }
 
 describe('terminal Work cleanup', () => {
+
+  test('repository commands cannot create unmanaged temporary worktrees outside durable Work ownership', () => {
+    expect(() => assertRepositoryCommandInputAllowed(['git', 'worktree', 'add', '/tmp/forge-repair', '-b', 'fix/repair'])).toThrow(
+      /MANAGED_WORKSPACE_REQUIRED:.*use rh_work.*terminal cleanup authority/,
+    );
+    expect(() => assertRepositoryCommandInputAllowed('git worktree add /tmp/forge-repair -b fix/repair')).toThrow(
+      /MANAGED_WORKSPACE_REQUIRED:.*use rh_work.*terminal cleanup authority/,
+    );
+    expect(() => assertRepositoryCommandInputAllowed(['git', 'worktree', 'list', '--porcelain'])).not.toThrow();
+  });
 
   test('runtime architecture gate tracks the canonical finalization reset helper', () => {
     const gate = readFileSync(join(import.meta.dir, '../../scripts/check-runtime-architecture.mjs'), 'utf8');

@@ -142,13 +142,20 @@ export async function openChatgptControllerRoundFromSource(
   });
   if (dispatched.status === 'failed') {
     const message = `${dispatched.error?.code ?? 'CONTROLLER_RELAY_DISPATCH_FAILED'}:${dispatched.error?.message ?? 'Controller relay dispatch failed'}`;
-    finishControllerRoundRelayDispatch(store, {
+    const outcomeUnknown = dispatched.providerDeliveryStatus === 'outcome_unknown';
+    const completed = finishControllerRoundRelayDispatch(store, {
       workId: input.workId,
       ok: false,
       error: message,
-      outcomeUnknown: dispatched.providerDeliveryStatus === 'outcome_unknown',
+      outcomeUnknown,
     });
-    throw new Error(message);
+    if (!outcomeUnknown) throw new Error(message);
+    return {
+      relayStatus: completed?.status ?? 'blocked',
+      controllerAuthorityId: relay.authorityId,
+      relayScopeId: relay.relayScopeId,
+      dispatch: dispatched,
+    };
   }
   const updatedBinding = chatgptControllerRoundBinding(store, input.workId);
   const completed = finishControllerRoundRelayDispatch(store, {
