@@ -550,31 +550,34 @@ export async function navigateWorkConversation(
     timeout_ms: timeoutMs ?? 60_000,
     retries: 1,
   }, timeoutMs);
-  const openReplacement = async (url: string): Promise<string> => {
-    // Browser owns new-session identity. Passing any session_id makes open_page an
-    // existing-resource action, which is exactly wrong after the saved Work binding
-    // has proven stale. Snapshot complete inventory before dispatch so an unknown
-    // mutation outcome can be reconciled by one exact new live session only.
-    const beforeInventory = await controllerBrowserAction(controllerHome, workId, 'list_sessions', { limit: 200 }, timeoutMs);
-    if (!completeChatgptBrowserInventorySessions(beforeInventory)) {
-      throw new Error('CHATGPT_AUTOMATION_SESSION_INVENTORY_TRUNCATED');
-    }
+  const openReplacement = async (sessionId: string, url: string): Promise<string> => {
+    // Fresh ControllerRound transport already owns an explicit Browser session
+    // identity. Use create_session with that exact id so native Browser never has
+    // to guess among multiple reusable Forge-owned tabs. The Browser adapter still
+    // owns tab identity/replacement and can recover a stale saved tab behind this id.
     try {
-      const opened = await controllerBrowserAction(controllerHome, workId, 'open_page', {
+      const opened = await controllerBrowserAction(controllerHome, workId, 'create_session', {
+        session_id: sessionId,
         url,
         wait_until: 'domcontentloaded',
         timeout_ms: timeoutMs ?? 60_000,
         retries: 1,
       }, timeoutMs);
       const replacementSessionId = resultSessionId(opened);
-      if (!replacementSessionId) throw new Error('CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED');
+      if (replacementSessionId !== sessionId) throw new Error('CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED');
       return replacementSessionId;
     } catch (error) {
-      if (!browserMutationOutcomeUnknown(error, 'open_page')) throw error;
-      const afterInventory = await controllerBrowserAction(controllerHome, workId, 'list_sessions', { limit: 200 }, timeoutMs);
-      const reconciledSessionId = reconciledNewChatgptOpenPageSessionId(beforeInventory, afterInventory, url);
-      if (!reconciledSessionId) throw error;
-      return reconciledSessionId;
+      if (!browserMutationOutcomeUnknown(error, 'create_session')) throw error;
+      try {
+        const verified = await controllerBrowserAction(controllerHome, workId, 'verify_state', {
+          session_id: sessionId,
+          expected_url: url,
+        }, timeoutMs);
+        if (verified.matched === true && stringField(verified.sessionId) === sessionId) return sessionId;
+      } catch {
+        // Preserve the original create_session mutation-unknown evidence.
+      }
+      throw error;
     }
   };
   try {
@@ -588,7 +591,7 @@ export async function navigateWorkConversation(
       }, timeoutMs);
     } catch (preflightError) {
       if (!chatgptAutomationNavigationRequiresReplacement(preflightError)) throw preflightError;
-      const replacementSessionId = await openReplacement(targetUrl);
+      const replacementSessionId = await openReplacement(browserSessionId, targetUrl);
       return { submissionTargetUrl: targetUrl, recoveredFromStaleBinding: true, browserSessionId: replacementSessionId };
     }
     await navigate(browserSessionId, targetUrl);
@@ -610,7 +613,7 @@ export async function navigateWorkConversation(
       throw error;
     }
     if (chatgptAutomationNavigationRequiresReplacement(error)) {
-      const replacementSessionId = await openReplacement(targetUrl);
+      const replacementSessionId = await openReplacement(browserSessionId, targetUrl);
       return { submissionTargetUrl: targetUrl, recoveredFromStaleBinding: false, browserSessionId: replacementSessionId };
     }
     if (!isChatgptConversationUrl(targetUrl)) throw error;
@@ -619,7 +622,7 @@ export async function navigateWorkConversation(
       return { submissionTargetUrl: 'https://chatgpt.com/', recoveredFromStaleBinding: true, browserSessionId };
     } catch (fallbackError) {
       if (!chatgptAutomationNavigationRequiresReplacement(fallbackError)) throw fallbackError;
-      const replacementSessionId = await openReplacement('https://chatgpt.com/');
+      const replacementSessionId = await openReplacement(browserSessionId, 'https://chatgpt.com/');
       return { submissionTargetUrl: 'https://chatgpt.com/', recoveredFromStaleBinding: true, browserSessionId: replacementSessionId };
     }
   }

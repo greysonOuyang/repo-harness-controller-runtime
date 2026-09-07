@@ -74,10 +74,10 @@ describe('ChatGPT provider delivery classification', () => {
   test('preserves typed observed conversation identity across ambiguous browser submission confirmation', async () => {
     const host = createChatgptBrowserDeliveryHost({
       ensureBrowser: async () => undefined,
-      navigate: async (_controllerHome, _workId, browserSessionId, targetUrl) => ({
+      navigate: async (_controllerHome, _workId, _browserSessionId, targetUrl) => ({
         submissionTargetUrl: targetUrl,
-        recoveredFromStaleBinding: false,
-        browserSessionId,
+        recoveredFromStaleBinding: true,
+        browserSessionId: 'browser-replacement-session',
       }),
       ensureExecutionPreference: async () => true,
       submitPrompt: async () => {
@@ -101,6 +101,7 @@ describe('ChatGPT provider delivery classification', () => {
     });
     expect(ambiguous).toMatchObject({
       status: 'outcome_unknown',
+      browserSessionId: 'browser-replacement-session',
       conversationUrl: 'https://chatgpt.com/c/typed-observed-conversation',
       error: { code: 'CHATGPT_AUTOMATION_SUBMISSION_NOT_CONFIRMED' },
     });
@@ -127,6 +128,25 @@ describe('ChatGPT provider delivery classification', () => {
       reasoning: 'high',
     });
     expect(failed).toMatchObject({ status: 'failed', conversationUrl: 'https://chatgpt.com/' });
+
+    const preNavigationFailedHost = createChatgptBrowserDeliveryHost({
+      ensureBrowser: async () => undefined,
+      navigate: async () => { throw new Error('CHATGPT_CONTROLLER_BROWSER_FAILED:navigation failed'); },
+      ensureExecutionPreference: async () => true,
+      submitPrompt: async () => 'https://chatgpt.com/c/never-reached',
+    });
+    const preNavigationFailed = await preNavigationFailedHost.dispatch({
+      controllerHome: '/tmp/controller',
+      repoId: 'repo-test',
+      repoRoot: '/tmp/repo',
+      workId: 'WORK-PRE-NAVIGATION-FAILURE',
+      prompt: 'continue',
+      browserSessionId: 'browser-original-session',
+      targetUrl: 'https://chatgpt.com/',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+    });
+    expect(preNavigationFailed).toMatchObject({ status: 'failed', browserSessionId: 'browser-original-session' });
   });
 
   test('separates ambiguous mutation, user blockers, and ordinary provider failure', () => {
@@ -1011,17 +1031,17 @@ describe('ChatGPT scheduled open_page reconciliation', () => {
     ] }, 'https://chatgpt.com/')).toBeUndefined();
   });
 
-  test('lets Browser create replacement identity and reconciles unknown mutation by inventory delta only', () => {
+  test('creates replacement with the exact Browser session identity and verifies unknown mutation without sessionless selection', () => {
     const source = readFileSync(join(process.cwd(), 'adapters/chatgpt/browser-delivery-runtime.ts'), 'utf8');
     const replacementStart = source.indexOf('const openReplacement = async');
     const replacementEnd = source.indexOf('\n  try {\n    // Prove the exact saved Browser resource is still attachable before dispatching', replacementStart);
     const replacementSource = source.slice(replacementStart, replacementEnd);
-    expect(replacementSource).toContain("controllerBrowserAction(controllerHome, workId, 'open_page'");
-    expect(replacementSource).not.toContain('session_id:');
-    expect(replacementSource.match(/'list_sessions'/g)?.length).toBe(2);
-    expect(replacementSource.match(/limit: 200/g)?.length).toBe(2);
-    expect(replacementSource).toContain("browserMutationOutcomeUnknown(error, 'open_page')");
-    expect(replacementSource).toContain('reconciledNewChatgptOpenPageSessionId(beforeInventory, afterInventory, url)');
+    expect(replacementSource).toContain("controllerBrowserAction(controllerHome, workId, 'create_session'");
+    expect(replacementSource).toContain('session_id: sessionId');
+    expect(replacementSource).not.toContain("'list_sessions'");
+    expect(replacementSource).toContain("browserMutationOutcomeUnknown(error, 'create_session')");
+    expect(replacementSource).toContain("controllerBrowserAction(controllerHome, workId, 'verify_state'");
+    expect(replacementSource).toContain('stringField(verified.sessionId) === sessionId');
   });
 });
 
@@ -1031,7 +1051,7 @@ describe('ChatGPT native background-tab recovery', () => {
     const launcher = readFileSync(join(process.cwd(), 'src/runtime/control-plane/launcher/chatgpt-work-continuation.ts'), 'utf8');
     expect(browserRuntime).toContain('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT');
     expect(browserRuntime).toContain('PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN');
-    expect(browserRuntime).toContain("controllerBrowserAction(controllerHome, workId, 'open_page'");
+    expect(browserRuntime).toContain("controllerBrowserAction(controllerHome, workId, 'create_session'");
     expect(browserRuntime).toContain("controllerBrowserAction(controllerHome, workId, 'verify_state'");
     expect(browserRuntime).toContain('discovering staleness only after mutation creates an avoidable outcome-unknown window');
     expect(launcher).toContain('delivery.browserSessionId');
