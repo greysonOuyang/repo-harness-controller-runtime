@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { realpathSync } from 'fs';
+import { join } from 'path';
 import {
   acknowledgeControllerRoundClaim,
   beginInitialControllerRoundDispatch,
@@ -14,36 +14,21 @@ import {
 import { chatgptControllerRoundBinding, recordChatgptControllerRoundTabSettlement, renderChatgptControllerRoundPrompt } from '../../root/controller-round-composition';
 import { readExecutionSession, updateExecutionSession } from '../execution/session-store';
 import { runWorkChatgptContinuation, type WorkChatgptContinuationResult } from './chatgpt-work-continuation';
-import { getRepository } from '../../../cli/repositories/registry';
 
 export const SOURCE_ROUND_CONTINUATION_INSTRUCTION =
   '当前为 Forge V2 源码自动续跑模式。若 Goal 尚未完成且无真实 blocker，本轮不要调用已安装旧 Runtime 的普通 controller_release。必须使用本轮 prompt 提供的 exact current-source repository_command_execute 调用；不得重新探测 Controller Home、repo/work identity、controller authority 或 relay scope。该命令会原子执行 continue_immediately、释放当前 claim，并用当前源码立即投递下一 ControllerRound。';
-
-function sourceCheckoutId(controllerHome: string, repoId: string, repoRoot: string): string {
-  const repository = getRepository(repoId, controllerHome);
-  const sourceRoot = realpathSync(repoRoot);
-  const matches = repository.checkouts.filter((checkout) => {
-    if (checkout.lifecycle === 'removed') return false;
-    try { return realpathSync(checkout.canonicalRoot) === sourceRoot; } catch { return false; }
-  });
-  if (matches.length !== 1) {
-    throw new Error(`SOURCE_ROUND_CHECKOUT_IDENTITY_AMBIGUOUS: ${repoId}:${repoRoot}:${matches.length}`);
-  }
-  return matches[0]!.checkoutId;
-}
 
 export function renderSourceRoundContinuationInstruction(input: {
   controllerHome: string;
   repoId: string;
   repoRoot: string;
-  sourceCheckoutId: string;
   workId: string;
   controllerAuthorityId: string;
   relayScopeId: string;
 }): string {
   const command = [
     'bun',
-    'src/cli/index.ts',
+    join(input.repoRoot, 'src/cli/index.ts'),
     'chatgpt',
     'round-continue',
     '--repo', input.repoRoot,
@@ -55,7 +40,7 @@ export function renderSourceRoundContinuationInstruction(input: {
   ];
   return [
     SOURCE_ROUND_CONTINUATION_INSTRUCTION,
-    `Exact Forge invocation: repository_command_execute(repo_id=${JSON.stringify(input.repoId)}, checkout_id=${JSON.stringify(input.sourceCheckoutId)}, work_id=${JSON.stringify(input.workId)}, command=${JSON.stringify(command)}).`,
+    `Exact Forge invocation: repository_command_execute(repo_id=${JSON.stringify(input.repoId)}, work_id=${JSON.stringify(input.workId)}, command=${JSON.stringify(command)}).`,
   ].join(' ');
 }
 
@@ -99,14 +84,12 @@ export async function openChatgptControllerRoundFromSource(
   if (relay.status === 'blocked' || !relay.authorityId) {
     throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED: ${relay.blockedReason ?? relay.relayScopeId}`);
   }
-  const exactSourceCheckoutId = sourceCheckoutId(input.controllerHome, input.repoId, input.repoRoot);
   const prompt = [
     renderChatgptControllerRoundPrompt(store, relay, { exactOriginWork: true }),
     renderSourceRoundContinuationInstruction({
       controllerHome: input.controllerHome,
       repoId: input.repoId,
       repoRoot: input.repoRoot,
-      sourceCheckoutId: exactSourceCheckoutId,
       workId: input.workId,
       controllerAuthorityId: relay.authorityId,
       relayScopeId: relay.relayScopeId,
@@ -237,12 +220,10 @@ export async function continueChatgptControllerRoundFromSource(
   const relayWorkId = nextRelay.originWorkId;
   const relayBinding = chatgptControllerRoundBinding(store, relayWorkId);
   const predecessorBinding = relayWorkId !== input.workId ? chatgptControllerRoundBinding(store, input.workId) : undefined;
-  const exactSourceCheckoutId = sourceCheckoutId(input.controllerHome, input.repoId, input.repoRoot);
   const prompt = `${renderChatgptControllerRoundPrompt(store, nextRelay)}\n\n${renderSourceRoundContinuationInstruction({
     controllerHome: input.controllerHome,
     repoId: input.repoId,
     repoRoot: input.repoRoot,
-    sourceCheckoutId: exactSourceCheckoutId,
     workId: relayWorkId,
     controllerAuthorityId: nextRelay.authorityId,
     relayScopeId: nextRelay.relayScopeId,

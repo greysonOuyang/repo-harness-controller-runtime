@@ -926,10 +926,11 @@ describe('scheduled external Controller wake', () => {
     expect(dispatchedAuthority).toStartWith('cra_');
     expect(dispatchedAuthority).not.toBe(opened.authorityId);
     expect(dispatchedPrompt).toContain(SOURCE_ROUND_CONTINUATION_INSTRUCTION);
-    expect(dispatchedPrompt).toContain(`repository_command_execute(repo_id=${JSON.stringify(repository.repoId)}, checkout_id=${JSON.stringify(repository.activeCheckoutId)}, work_id=${JSON.stringify(workId)}`);
+    expect(dispatchedPrompt).toContain(`repository_command_execute(repo_id=${JSON.stringify(repository.repoId)}, work_id=${JSON.stringify(workId)}`);
     expect(dispatchedPrompt).toContain(JSON.stringify(controllerHome));
     expect(dispatchedPrompt).toContain(JSON.stringify(repoRoot));
-    expect(dispatchedPrompt).toContain(JSON.stringify(repository.activeCheckoutId));
+    expect(dispatchedPrompt).toContain(JSON.stringify(join(repoRoot, 'src/cli/index.ts')));
+    expect(dispatchedPrompt).not.toContain('checkout_id=');
     expect(dispatchedPrompt).toContain(JSON.stringify(dispatchedAuthority));
     expect(dispatchedPrompt).toContain(JSON.stringify(opened.relayScopeId));
     expect(dispatchedPrompt).not.toContain('<controller-home>');
