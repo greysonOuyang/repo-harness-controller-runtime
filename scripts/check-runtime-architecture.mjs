@@ -457,8 +457,19 @@ requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "operation === 'rev
 requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'implementationReviewContentFingerprint');
 requireText('adapters/mcp/controller-round-compatibility.ts', "'review'");
 requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', 'readControllerRoundContextSnapshot');
-requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', "blockedReason === 'provider_dispatch_outcome_unknown'");
-requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', "blockedReason: 'provider_dispatch_outcome_unknown'");
+const controllerRoundTransitionPolicyPath = 'packages/kernel/controller/domain/controller-round-transition-policy.ts';
+if (existsSync(resolve(root, controllerRoundTransitionPolicyPath))) {
+  requireText(controllerRoundTransitionPolicyPath, "case 'provider_dispatch_outcome_unknown'");
+  requireText(controllerRoundTransitionPolicyPath, "blockedReason: 'provider_dispatch_outcome_unknown'");
+  forbid(
+    'packages/kernel/controller/infrastructure/controller-round-store.ts',
+    /blockedReason\s*(?:===|:)\s*['"]provider_dispatch_outcome_unknown['"]/,
+    'ControllerRound outcome-unknown lifecycle semantics must be owned by the canonical transition policy, not the store',
+  );
+} else {
+  requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', "blockedReason === 'provider_dispatch_outcome_unknown'");
+  requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', "blockedReason: 'provider_dispatch_outcome_unknown'");
+}
 requireText('src/runtime/control-plane/launcher/chatgpt-work-continuation.ts', 'CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN');
 requireText('adapters/chatgpt/controller-host.ts', 'CONTROLLER_HOST_PROVIDER_DISPATCH_OUTCOME_UNKNOWN');
 requireText('packages/kernel/scheduler/application/continuation-service.ts', 'outcomeUnknown: providerDispatchOutcomeUnknown');
