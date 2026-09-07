@@ -11,6 +11,7 @@ import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type D
 import { historicalVerificationEvidenceAtRevision, workspaceValidationFingerprint } from './verification-evidence';
 import { readWorkHandle, type WorkHandleState } from './work-handle-store';
 import { assertWorkPathsWithinScope, findWorkPathScopeViolation } from './work-path-scope';
+import { implementationReviewChangedPathDigest } from '../facade/work-implementation-review';
 import { implementationReviewContentFingerprint, implementationReviewIndexFingerprint } from './implementation-review-content';
 import { transferWorkVerificationAcrossContentEquivalentCommit } from './work-verification-service';
 import {
@@ -419,6 +420,66 @@ function isStalePreMutationDirectOwnershipRecovery(
   return review?.decision === 'approved' && review.sourceRevision.trim() === target;
 }
 
+
+function reviewedMaterializedDirectOwnershipRecovery(
+  work: WorkContract,
+  handle: WorkHandleState | undefined,
+  input: { repoRoot: string; checkoutId: string; targetBranch: string; targetRevision: string },
+): { comparisonBaseRevision: string } | undefined {
+  const originalBase = work.baseRevision?.trim();
+  const target = input.targetRevision.trim();
+  const targetBranch = input.targetBranch.trim();
+  if (
+    work.workKind !== 'repository_change'
+    || isTerminalWorkContractStatus(work.status)
+    || !originalBase
+    || !target
+    || !targetBranch
+    || !handle
+    || handle.managedWorktree
+    || !['prepared', 'editing'].includes(handle.state)
+    || handle.repositoryId !== work.repoId
+    || handle.checkoutId !== input.checkoutId
+    || resolve(handle.worktreePath) !== resolve(input.repoRoot)
+    || handle.branch !== targetBranch
+    || (handle.deliveryTargetBranch !== undefined && handle.deliveryTargetBranch !== targetBranch)
+  ) return undefined;
+
+  const handleBase = handle.baseCommit?.trim();
+  const deliveryBase = (handle.deliveryBaseCommit ?? handle.baseCommit)?.trim();
+  const expectedHead = handle.expectedHead?.trim();
+  if (
+    !handleBase
+    || handleBase !== originalBase
+    || !deliveryBase
+    || deliveryBase === originalBase
+    || expectedHead !== deliveryBase
+    || deliveryBase === target
+  ) return undefined;
+  if (!git(input.repoRoot, ['merge-base', '--is-ancestor', originalBase, deliveryBase]).ok) return undefined;
+  if (!git(input.repoRoot, ['merge-base', '--is-ancestor', deliveryBase, target]).ok) return undefined;
+
+  const materializedPaths = comparedRevisionPaths(input.repoRoot, deliveryBase, target);
+  if (materializedPaths.length === 0) return undefined;
+  const materializedPathDigest = implementationReviewChangedPathDigest(materializedPaths);
+  for (const review of work.implementationReviews) {
+    if (review.decision !== 'approved' || review.sourceRevision.trim() !== deliveryBase) continue;
+    const reviewedPaths = normalizeImplementationReviewChangedPaths(review.changedPaths);
+    if (review.changedPathDigest !== implementationReviewChangedPathDigest(reviewedPaths)) continue;
+    if (review.changedPathDigest !== materializedPathDigest) continue;
+    if (reviewedPaths.length !== materializedPaths.length || reviewedPaths.some((path, index) => path !== materializedPaths[index])) continue;
+    let currentContentFingerprint: string;
+    try {
+      currentContentFingerprint = implementationReviewContentFingerprint(input.repoRoot, reviewedPaths);
+    } catch {
+      continue;
+    }
+    if (currentContentFingerprint !== review.workspaceFingerprint) continue;
+    return { comparisonBaseRevision: deliveryBase };
+  }
+  return undefined;
+}
+
 export function hasReviewedDirectEditReconciliationOwnership(input: {
   work: WorkContract;
   handle?: WorkHandleState;
@@ -462,6 +523,12 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
     targetBranch: input.targetBranch,
     targetRevision: input.targetRevision,
   });
+  const materializedReviewedRecovery = reviewedMaterializedDirectOwnershipRecovery(work, currentHandle, {
+    repoRoot: input.repoRoot,
+    checkoutId: input.checkoutId,
+    targetBranch: input.targetBranch,
+    targetRevision: input.targetRevision,
+  });
   const historicalEffectRecovery = !currentHandle
     && !isTerminalWorkContractStatus(work.status)
     && (work.workKind === 'local_effect' || work.workKind === 'remote_effect');
@@ -488,11 +555,15 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
   // pre-mutation ownership repair is different: it repairs an active Direct Work
   // already contained by the current local target branch, matching normal local
   // finalize semantics without turning push state into a second ownership gate.
-  if (!stalePreMutationOwnershipRecovery) assertRemoteContainmentIfApplicable(input.repoRoot, targetBranch, targetRevision);
+  if (!stalePreMutationOwnershipRecovery && !materializedReviewedRecovery) {
+    assertRemoteContainmentIfApplicable(input.repoRoot, targetBranch, targetRevision);
+  }
 
   const comparedPaths = normalizedComparedPaths(input.comparedPaths);
   let comparisonBaseRevision = baseRevision;
-  if (failedReviewedRecovery || stalePreMutationOwnershipRecovery) {
+  if (materializedReviewedRecovery) {
+    comparisonBaseRevision = materializedReviewedRecovery.comparisonBaseRevision;
+  } else if (failedReviewedRecovery || stalePreMutationOwnershipRecovery) {
     const targetParent = exactCommit(input.repoRoot, `${targetRevision}^`, 'TARGET_PARENT_REVISION');
     if (!git(input.repoRoot, ['merge-base', '--is-ancestor', baseRevision, targetParent]).ok) {
       throw new Error('DIRECT_EDIT_WORK_RECONCILIATION_TARGET_PARENT_NOT_DESCENDANT');
