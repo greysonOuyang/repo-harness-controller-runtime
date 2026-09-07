@@ -362,6 +362,12 @@ export function implementationReviewCommittedBaseRevision(
   const targetBranch = resolveWorkDeliveryTargetBranch(handle, repository.defaultBranch, explicitTargetBranch);
   const targetHead = gitRevision(repository.canonicalRoot, targetBranch);
   if (!targetHead || targetHead === base) return base;
+  // Once the delivery target has caught up to the exact candidate HEAD, using
+  // that target as the review baseline would erase the Work delta and make an
+  // unchanged approved review appear stale. Preserve only the already-durable
+  // delivery base in this exact catch-up state; without that durable fence, keep
+  // the previous fail-closed behavior below.
+  if (targetHead === head && handle.deliveryBaseCommit?.trim()) return base;
   // Review may exclude canonical target-only history only after proving that the
   // recorded delivery base advances linearly to the exact target and that this
   // target is already contained by the managed candidate. This is a read-only

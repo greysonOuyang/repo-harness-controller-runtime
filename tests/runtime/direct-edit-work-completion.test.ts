@@ -11,6 +11,7 @@ import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-ac
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { acceptReviewedDirectEditWorkReconciliation, completeReviewedDirectEditWorkAfterCommit, hasReviewedDirectEditReconciliationOwnership, isFailedReviewedDirectEditWorkRecovery, prepareReviewedDirectEditWorkCommit, reconcileFinalizedDirectEditWorksAfterCommit, type ReviewedDirectEditWorkCommitPlan } from '../../src/runtime/control-plane/execution/direct-edit-work-completion';
 import { implementationReviewContentFingerprint } from '../../src/runtime/control-plane/execution/implementation-review-content';
+import { implementationReviewCommittedBaseRevision } from '../../src/runtime/control-plane/execution/work-finalization-service';
 import { createWorkContract, getWorkContract, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { acceptPlanStepEvidence, approvePlanContract, claimPlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
@@ -974,5 +975,44 @@ describe('standalone Direct Edit Work completion', () => {
     expect(reconciliation.completedWorkIds).toEqual([]);
     expect(reconciliation.skipped[0]?.reason).toBe('postcommit_completion_authority_retired_use_precommit_review_gate_or_explicit_historical_reconciliation');
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId)?.status).toBe('running');
+  });
+});
+
+
+describe('managed implementation-review delivery baseline', () => {
+  test('preserves the durable delivery base after the target catches the exact reviewed candidate', () => {
+    const fx = fixture();
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    writeFileSync(join(fx.repoRoot, 'README.md'), '# Test\ntarget advance\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'target advance'], { cwd: fx.repoRoot });
+    const deliveryBaseCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    execFileSync('git', ['checkout', '-qb', 'work/review-baseline'], { cwd: fx.repoRoot });
+    writeFileSync(join(fx.repoRoot, 'src', 'example.ts'), 'export const reviewed = true;\n');
+    execFileSync('git', ['add', 'src/example.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'reviewed candidate'], { cwd: fx.repoRoot });
+    const candidateHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    execFileSync('git', ['checkout', '-q', 'main'], { cwd: fx.repoRoot });
+    execFileSync('git', ['merge', '--ff-only', 'work/review-baseline'], { cwd: fx.repoRoot });
+
+    const handle = {
+      workId: 'work-review-baseline', managedWorktree: true, deliveryTargetBranch: 'main',
+      baseCommit: baseRevision, deliveryBaseCommit,
+    };
+    expect(implementationReviewCommittedBaseRevision(
+      { canonicalRoot: fx.repoRoot, defaultBranch: 'main' }, handle, baseRevision, candidateHead, 'main',
+    )).toBe(deliveryBaseCommit);
+
+    execFileSync('git', ['checkout', '-q', 'work/review-baseline'], { cwd: fx.repoRoot });
+    writeFileSync(join(fx.repoRoot, 'src', 'example.ts'), 'export const reviewed = 2;\n');
+    execFileSync('git', ['add', 'src/example.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'next candidate'], { cwd: fx.repoRoot });
+    const nextCandidateHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+    expect(implementationReviewCommittedBaseRevision(
+      { canonicalRoot: fx.repoRoot, defaultBranch: 'main' }, handle, baseRevision, nextCandidateHead, 'main',
+    )).toBe(candidateHead);
   });
 });
