@@ -1337,6 +1337,11 @@ export function claimStalledControllerRoundRelays(
   return claimed;
 }
 
+const CONTROLLER_ROUND_ORIGIN_OBJECTIVE_MAX_CHARS = 4_000;
+const CONTROLLER_ROUND_RELATED_OBJECTIVE_MAX_CHARS = 500;
+const CONTROLLER_ROUND_ORIGIN_ACCEPTANCE_MAX_ITEMS = 16;
+const CONTROLLER_ROUND_ACCEPTANCE_CRITERION_MAX_CHARS = 1_000;
+
 export interface ControllerRoundContextSnapshot {
   repoId: string;
   relayScopeId: string;
@@ -1352,6 +1357,7 @@ export interface ControllerRoundContextSnapshot {
     phase: string;
     updatedAt: string;
     objective: string;
+    acceptanceCriteria: string[];
   }>;
   handoffs: Array<{
     id: string;
@@ -1394,13 +1400,23 @@ export function readControllerRoundContextSnapshot(
         outcomeStatement: requirement.outcomeStatement.slice(0, 800),
       },
     } : {}),
-    works: works.map((work) => ({
-      workId: work.workId,
-      status: work.status,
-      phase: work.phase,
-      updatedAt: work.updatedAt,
-      objective: work.objective.slice(0, 500),
-    })),
+    works: works.map((work) => {
+      const origin = work.workId === record.originWorkId;
+      return {
+        workId: work.workId,
+        status: work.status,
+        phase: work.phase,
+        updatedAt: work.updatedAt,
+        objective: work.objective.slice(0, origin
+          ? CONTROLLER_ROUND_ORIGIN_OBJECTIVE_MAX_CHARS
+          : CONTROLLER_ROUND_RELATED_OBJECTIVE_MAX_CHARS),
+        acceptanceCriteria: origin
+          ? work.acceptanceCriteria
+            .slice(0, CONTROLLER_ROUND_ORIGIN_ACCEPTANCE_MAX_ITEMS)
+            .map((criterion) => criterion.slice(0, CONTROLLER_ROUND_ACCEPTANCE_CRITERION_MAX_CHARS))
+          : [],
+      };
+    }),
     handoffs: handoffs.map((handoff) => ({
       id: handoff.id,
       status: handoff.status,

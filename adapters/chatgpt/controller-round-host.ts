@@ -16,7 +16,15 @@ export function buildChatgptControllerRoundPrompt(
     ? `Requirement ${snapshot.requirement.requirementId}：state=${snapshot.requirement.state}；outcome=${snapshot.requirement.outcomeStatement}`
     : `当前未绑定 durable Requirement；语义 relay scope 为 ${snapshot.relayScopeId}。`;
   const workLines = snapshot.works.length > 0
-    ? snapshot.works.map((work) => `- ${work.workId}：status=${work.status}；phase=${work.phase}；updated=${work.updatedAt}；objective=${work.objective}`).join('\n')
+    ? snapshot.works.map((work) => {
+      const summary = `- ${work.workId}：status=${work.status}；phase=${work.phase}；updated=${work.updatedAt}；objective=${work.objective}`;
+      if (work.workId !== snapshot.originWorkId || work.acceptanceCriteria.length === 0) return summary;
+      return [
+        summary,
+        '  origin Work acceptanceCriteria（durable semantic contract）：',
+        ...work.acceptanceCriteria.map((criterion, index) => `  ${index + 1}. ${criterion}`),
+      ].join('\n');
+    }).join('\n')
     : '- 未找到关联 Work 快照';
   const originWork = snapshot.works.find((work) => work.workId === snapshot.originWorkId);
   const terminalOriginGuidance = originWork?.status === 'completed'
@@ -30,6 +38,7 @@ export function buildChatgptControllerRoundPrompt(
     '这是新的 ChatGPT controller round。第一步必须重新读取最新 Forge Requirement/Work/Handoff 状态；下面的快照只用于启动提示，不能代替 durable state。',
     requirementLine,
     `关联 Work 快照：\n${workLines}`,
+    'origin Work 的 objective 与 acceptanceCriteria 是本轮必须显式检查的 durable semantic contract；若最新事实满足其中更具体的终态义务，不得仅凭通用 disposition 指导改写成另一种终态。',
     `Active Handoff 快照：\n${handoffLines}`,
     promptOptions.exactOriginWork
       ? `这是 Work-bound scheduled round。只允许 claim 并推进 origin Work ${snapshot.originWorkId}。不得选择、启动、delegate、resume sibling Work，不得新建 schedule，也不得扩大 scope。如果经过一次有界诊断或修复后仍无法安全推进，记录精确证据，提交 wait 或带 active Handoff 的 wait_for_user，释放 ownership，然后结束本轮。`
