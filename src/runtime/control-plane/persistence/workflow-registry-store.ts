@@ -61,6 +61,18 @@ function validateBinding(binding: WorkflowCapabilityBinding): WorkflowCapability
   return { capabilityId, providerId, integrationId, pluginId, actionId };
 }
 
+function validateBindings(bindings: WorkflowCapabilityBinding[]): WorkflowCapabilityBinding[] {
+  const seenCapabilities = new Set<string>();
+  return bindings.map((binding) => {
+    const validated = validateBinding(binding);
+    if (seenCapabilities.has(validated.capabilityId)) {
+      throw new Error(`WORKFLOW_REGISTRY_BINDING_CAPABILITY_DUPLICATE: ${validated.capabilityId}`);
+    }
+    seenCapabilities.add(validated.capabilityId);
+    return validated;
+  });
+}
+
 function validateEntry(value: WorkflowRegistryEntry): WorkflowRegistryEntry {
   if (value.schemaVersion !== SCHEMA_VERSION) throw new Error('WORKFLOW_REGISTRY_SCHEMA_VERSION_UNSUPPORTED');
   boundedRef(value.workflowId, 'WORKFLOW_ID');
@@ -73,7 +85,7 @@ function validateEntry(value: WorkflowRegistryEntry): WorkflowRegistryEntry {
   }
   value.capabilityGrantRefs.forEach((ref) => boundedRef(ref, 'GRANT_REF'));
   value.executionReceiptReuseRefs.forEach((ref) => boundedRef(ref, 'RECEIPT_REF'));
-  value.bindings.map(validateBinding);
+  validateBindings(value.bindings);
   if (!Number.isFinite(Date.parse(value.updatedAt))) throw new Error('WORKFLOW_REGISTRY_UPDATED_AT_INVALID');
   return value;
 }
@@ -125,7 +137,7 @@ export function registerWorkflowAsset(input: {
     status: input.status ?? existing?.value.status ?? 'installed',
     contentLocation: input.contentLocation,
     capabilityGrantRefs: sameIdentity ? [...existing!.value.capabilityGrantRefs] : [],
-    bindings: sameIdentity ? existing!.value.bindings.map((binding) => ({ ...binding })) : [],
+    bindings: sameIdentity ? validateBindings(existing!.value.bindings).map((binding) => ({ ...binding })) : [],
     executionReceiptReuseRefs: sameIdentity ? [...existing!.value.executionReceiptReuseRefs] : [],
     updatedAt: (input.now ?? new Date()).toISOString(),
   };
@@ -158,7 +170,7 @@ export function recordWorkflowBindings(input: {
   const entry: WorkflowRegistryEntry = {
     ...existing.value,
     capabilityGrantRefs: (input.capabilityGrantRefs ?? existing.value.capabilityGrantRefs).map((ref) => boundedRef(ref, 'GRANT_REF')),
-    bindings: (input.bindings ?? existing.value.bindings).map(validateBinding),
+    bindings: validateBindings(input.bindings ?? existing.value.bindings),
     executionReceiptReuseRefs: (input.executionReceiptReuseRefs ?? existing.value.executionReceiptReuseRefs).map((ref) => boundedRef(ref, 'RECEIPT_REF')),
     updatedAt: (input.now ?? new Date()).toISOString(),
   };

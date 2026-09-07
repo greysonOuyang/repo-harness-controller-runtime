@@ -17,7 +17,10 @@ export function prepareAssistantWorkContext(input: {
   // Semantic Project identity comes from Work lineage/portable placement. The engineering contract is an optional knowledge-source contract, not identity authority.
   const scopes = experienceScopesForWork(work, input.controllerHome);
   const boundProject = scopes.find(scope => scope.kind === 'project')?.id;
-  if (!boundProject) throw new Error('ASSISTANT_CONTEXT_PROJECT_BINDING_REQUIRED');
+  // Project knowledge is advisory enrichment. A Work that has not yet been
+  // bound to a Project must still be able to claim and continue its durable
+  // ControllerRound; missing optional context is not a lifecycle blocker.
+  if (!boundProject) return undefined;
   const loaded = loadProjectEngineeringContract({ repoRoot, sourceRevision: 'working-tree', now: () => input.now ?? new Date().toISOString() });
   if (loaded.status === 'ready' && boundProject !== loaded.contract.projectId) throw new Error('ASSISTANT_CONTEXT_PROJECT_BINDING_MISMATCH');
   const now = input.now ?? new Date().toISOString();

@@ -75,6 +75,17 @@ describe('Workflow Asset content and machine registry authority', () => {
     expect(bound.value.capabilityGrantRefs).toEqual(['grant-browser-publish']);
     expect(bound.value.bindings).toEqual([{ capabilityId: 'browser.navigate', providerId: 'browser.default' }]);
 
+    expect(() => recordWorkflowBindings({
+      controllerHome,
+      scope: { kind: 'controller' },
+      expectedIdentity: workflowContentIdentity(written.asset),
+      bindings: [
+        { capabilityId: 'browser.navigate', providerId: 'browser.default' },
+        { capabilityId: 'browser.navigate', providerId: 'browser.secondary' },
+      ],
+      expectedRevision: bound.revision,
+    })).toThrow('WORKFLOW_REGISTRY_BINDING_CAPABILITY_DUPLICATE: browser.navigate');
+
     const machinePayload = JSON.stringify(readWorkflowRegistryEntry(controllerHome, { kind: 'controller' }, 'publish-note')!.value);
     expect(machinePayload).not.toContain('prepare one generic note');
     expect(machinePayload).not.toContain('process.stdout.write');
