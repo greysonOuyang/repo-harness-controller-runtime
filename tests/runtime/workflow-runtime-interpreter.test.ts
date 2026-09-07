@@ -256,3 +256,90 @@ test('different runs cannot dispatch concurrently for the same Work', async () =
     expect(dispatched).toBe(1);
   } finally { release(); await first; }
 });
+
+
+test('sensitive retained outputs are refused before a Workflow checkpoint is persisted', async () => {
+  const controllerHome = temp('forge-workflow-sensitive-home-'), root = temp('forge-workflow-sensitive-repo-');
+  const asset = draft();
+  asset.steps = [{
+    stepId: 'read-sensitive', capabilityId: 'browser.navigate', idempotency: 'idempotent',
+    input: { url: '{{input.url}}' }, outputContract: { access_token: { type: 'string', required: true } },
+  }];
+  const { repository } = await installedRuntime(controllerHome, root, asset);
+  const runId = 'sensitive-output';
+  await expect(executeRegisteredWorkflow({
+    controllerHome, repository, executionIdentity: identity(root), controller: controllers.get(controllerHome)!,
+    workId: 'work-workflow-test', runId, registryScope: { kind: 'controller' }, workflowId: 'runtime-proof',
+    inputs: { url: 'https://example.test', title: 'not retained' },
+  }, {
+    submitPluginAction: (async (_home: string, repo: RepositoryRecord, request: any) => ({
+      manifest: {}, action: {}, job: {}, deduplicated: false, result: { access_token: 'not-a-secret-pattern-but-a-forbidden-field' },
+      receipt: { schemaVersion: 1, receiptId: 'receipt-sensitive', requestId: request.requestId, repoId: repo.repoId,
+        pluginId: request.pluginId, actionId: request.actionId, semanticKey: 'key', status: 'succeeded', createdAt: new Date().toISOString() },
+    })) as any,
+  })).rejects.toThrow('CONTROL_PLANE_METADATA_FIELD_REFUSED: workflow_run.outputs.read-sensitive.access_token');
+  const stored = readWorkflowRun(controllerHome, 'work-workflow-test', runId)!;
+  expect(stored.value.status).toBe('running');
+  expect(stored.value.inFlightStepId).toBe('read-sensitive');
+  expect(stored.value.outputs).toEqual({});
+  expect(JSON.stringify(stored.value)).not.toContain('not-a-secret-pattern-but-a-forbidden-field');
+});
+
+test('publication receipt binds real publication identity and is durably persisted with verification evidence', async () => {
+  const controllerHome = temp('forge-workflow-publication-home-'), root = temp('forge-workflow-publication-repo-');
+  const contentDigest = `sha256:${'a'.repeat(64)}`;
+  const publishedAt = '2026-09-08T00:00:00.000Z';
+  const asset = draft();
+  asset.inputContract = {
+    url: { type: 'string', required: true }, title: { type: 'string', required: true }, account: { type: 'string', required: true },
+  };
+  asset.steps = [
+    { stepId: 'publish', capabilityId: 'browser.submit', idempotency: 'non_idempotent', reconcileWithCapabilityId: 'browser.navigate', input: { title: '{{input.title}}' } },
+    { stepId: 'discover', capabilityId: 'browser.navigate', idempotency: 'idempotent', input: { url: '{{input.url}}' }, outputContract: {
+      postId: { type: 'string', required: true }, postUrl: { type: 'string', required: true }, contentDigest: { type: 'string', required: true },
+    } },
+    { stepId: 'verify', capabilityId: 'browser.navigate', idempotency: 'idempotent', input: { url: '{{output.discover.postUrl}}' }, outputContract: {
+      verified: { type: 'boolean', required: true },
+    } },
+  ];
+  asset.publication = {
+    channel: 'xiaohongshu', accountInput: 'account', effectStepId: 'publish',
+    contentDigestOutput: { stepId: 'discover', field: 'contentDigest' },
+    postIdOutput: { stepId: 'discover', field: 'postId' }, postUrlOutput: { stepId: 'discover', field: 'postUrl' },
+    verificationStepIds: ['verify'],
+  };
+  const { repository } = await installedRuntime(controllerHome, root, asset);
+  let call = 0;
+  const runId = 'publication-receipt';
+  const result = await executeRegisteredWorkflow({
+    controllerHome, repository, executionIdentity: identity(root), controller: controllers.get(controllerHome)!,
+    workId: 'work-workflow-test', runId, registryScope: { kind: 'controller' }, workflowId: 'runtime-proof',
+    inputs: { url: 'https://creator.example.test/post/123', title: 'publish once', account: 'xhs-account-1' },
+  }, {
+    submitPluginAction: (async (_home: string, repo: RepositoryRecord, request: any) => {
+      call += 1;
+      const output = call === 1 ? { matched: true, verified: true }
+        : call === 2 ? { postId: 'post-123', postUrl: 'https://www.xiaohongshu.com/explore/post-123', contentDigest }
+          : { verified: true };
+      return {
+        manifest: {}, action: {}, job: {}, deduplicated: false, result: output,
+        receipt: { schemaVersion: 1, receiptId: `receipt-${call}`, requestId: request.requestId, repoId: repo.repoId,
+          pluginId: request.pluginId, actionId: request.actionId, semanticKey: `key-${call}`, status: 'succeeded',
+          createdAt: call === 1 ? publishedAt : `2026-09-08T00:00:0${call}.000Z` },
+      } as any;
+    }) as any,
+  });
+  expect(result.status).toBe('succeeded');
+  expect(result.publicationReceipt).toMatchObject({
+    workflowId: 'runtime-proof', channel: 'xiaohongshu', account: 'xhs-account-1', postId: 'post-123',
+    postUrl: 'https://www.xiaohongshu.com/explore/post-123', contentDigest,
+    timeSource: 'effect_receipt_recorded_at', effectReceiptRef: 'receipt-1', verificationEvidenceRefs: ['receipt-3'],
+  });
+  expect(result.publicationReceipt?.receiptId).toStartWith('workflow-publication-');
+  const stored = readWorkflowRun(controllerHome, 'work-workflow-test', runId)!;
+  const effectReceipt = stored.value.receipts.find(receipt => receipt.stepId === 'publish')!;
+  expect(result.publicationReceipt?.publishedAt).toBe(effectReceipt.recordedAt);
+  expect(Date.parse(result.publicationReceipt!.publishedAt)).toBeGreaterThanOrEqual(Date.parse(publishedAt) - 24 * 60 * 60 * 1000);
+  expect(stored.value.publicationReceipt).toEqual(result.publicationReceipt);
+  expect(stored.value.evidenceRef).toStartWith('workflow-run-');
+});
