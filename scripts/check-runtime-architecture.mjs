@@ -261,7 +261,7 @@ function requireExactShrinkingInventory(label, actual, allowed) {
 // never added to runtime-tools/router while decomposition is in progress.
 const MCP_GATEWAY_AUTHORITY_IMPORT_PATTERN = /(?:packages\/kernel\/|src\/runtime\/|src\/cli\/(?:repositories|editing)\/)/;
 
-function gatewayAuthorityImportInventoryFromSources(sources) {
+function gatewayAuthorityImportInventoryFromSources(sources, importPattern = MCP_GATEWAY_AUTHORITY_IMPORT_PATTERN) {
   const ts = loadTypeScriptCompiler();
   if (!ts) return new Set();
   const records = new Set();
@@ -271,7 +271,7 @@ function gatewayAuthorityImportInventoryFromSources(sources) {
       if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
           && node.moduleSpecifier
           && ts.isStringLiteralLike(node.moduleSpecifier)
-          && MCP_GATEWAY_AUTHORITY_IMPORT_PATTERN.test(node.moduleSpecifier.text)) {
+          && importPattern.test(node.moduleSpecifier.text)) {
         records.add(`${path}::${node.moduleSpecifier.text}`);
       }
       ts.forEachChild(node, visit);
@@ -429,6 +429,16 @@ requireExactShrinkingInventory(
   'MCP runtime-tools switch-case debt',
   runtimeToolSwitchCaseInventory(text('adapters/mcp/runtime-gateway/runtime-tools.ts')),
   MCP_RUNTIME_TOOLS_SWITCH_CASE_DEBT,
+);
+
+const MCP_PURE_TRANSPORT_FORBIDDEN_IMPORT_PATTERN = /(?:packages\/kernel\/|src\/runtime\/)/;
+requireExactShrinkingDebt(
+  'MCP pure transport adapter authority imports',
+  gatewayAuthorityImportInventoryFromSources([
+    { path: 'adapters/mcp/runtime-gateway/shared-adapter.ts', source: text('adapters/mcp/runtime-gateway/shared-adapter.ts') },
+    { path: 'adapters/mcp/runtime-gateway/result-adapter.ts', source: text('adapters/mcp/runtime-gateway/result-adapter.ts') },
+  ], MCP_PURE_TRANSPORT_FORBIDDEN_IMPORT_PATTERN),
+  new Set(),
 );
 
 const FROZEN_CAPABILITY_PREFIX_FILES = [
