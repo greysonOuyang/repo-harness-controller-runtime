@@ -4570,3 +4570,163 @@ describe('rh_work terminalization authority', () => {
   });
 
 });
+
+
+describe('rh_work content-equivalent commit authority transfer', () => {
+  test('finalize atomically transfers verification and approved review across its own managed commit before merge and cleanup', async () => {
+    const fx = fixture();
+    const checkId = 'package:check:content-equivalent-finalize';
+    writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({
+      scripts: { 'check:content-equivalent-finalize': 'node -e "process.exit(0)"' },
+    }, null, 2) + '\n');
+    execFileSync('git', ['add', 'package.json'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'add content-equivalent finalize check'], { cwd: fx.repoRoot });
+
+    const workId = 'work-content-equivalent-managed-finalize';
+    const caller = {
+      principalId: 'principal-content-equivalent-managed-finalize',
+      sessionId: 'transport-content-equivalent-managed-finalize',
+      controllerInstanceId: 'runtime-content-equivalent-managed-finalize',
+    };
+    const branch = 'work/content-equivalent-managed-finalize';
+    const workspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: workId,
+      title: 'Content Equivalent Managed Finalize',
+      branchName: branch,
+    });
+    const repository = getRepository(fx.repository.repoId, fx.controllerHome);
+    const selectedWorktree = selectRepositoryCheckout(repository, workspace.checkoutId!);
+    createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: workspace.checkoutId!,
+      baseRevision: workspace.baseRevision ?? undefined,
+      mode: 'goal_workloop',
+      objective: 'Finalize an exact reviewed dirty candidate through a Forge-owned representation-only commit.',
+      acceptanceCriteria: ['The reviewed bytes survive commit, merge, and cleanup under one Work authority.'],
+      allowedPaths: ['src/index.ts'],
+      forbiddenPaths: [],
+      checks: [checkId],
+      constraints: { requireHandoffOnAmbiguity: true, requireWorktree: true },
+      requestedBy: 'chatgpt',
+      workKind: 'repository_change',
+      status: 'running',
+      phase: 'implementation',
+      worktreeRef: workspace.root,
+      scopeEvidence: {
+        initialLikelyPaths: ['src/index.ts'],
+        inspectedPaths: ['src/index.ts'],
+        actualChangedPaths: ['src/index.ts'],
+        recordedAt: new Date().toISOString(),
+      },
+    });
+    claimControllerSession({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+      workId,
+      controllerId: caller.principalId,
+      controllerType: 'chatgpt',
+      sessionId: caller.sessionId,
+      principalId: caller.principalId,
+      controllerInstanceId: caller.controllerInstanceId,
+      leaseMs: 60_000,
+    });
+    const handle = ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: selectedWorktree,
+      workId,
+      identity: { sessionId: caller.sessionId, principalId: caller.principalId },
+    });
+    expect(handle).toBeTruthy();
+    expect(handle!.managedWorktree).toBe(true);
+
+    writeFileSync(join(workspace.root!, 'src', 'index.ts'), 'export const ready = "reviewed-before-forge-commit";\n');
+    const dirtyStatus = repositoryGitStatus(selectedWorktree);
+    expect(dirtyStatus.clean).toBe(false);
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim()).toBe(workspace.baseRevision!);
+
+    const admitted = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      { repo_id: repository.repoId, checkout_id: workspace.checkoutId, operation: 'continue', work_id: workId, requested_by: 'chatgpt' },
+    ));
+    expect(admitted.status).toBe('ok');
+
+    let verified: Record<string, any> | undefined;
+    for (let attempt = 0; attempt < 80; attempt += 1) {
+      verified = structured(await callRuntimeTool(
+        ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+        'rh_work',
+        {
+          repo_id: repository.repoId,
+          checkout_id: workspace.checkoutId,
+          operation: 'verify',
+          work_id: workId,
+          check_id: checkId,
+          requested_by: 'chatgpt',
+          request_id: 'content-equivalent-managed-finalize-check',
+        },
+      ));
+      if (verified.data?.verification?.completed === true) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(verified?.status).toBe('ok');
+    expect(verified?.data?.verification).toMatchObject({ completed: true, outcome: 'valid_pass' });
+    expect(verified?.data?.nextStep).toBe('review');
+
+    const reviewed = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'review',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        review_decision: 'approved',
+        review_rationale: 'The exact dirty workspace bytes and bound verification receipt are approved before Forge changes Git representation.',
+      },
+    ));
+    expect(reviewed.status).toBe('ok');
+    const approvedBeforeCommit = getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)!;
+    expect(approvedBeforeCommit).toMatchObject({ phase: 'delivery', phaseEvidence: { review: { state: 'satisfied' } } });
+    expect(approvedBeforeCommit.implementationReviews).toHaveLength(1);
+    const parentReviewId = approvedBeforeCommit.implementationReviews[0]!.reviewId;
+    const preCommitHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace.root!, encoding: 'utf8' }).trim();
+
+    const finalized = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, repository, caller.principalId, caller.sessionId, caller.controllerInstanceId),
+      'rh_work',
+      {
+        repo_id: repository.repoId,
+        checkout_id: workspace.checkoutId,
+        operation: 'finalize',
+        work_id: workId,
+        requested_by: 'chatgpt',
+        completion_outcome: 'completed_changed',
+        commit: true,
+        merge: true,
+        cleanup: true,
+        target_branch: 'main',
+      },
+    ));
+    expect(finalized.status).toBe('ok');
+
+    const completed = getWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, workId)!;
+    expect(completed).toMatchObject({
+      status: 'completed',
+      workKind: 'repository_change',
+      completionOutcome: 'completed_changed',
+      phaseEvidence: { verification: { state: 'satisfied' }, review: { state: 'satisfied' } },
+    });
+    expect(completed.implementationReviews).toHaveLength(2);
+    const derived = completed.implementationReviews[1]!;
+    expect(derived).toMatchObject({
+      decision: 'approved',
+      derivation: 'content_equivalent_commit',
+      derivedFromReviewId: parentReviewId,
+    });
+    expect(derived.sourceRevision).not.toBe(preCommitHead);
+    expect(completed.checkRefs.some((record) => record.sourceRevision === derived.sourceRevision && record.outcome === 'valid_pass')).toBe(true);
+    expect(existsSync(workspace.root!)).toBe(false);
+    expect(execFileSync('git', ['show', 'HEAD:src/index.ts'], { cwd: fx.repoRoot, encoding: 'utf8' })).toContain('reviewed-before-forge-commit');
+  }, 30_000);
+});

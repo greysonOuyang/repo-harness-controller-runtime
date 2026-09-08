@@ -5,18 +5,17 @@ import { getEditSession, listEditSessions, type EditSession } from '../../../cli
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { runProcess } from '../../../effects/process-runner';
-import { getWorkContract, implementationReviewChangedPathDigest, recordWorkImplementationReview, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { getWorkContract, implementationReviewChangedPathDigest, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { completeWorkWithReceipt } from './work-completion-authority';
 import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkContract, type WorkReconciliationRecord } from '../facade/types';
 import { historicalVerificationEvidenceAtRevision, workspaceValidationFingerprint } from './verification-evidence';
 import { readWorkHandle, type WorkHandleState } from './work-handle-store';
 import { assertWorkPathsWithinScope, findWorkPathScopeViolation } from './work-path-scope';
 import { implementationReviewContentFingerprint, implementationReviewIndexFingerprint } from './implementation-review-content';
-import { transferWorkVerificationAcrossContentEquivalentCommit } from './work-verification-service';
+import { transferReviewedWorkAuthorityAcrossContentEquivalentCommit } from './content-equivalent-commit-authority';
 import {
   assertImplementationReviewPreDeliveryBoundary,
   authoritativeImplementationReviewVerificationEvidence,
-  deriveImplementationReviewAcrossCommit,
   latestImplementationReview,
   normalizeImplementationReviewChangedPaths,
   type ImplementationReviewCandidateIdentity,
@@ -183,61 +182,27 @@ export function completeReviewedDirectEditWorkAfterCommit(input: {
   const targetBranch = postStatus.branch?.trim() || input.fallbackBranch?.trim();
   if (!targetBranch) throw new Error('DIRECT_EDIT_WORK_COMMIT_TARGET_BRANCH_REQUIRED');
   const postVerificationWorkspaceFingerprint = workspaceValidationFingerprint(input.repository.canonicalRoot, postStatus);
-  const transfer = transferWorkVerificationAcrossContentEquivalentCommit({
+  const postContentFingerprint = implementationReviewContentFingerprint(input.repository.canonicalRoot, input.plan.changedPaths);
+  const transfer = transferReviewedWorkAuthorityAcrossContentEquivalentCommit({
     controllerHome: input.controllerHome,
     repository: input.repository,
     workId: input.plan.workId,
-    preCommitSourceRevision: input.plan.preCommitCandidate.sourceRevision,
-    preCommitWorkspaceFingerprint: input.plan.preCommitCandidate.verificationWorkspaceFingerprint,
+    preCommitCandidate: input.plan.preCommitCandidate,
+    preCommitDirtyPaths: input.plan.changedPaths,
+    committedPaths: actualCommittedPaths,
+    preCommitContentDigest: input.plan.preCommitContentFingerprint,
     postCommitSourceRevision: targetRevision,
-    postCommitWorkspaceFingerprint: postVerificationWorkspaceFingerprint,
+    postCommitContentDigest: postContentFingerprint,
+    postCommitVerificationWorkspaceFingerprint: postVerificationWorkspaceFingerprint,
+    postCommitChangedPaths: input.plan.changedPaths,
   });
   if (transfer.invalidatedCheckIds.length > 0) {
     throw new Error(`DIRECT_EDIT_WORK_COMMIT_REVALIDATION_REQUIRED: ${transfer.invalidatedCheckIds.join(', ')}`);
   }
-  const afterTransfer = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repository.repoId }, input.plan.workId)!;
-  const postVerification = authoritativeImplementationReviewVerificationEvidence({
-    repoId: input.repository.repoId,
-    workId: input.plan.workId,
-    requiredCheckIds: afterTransfer.checks,
-    records: afterTransfer.checkRefs,
-    sourceRevision: targetRevision,
-    workspaceFingerprint: postVerificationWorkspaceFingerprint,
-  });
-  if (postVerification.missingCheckIds.length > 0) {
-    throw new Error(`DIRECT_EDIT_WORK_COMMIT_REVALIDATION_REQUIRED: ${postVerification.missingCheckIds.join(', ')}`);
+  if (!transfer.transferred || !transfer.derivedReview) {
+    throw new Error('DIRECT_EDIT_WORK_COMMIT_AUTHORITY_TRANSFER_REQUIRED');
   }
-  const postContentFingerprint = implementationReviewContentFingerprint(input.repository.canonicalRoot, input.plan.changedPaths);
-  const postCandidate: ImplementationReviewCandidateIdentity = {
-    sourceRevision: targetRevision,
-    workspaceFingerprint: postContentFingerprint,
-    verificationWorkspaceFingerprint: postVerificationWorkspaceFingerprint,
-    changedPaths: input.plan.changedPaths,
-    verificationEvidence: postVerification.evidence,
-    architectureEvidence: input.plan.preCommitCandidate.architectureEvidence ?? [],
-  };
-  const recordedAt = new Date().toISOString();
-  const derivedReview = deriveImplementationReviewAcrossCommit({
-    workId: input.plan.workId,
-    reviews: afterTransfer.implementationReviews,
-    proof: {
-      preCommitCandidate: input.plan.preCommitCandidate,
-      postCommitCandidate: postCandidate,
-      preCommitDirtyPaths: input.plan.changedPaths,
-      committedPaths: actualCommittedPaths,
-      preCommitContentDigest: input.plan.preCommitContentFingerprint,
-      postCommitContentDigest: postContentFingerprint,
-      postCommitVerificationAuthority: {
-        repoId: input.repository.repoId,
-        workId: input.plan.workId,
-        requiredCheckIds: afterTransfer.checks,
-        records: afterTransfer.checkRefs,
-      },
-    },
-    derivedReviewId: `REV-commit-${createHash('sha256').update(`${input.plan.workId}\0${targetRevision}\0${input.plan.preCommitContentFingerprint}`).digest('hex').slice(0, 20)}`,
-    recordedAt,
-  });
-  recordWorkImplementationReview({ controllerHome: input.controllerHome, repoId: input.repository.repoId }, input.plan.workId, derivedReview);
+  const recordedAt = transfer.recordedAt;
   const receipt: DirectEditWorkCompletionReceipt = {
     schemaVersion: 1,
     receiptId: `REC-direct-edit-work-${createHash('sha256').update(`${input.repository.repoId}\0${input.plan.workId}\0${input.plan.editSessionId}\0${targetRevision}`).digest('hex').slice(0, 20)}`,

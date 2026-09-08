@@ -13,8 +13,10 @@ import {
 } from '../../../../src/runtime/control-plane/persistence/sqlite-store';
 import {
   MAX_IMPLEMENTATION_REVIEW_HISTORY,
+  authoritativeImplementationReviewVerificationEvidence,
   implementationReviewDecisionTarget,
   latestImplementationReview,
+  normalizeImplementationReviewEvidence,
   validateImplementationReviewRecord,
   workRequiresImplementationReview,
   type WorkImplementationReviewRecord,
@@ -1275,14 +1277,9 @@ export function recordWorkImplementationReview(
   if (review.workId !== current.workId) throw new Error('WORK_IMPLEMENTATION_REVIEW_WORK_ID_MISMATCH');
   validateImplementationReviewRecord(review);
   if (review.derivation === 'content_equivalent_commit') {
-    const parent = latestImplementationReview(current.implementationReviews);
-    if (current.phase !== 'delivery'
-      || !review.derivedFromReviewId
-      || parent?.reviewId !== review.derivedFromReviewId
-      || parent.decision !== 'approved') {
-      throw new Error('WORK_IMPLEMENTATION_REVIEW_DERIVATION_PHASE_REQUIRED');
-    }
-  } else if (current.phase !== 'review') {
+    throw new Error('WORK_IMPLEMENTATION_REVIEW_DERIVATION_REQUIRES_TRANSFER_API');
+  }
+  if (current.phase !== 'review') {
     throw new Error('WORK_IMPLEMENTATION_REVIEW_PHASE_REQUIRED');
   }
   const target = implementationReviewDecisionTarget(review.decision);
@@ -1311,6 +1308,115 @@ export function recordWorkImplementationReview(
     status: target.status,
     implementationReviews: history,
   }, false, true, false, true);
+}
+
+export interface ContentEquivalentCommitAuthorityTransferInput {
+  transferredVerificationRecords: VerificationRecord[];
+  derivedReview: WorkImplementationReviewRecord;
+}
+
+/**
+ * Persist the representation-only commit authority transfer in one Work-store
+ * transaction. The immutable parent review plus exact post-commit verification
+ * evidence authorize this write; mutable lifecycle phase is only a projection.
+ */
+export function recordContentEquivalentCommitAuthorityTransfer(
+  options: WorkContractStoreOptions,
+  workId: string,
+  input: ContentEquivalentCommitAuthorityTransferInput,
+): WorkContract {
+  return withWorkContractStoreWrite(options, () => {
+    const sanitizedId = sanitizeFileComponent(workId);
+    if (options.controllerHome) assertCanonicalWorkAdmissionAllowed(options, { operation: 'continue', workId: sanitizedId });
+    const store = readWorkContractStore(options);
+    const index = store.contracts.findIndex((contract) => contract.workId === sanitizedId);
+    if (index < 0) throw new Error(`work contract not found: ${sanitizedId}`);
+    const current = store.contracts[index]!;
+    if (current.completionReceipt || isTerminalWorkContractStatus(current.status)) {
+      throw new Error(`WORK_IMPLEMENTATION_REVIEW_TRANSFER_TERMINAL: ${sanitizedId}`);
+    }
+
+    const review = input.derivedReview;
+    validateImplementationReviewRecord(review);
+    if (review.workId !== current.workId) throw new Error('WORK_IMPLEMENTATION_REVIEW_WORK_ID_MISMATCH');
+    if (review.derivation !== 'content_equivalent_commit'
+      || review.decision !== 'approved'
+      || !review.derivedFromReviewId) {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_DERIVATION_REQUIRED');
+    }
+    const parent = latestImplementationReview(current.implementationReviews);
+    if (!parent || parent.reviewId !== review.derivedFromReviewId || parent.decision !== 'approved') {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_PARENT_REQUIRED');
+    }
+    if (!['verification', 'review', 'delivery'].includes(current.phase)) {
+      throw new Error(`WORK_IMPLEMENTATION_REVIEW_TRANSFER_PHASE_INVALID: ${current.phase}`);
+    }
+
+    const requestedCheckIds = new Set(current.checks);
+    for (const record of input.transferredVerificationRecords) {
+      if (!requestedCheckIds.has(record.checkId)) {
+        throw new Error(`WORK_VERIFICATION_TRANSFER_UNDECLARED_CHECK: ${record.checkId}`);
+      }
+    }
+    const transferredVerificationRecords = input.transferredVerificationRecords.filter((record) =>
+      !current.checkRefs.some((existing) => sameSuccessfulVerificationExecutionFact(existing, record)));
+    const checkRefs = [...transferredVerificationRecords, ...current.checkRefs].slice(0, 50);
+    const postVerification = authoritativeImplementationReviewVerificationEvidence({
+      repoId: current.repoId,
+      workId: current.workId,
+      requiredCheckIds: current.checks,
+      records: checkRefs,
+      sourceRevision: review.sourceRevision,
+      workspaceFingerprint: review.verificationWorkspaceFingerprint,
+    });
+    if (postVerification.missingCheckIds.length > 0) {
+      throw new Error(`WORK_IMPLEMENTATION_REVIEW_TRANSFER_VERIFICATION_REQUIRED: ${postVerification.missingCheckIds.join(', ')}`);
+    }
+    const expectedEvidence = normalizeImplementationReviewEvidence(review.verificationEvidence);
+    if (JSON.stringify(postVerification.evidence) !== JSON.stringify(expectedEvidence)) {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_VERIFICATION_IDENTITY_MISMATCH');
+    }
+
+    const history = [...current.implementationReviews, review];
+    if (history.length > MAX_IMPLEMENTATION_REVIEW_HISTORY) throw new Error('WORK_IMPLEMENTATION_REVIEW_HISTORY_LIMIT');
+    const at = nowIso(options);
+    const summary = `Transferred verification and implementation-review authority to content-equivalent commit ${review.sourceRevision}.`;
+    const phaseEvidence = transitionPhaseEvidence(current, 'delivery', {
+      status: 'running',
+      summary,
+      evidenceRefs: current.evidenceRefs,
+      recordedAt: at,
+    });
+    phaseEvidence.verification = {
+      ...phaseEvidence.verification,
+      state: 'satisfied',
+      source: 'recorded',
+      summary: `Exact post-commit verification authority supports derived review ${review.reviewId}.`,
+      evidenceRefs: current.evidenceRefs.slice(0, 20),
+      recordedAt: review.recordedAt,
+    };
+    phaseEvidence.review = {
+      state: 'satisfied',
+      source: 'recorded',
+      summary: `Controller approval ${parent.reviewId} was transferred as ${review.reviewId} after content-equivalence proof.`,
+      evidenceRefs: current.evidenceRefs.slice(0, 20),
+      recordedAt: review.recordedAt,
+    };
+    const next = validateWorkSemanticTransition(current, validateWorkSemantics({
+      ...current,
+      updatedAt: at,
+      status: 'running',
+      phase: 'delivery',
+      phaseEvidence,
+      evidenceState: 'valid',
+      checkRefs,
+      implementationReviews: history,
+    }));
+    const contracts = [...store.contracts];
+    contracts[index] = next;
+    writeWorkContractStore(options, { schemaVersion: 2, updatedAt: at, contracts });
+    return next;
+  });
 }
 
 /**

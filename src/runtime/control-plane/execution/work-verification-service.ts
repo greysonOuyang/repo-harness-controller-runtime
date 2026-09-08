@@ -18,7 +18,6 @@ import type { FacadeResult, VerificationRecord, WorkContract } from '../facade/t
 import { executionIdentityForRepository } from './execution-identity';
 import { commandFingerprint, effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint } from './verification-evidence';
 import { resolveWorkVerificationContext } from './work-verification-context';
-import { appendVerificationRecord } from '../../../../packages/kernel/work/api/index';
 
 export interface ExecuteWorkVerificationInput {
   controllerHome: string;
@@ -47,19 +46,18 @@ function result(facade: FacadeResult, isError = false): ExecuteWorkVerificationR
   return { facade, isError };
 }
 
-export interface ContentEquivalentWorkVerificationTransferResult {
+export interface ContentEquivalentWorkVerificationTransferPlan {
   transferredRecords: VerificationRecord[];
   reusableCheckIds: string[];
   invalidatedCheckIds: string[];
 }
 
 /**
- * Canonical verification-authority transfer across a Forge-owned commit that
- * changes Git representation only. Both managed Work finalization and Direct
- * Edit commit completion must use this helper instead of manufacturing a second
- * verification/review authority.
+ * Pure verification-transfer planner for a Forge-owned representation-only
+ * commit. It never mutates Work authority. The caller must persist the complete
+ * verification + derived-review + lifecycle transfer atomically.
  */
-export function transferWorkVerificationAcrossContentEquivalentCommit(input: {
+export function planWorkVerificationAcrossContentEquivalentCommit(input: {
   controllerHome: string;
   repository: RepositoryRecord;
   workId: string;
@@ -68,7 +66,7 @@ export function transferWorkVerificationAcrossContentEquivalentCommit(input: {
   postCommitSourceRevision: string;
   postCommitWorkspaceFingerprint: string;
   recordedAt?: string;
-}): ContentEquivalentWorkVerificationTransferResult {
+}): ContentEquivalentWorkVerificationTransferPlan {
   const resolved = resolveWorkVerificationContext({
     controllerHome: input.controllerHome,
     repository: input.repository,
@@ -77,7 +75,7 @@ export function transferWorkVerificationAcrossContentEquivalentCommit(input: {
   if (!resolved.ok || !resolved.context.workContract) {
     throw new Error(`WORK_VERIFICATION_TRANSFER_CONTEXT_REQUIRED: ${input.workId}`);
   }
-  const { store, workContract, repository, checks } = resolved.context;
+  const { workContract, repository, checks } = resolved.context;
   if (workContract.completionReceipt) throw new Error(`WORK_VERIFICATION_TRANSFER_WORK_TERMINAL: ${input.workId}`);
   const requestedChecks = workContract.checks;
   const checkById = new Map(listControllerChecks(repository.canonicalRoot).map((check) => [check.id, check] as const));
@@ -134,7 +132,6 @@ export function transferWorkVerificationAcrossContentEquivalentCommit(input: {
         detailLevel: 'summary',
       },
     };
-    appendVerificationRecord(store, input.workId, transferred);
     transferredRecords.push(transferred);
     reusableCheckIds.push(checkId);
   }

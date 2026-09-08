@@ -11,17 +11,16 @@ import { hasCurrentWorkValidationAuthority, markWorkValidationPending, projectWo
 import { markRepositoryProjectionDirty } from '../../projections/invalidation';
 import { withControllerSessionTerminalizationFence } from '../../../../packages/kernel/controller/api/index';
 import type { VerificationRecord } from '../facade/types';
-import { appendVerificationRecord, appendWorkEvidence, listWorkContracts, recordWorkImplementationReview, reconcileApprovedWorkImplementationReviewProjection, transitionWorkContractPhase, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { appendVerificationRecord, appendWorkEvidence, listWorkContracts, reconcileApprovedWorkImplementationReviewProjection, transitionWorkContractPhase, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { assertResolvedAuthorization, decideAuthorization } from '../governance/authorization';
 import { updateExecutionSession } from './session-store';
 import { validateWorkHandle } from './validation';
 import { implementationReviewContentFingerprint } from './implementation-review-content';
-import { transferWorkVerificationAcrossContentEquivalentCommit } from './work-verification-service';
+import { transferReviewedWorkAuthorityAcrossContentEquivalentCommit } from './content-equivalent-commit-authority';
 import {
   assertImplementationReviewPreDeliveryBoundary,
   authoritativeImplementationReviewVerificationEvidence,
-  deriveImplementationReviewAcrossCommit,
   latestImplementationReview,
   implementationReviewChangedPathDigest,
   normalizeImplementationReviewChangedPaths,
@@ -2165,115 +2164,41 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
         continuation: 'WORK_COMMITTED_REVALIDATION_REQUIRED: committed content changed from the exact validated workspace; run work_validate on the committed HEAD before merge or completion',
       };
     }
-    if (validationPreservedAcrossCommit && exactValidationInput) {
-      const transfer = transferWorkVerificationAcrossContentEquivalentCommit({
-        controllerHome: ctx.controllerHome,
-        repository: validated.worktreeRepository,
-        workId: current.workContractId ?? current.workId,
-        preCommitSourceRevision: preCommitReviewCandidate.sourceRevision,
-        preCommitWorkspaceFingerprint: preCommitReviewCandidate.verificationWorkspaceFingerprint,
-        postCommitSourceRevision: postCommitInput.head,
-        postCommitWorkspaceFingerprint: postCommitInput.workspaceFingerprint,
-      });
-      if (transfer.invalidatedCheckIds.length > 0) {
-        current = transact('commit-review-revalidation-required', (fresh) => writeWorkHandle(ctx.controllerHome, {
-          ...fresh,
-          finalization: { ...fresh.finalization, validation: 'pending', lastError: undefined },
-          validatedInputFingerprint: undefined,
-        }));
-        markWorkValidationPending(ctx.controllerHome, current);
-        return {
-          work: compactHandle(current),
-          stages: current.finalization,
-          completed: false,
-          continuation: `WORK_COMMITTED_REVALIDATION_REQUIRED: content-equivalent verification transfer invalidated [${transfer.invalidatedCheckIds.join(', ')}]`,
-        };
-      }
-      const transferredContract = contractFor(ctx, current);
-      if (!transferredContract) throw new Error(`WORK_IMPLEMENTATION_REVIEW_CONTRACT_REQUIRED: ${current.workId}`);
-      const postVerification = authoritativeImplementationReviewVerificationEvidence({
-        repoId: transferredContract.repoId,
-        workId: transferredContract.workId,
-        requiredCheckIds: transferredContract.checks,
-        records: transferredContract.checkRefs,
-        sourceRevision: postCommitInput.head,
-        workspaceFingerprint: postCommitInput.workspaceFingerprint,
-      });
-      if (postVerification.missingCheckIds.length > 0) {
-        throw new Error(`WORK_IMPLEMENTATION_REVIEW_TRANSFER_VERIFICATION_REQUIRED: ${postVerification.missingCheckIds.join(', ')}`);
-      }
-      const postContentFingerprint = postCommitContentFingerprint;
-      const postCandidate: ImplementationReviewCandidateIdentity = {
-        sourceRevision: postCommitInput.head,
-        workspaceFingerprint: postContentFingerprint,
-        verificationWorkspaceFingerprint: postCommitInput.workspaceFingerprint,
-        changedPaths: preCommitReviewCandidate.changedPaths,
-        verificationEvidence: postVerification.evidence,
-        architectureEvidence: preCommitReviewCandidate.architectureEvidence ?? [],
+    const authorityTransfer = transferReviewedWorkAuthorityAcrossContentEquivalentCommit({
+      controllerHome: ctx.controllerHome,
+      repository: validated.worktreeRepository,
+      workId: current.workContractId ?? current.workId,
+      preCommitCandidate: preCommitReviewCandidate,
+      preCommitDirtyPaths: commitPaths,
+      committedPaths,
+      preCommitContentDigest: preCommitReviewCandidate.workspaceFingerprint,
+      postCommitSourceRevision: postCommitInput.head,
+      postCommitContentDigest: postCommitContentFingerprint,
+      postCommitVerificationWorkspaceFingerprint: postCommitInput.workspaceFingerprint,
+      postCommitChangedPaths: preCommitReviewCandidate.changedPaths,
+    });
+    if (authorityTransfer.invalidatedCheckIds.length > 0) {
+      current = transact('commit-review-revalidation-required', (fresh) => writeWorkHandle(ctx.controllerHome, {
+        ...fresh,
+        finalization: { ...fresh.finalization, validation: 'pending', lastError: undefined },
+        validatedInputFingerprint: undefined,
+      }));
+      markWorkValidationPending(ctx.controllerHome, current);
+      return {
+        work: compactHandle(current),
+        stages: current.finalization,
+        completed: false,
+        continuation: `WORK_COMMITTED_REVALIDATION_REQUIRED: content-equivalent verification transfer invalidated [${authorityTransfer.invalidatedCheckIds.join(', ')}]`,
       };
-      const recordedAt = new Date().toISOString();
-      const derivedReview = deriveImplementationReviewAcrossCommit({
-        workId: transferredContract.workId,
-        reviews: transferredContract.implementationReviews,
-        proof: {
-          preCommitCandidate: preCommitReviewCandidate,
-          postCommitCandidate: postCandidate,
-          preCommitDirtyPaths: commitPaths,
-          committedPaths,
-          preCommitContentDigest: preCommitReviewCandidate.workspaceFingerprint,
-          postCommitContentDigest: postContentFingerprint,
-          postCommitVerificationAuthority: {
-            repoId: transferredContract.repoId,
-            workId: transferredContract.workId,
-            requiredCheckIds: transferredContract.checks,
-            records: transferredContract.checkRefs,
-          },
-        },
-        derivedReviewId: `REV-commit-${createHash('sha256').update(`${transferredContract.workId}\0${postCommitInput.head}\0${postContentFingerprint}`).digest('hex').slice(0, 20)}`,
-        recordedAt,
-      });
-      recordWorkImplementationReview({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, transferredContract.workId, derivedReview);
-      appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, transferredContract.workId, {
-        title: 'verification and implementation-review authority preserved across content-equivalent commit',
-        summary: `The exact reviewed Work content was committed as ${postCommitInput.head}; ${transfer.reusableCheckIds.length}/${checks.length} non-Git-sensitive Process receipt(s) and review ${derivedReview.reviewId} were transferred without creating a second authority.`,
-        detailLevel: 'summary',
-      });
-    } else if (checks.length === 0) {
-      const transferredContract = contractFor(ctx, current);
-      if (!transferredContract) throw new Error(`WORK_IMPLEMENTATION_REVIEW_CONTRACT_REQUIRED: ${current.workId}`);
-      const postContentFingerprint = implementationReviewContentFingerprint(validated.worktreeRepository.canonicalRoot, preCommitReviewCandidate.changedPaths);
-      const postCandidate: ImplementationReviewCandidateIdentity = {
-        sourceRevision: postCommitInput.head,
-        workspaceFingerprint: postContentFingerprint,
-        verificationWorkspaceFingerprint: postCommitInput.workspaceFingerprint,
-        changedPaths: preCommitReviewCandidate.changedPaths,
-        verificationEvidence: [],
-        architectureEvidence: preCommitReviewCandidate.architectureEvidence ?? [],
-      };
-      const recordedAt = new Date().toISOString();
-      const derivedReview = deriveImplementationReviewAcrossCommit({
-        workId: transferredContract.workId,
-        reviews: transferredContract.implementationReviews,
-        proof: {
-          preCommitCandidate: preCommitReviewCandidate,
-          postCommitCandidate: postCandidate,
-          preCommitDirtyPaths: commitPaths,
-          committedPaths: exactCommitChangedPaths(validated.worktreeRepository.canonicalRoot, committedHead),
-          preCommitContentDigest: preCommitReviewCandidate.workspaceFingerprint,
-          postCommitContentDigest: postContentFingerprint,
-          postCommitVerificationAuthority: {
-            repoId: transferredContract.repoId,
-            workId: transferredContract.workId,
-            requiredCheckIds: [],
-            records: transferredContract.checkRefs,
-          },
-        },
-        derivedReviewId: `REV-commit-${createHash('sha256').update(`${transferredContract.workId}\0${postCommitInput.head}\0${postContentFingerprint}`).digest('hex').slice(0, 20)}`,
-        recordedAt,
-      });
-      recordWorkImplementationReview({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, transferredContract.workId, derivedReview);
-      projectWorkValidationOutcome(ctx.controllerHome, current, 'passed', 'No validation checks were required after commit.');
     }
+    if (!authorityTransfer.transferred || !authorityTransfer.derivedReview) {
+      throw new Error('WORK_IMPLEMENTATION_REVIEW_TRANSFER_REQUIRED');
+    }
+    appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
+      title: 'verification and implementation-review authority preserved across content-equivalent commit',
+      summary: `The exact reviewed Work content was committed as ${postCommitInput.head}; ${authorityTransfer.reusableCheckIds.length}/${checks.length} non-Git-sensitive Process receipt(s) and review ${authorityTransfer.derivedReview.reviewId} were transferred atomically.`,
+      detailLevel: 'summary',
+    });
   } else if (!wants.commit && current.finalization.commit === 'pending') {
     const committedRepository = validateWorkHandle(ctx.controllerHome, current, identity, 'full', 'finalize').worktreeRepository;
     const committedStatus = repositoryGitStatus(committedRepository);

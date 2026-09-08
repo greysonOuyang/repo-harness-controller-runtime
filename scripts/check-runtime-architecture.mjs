@@ -484,6 +484,7 @@ const required = [
   'src/runtime/control-plane/execution/work-handle-authority.ts',
   'src/runtime/control-plane/execution/work-verification-context.ts',
   'src/runtime/control-plane/execution/work-verification-service.ts',
+  'src/runtime/control-plane/execution/content-equivalent-commit-authority.ts',
   'src/runtime/control-plane/execution/implementation-review-content.ts',
   'packages/protocols/handoff/status.ts',
   'packages/kernel/work/domain/admission-policy.ts',
@@ -648,12 +649,21 @@ requireText('packages/kernel/work/domain/types.ts', "['implementation', 'verific
 requireText('src/cli/repositories/selected-path-actions.ts', 'beforeCommitGuard');
 requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'prepareReviewedDirectEditWorkCommit');
 requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'completeReviewedDirectEditWorkAfterCommit');
-requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'transferWorkVerificationAcrossContentEquivalentCommit');
+requireText('src/runtime/control-plane/execution/direct-edit-work-completion.ts', 'transferReviewedWorkAuthorityAcrossContentEquivalentCommit');
+requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'planWorkVerificationAcrossContentEquivalentCommit');
+forbid(
+  'src/runtime/control-plane/execution/work-verification-service.ts',
+  /export\s+function\s+transferWorkVerificationAcrossContentEquivalentCommit\s*\(/,
+  'content-equivalent verification planning must stay pure; authority persistence belongs to the atomic transfer owner',
+);
+requireText('src/runtime/control-plane/execution/content-equivalent-commit-authority.ts', 'transferReviewedWorkAuthorityAcrossContentEquivalentCommit');
+requireText('src/runtime/control-plane/execution/content-equivalent-commit-authority.ts', 'recordContentEquivalentCommitAuthorityTransfer');
+requireText('packages/kernel/work/infrastructure/work-contract-store.ts', 'recordContentEquivalentCommitAuthorityTransfer');
 requireText('src/runtime/control-plane/execution/edit-validation-coordinator.ts', 'workId: session.workId');
 requireText('src/runtime/control-plane/execution/edit-validation-coordinator.ts', 'verificationSnapshot: work ?');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalImplementationReviewGate');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'assertPhysicalBranchCleanupImplementationReviewGate');
-requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'transferWorkVerificationAcrossContentEquivalentCommit');
+requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'transferReviewedWorkAuthorityAcrossContentEquivalentCommit');
 requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'review_decision');
 requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'implementation_review_findings');
 requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "operation === 'review'");

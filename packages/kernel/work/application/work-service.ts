@@ -91,6 +91,7 @@ export {
   transitionWorkContractPhase,
   requestWorkImplementationReview,
   recordWorkImplementationReview,
+  recordContentEquivalentCommitAuthorityTransfer,
   reconcileApprovedWorkImplementationReviewProjection,
   appendWorkEvidence,
   appendWorkHandoffRef,
