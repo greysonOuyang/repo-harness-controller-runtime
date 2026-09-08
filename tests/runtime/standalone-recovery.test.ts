@@ -1580,9 +1580,12 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_CLI_COMMANDS).toContain('activate-runtime-release');
     expect(RECOVERY_CLI_COMMANDS).toContain('migrate-controller-home-worker');
   });
-  test('external Recovery mutations fail closed when the caller targets a different machine', async () => {
+  test('frozen Recovery clients may omit machine identity while explicit wrong-machine identity still fails closed', async () => {
     const home = controllerHome();
     const config = createRecoveryConfig(home);
+    await expect(dispatchRecoveryTool(config, 'activate_runtime_release', {
+      request_id: 'frozen-schema-client',
+    })).rejects.toThrow('RECOVERY_RELEASE_PATH_REQUIRED');
     await expect(dispatchRecoveryTool(config, 'restart_primary_runtime', {
       request_id: 'wrong-machine-test',
       ...recoveryMutationIdentityArgs(config),

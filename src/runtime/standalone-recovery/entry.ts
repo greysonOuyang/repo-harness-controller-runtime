@@ -29,6 +29,7 @@ import {
   watchdogTick,
   type WatchdogState,
   type RecoveryConfig,
+  type RecoveryMachineIdentity,
 } from './core';
 import {
   createRecoveryWatchdogHeartbeat,
@@ -579,6 +580,12 @@ function mutationResponse(config: RecoveryConfig, payload: unknown): Record<stri
   return { ...result, identity: recoveryMachineIdentity(config) };
 }
 
+function assertRecoveryGatewayMutationIdentity(config: RecoveryConfig, args: Record<string, unknown>): RecoveryMachineIdentity {
+  const suppliedFields = RECOVERY_MUTATION_IDENTITY_FIELDS.filter((field) => typeof args[field] === 'string' && String(args[field]).trim());
+  if (suppliedFields.length === 0) return recoveryMachineIdentity(config);
+  return assertRecoveryMutationIdentity(config, args);
+}
+
 export async function dispatchRecoveryTool(config: RecoveryConfig, name: string, args: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case 'runtime_status': return runtimeStatus(config);
@@ -590,32 +597,32 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
     }
     case 'attest_known_good': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      assertRecoveryMutationIdentity(config, args);
+      assertRecoveryGatewayMutationIdentity(config, args);
       return mutationResponse(config, await attestKnownGood(config));
     }
     case 'rollback_previous': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      assertRecoveryMutationIdentity(config, args);
+      assertRecoveryGatewayMutationIdentity(config, args);
       return mutationResponse(config, await rollbackPrevious(config, `recovery-gateway:${args.request_id}`));
     }
     case 'restart_primary_runtime': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      assertRecoveryMutationIdentity(config, args);
+      assertRecoveryGatewayMutationIdentity(config, args);
       return mutationResponse(config, await restartPrimaryRuntime(config));
     }
     case 'restart_primary_connector': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      assertRecoveryMutationIdentity(config, args);
+      assertRecoveryGatewayMutationIdentity(config, args);
       return mutationResponse(config, await restartPrimaryConnector(config, { requestId: `recovery-gateway:${args.request_id}` }));
     }
     case 'recover_primary_runtime': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      assertRecoveryMutationIdentity(config, args);
+      assertRecoveryGatewayMutationIdentity(config, args);
       return mutationResponse(config, await recoverPrimaryRuntime(config, `recovery-gateway:${args.request_id}`));
     }
     case 'activate_runtime_release': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      assertRecoveryMutationIdentity(config, args);
+      assertRecoveryGatewayMutationIdentity(config, args);
       if (typeof args.release_path !== 'string' || !args.release_path.trim()) throw new Error('RECOVERY_RELEASE_PATH_REQUIRED');
       if (typeof args.expected_active_release_id !== 'string' || !args.expected_active_release_id.trim()) throw new Error('RECOVERY_EXPECTED_ACTIVE_RELEASE_REQUIRED');
       if (!Number.isInteger(args.expected_authority_revision) || Number(args.expected_authority_revision) < 1) throw new Error('RECOVERY_EXPECTED_AUTHORITY_REVISION_REQUIRED');
@@ -629,13 +636,13 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
     }
     case 'stage_and_activate_runtime_release': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      assertRecoveryMutationIdentity(config, args);
+      assertRecoveryGatewayMutationIdentity(config, args);
       return mutationResponse(config, await stageAndActivateConfiguredRuntimeRelease(config, {}, `recovery-gateway:${args.request_id}`));
     }
     case 'migrate_controller_home': {
       const migrationRequestId = requestId(args.request_id);
       if (!migrationRequestId) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      assertRecoveryMutationIdentity(config, args);
+      assertRecoveryGatewayMutationIdentity(config, args);
       if (typeof args.canonical_source_root !== 'string' || !args.canonical_source_root.trim()) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REQUIRED');
       if (typeof args.expected_source_revision !== 'string' || !args.expected_source_revision.trim()) throw new Error('RECOVERY_CONTROLLER_HOME_MIGRATION_SOURCE_REVISION_REQUIRED');
       return scheduleRecoveryControllerHomeMigration(config, {
@@ -646,7 +653,7 @@ export async function dispatchRecoveryTool(config: RecoveryConfig, name: string,
     }
     case 'restart_public_tunnel': {
       if (!requestId(args.request_id)) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
-      assertRecoveryMutationIdentity(config, args);
+      assertRecoveryGatewayMutationIdentity(config, args);
       return mutationResponse(config, await repairPublicTunnel(config));
     }
     case 'reconnect_primary_connector': return reconnectMain(config);
