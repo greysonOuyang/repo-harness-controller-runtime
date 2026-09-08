@@ -1553,7 +1553,7 @@ describe('scheduled external Controller wake', () => {
     expect(getWorkContract(store, workId)?.status).toBe('running');
   });
 
-  test('starts a fresh repeated-state budget for a later external wake while same-chain suppression remains fail-closed', () => {
+  test('allows a later external wake only after semantic progress while preserving lineage round budget and same-chain suppression', () => {
     const root = temp('forge-controller-relay-fresh-external-wake-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
     for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
@@ -1584,7 +1584,8 @@ describe('scheduled external Controller wake', () => {
     const store = { controllerHome, repoId: repository.repoId };
     const first = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-1' },
+      occurrenceId: 'occurrence-1',
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-test', sessionId: 'chatgpt-session-1' },
     });
     expect(first).toMatchObject({ status: 'dispatching', roundCount: 1, repeatedStateCount: 0 });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
@@ -1611,15 +1612,23 @@ describe('scheduled external Controller wake', () => {
       relayScopeId: first.relayScopeId,
     }).status).toBe('waiting');
     releaseControllerSession(store, workId, firstSession.controllerId);
+    transitionWorkContractPhase(store, workId, {
+      status: 'running',
+      phase: 'verification',
+      state: 'satisfied',
+      summary: 'The first occurrence produced verified Work progress before the next external wake.',
+    });
 
     const second = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-2' },
+      occurrenceId: 'occurrence-2',
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-test', sessionId: 'chatgpt-session-2' },
     });
-    expect(second).toMatchObject({ status: 'dispatching', roundCount: 1, repeatedStateCount: 0 });
+    expect(second).toMatchObject({ status: 'dispatching', roundCount: 2, repeatedStateCount: 0 });
     expect(() => beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-duplicate' },
+      occurrenceId: 'occurrence-duplicate',
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-test', sessionId: 'chatgpt-session-duplicate' },
     })).toThrow(/CONTROLLER_RELAY_ROUND_ALREADY_OPEN/);
 
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
@@ -1645,14 +1654,14 @@ describe('scheduled external Controller wake', () => {
       disposition: 'continue_immediately',
       relayScopeId: second.relayScopeId,
     });
-    expect(continuing).toMatchObject({ status: 'pending_release', roundCount: 2, repeatedStateCount: 1 });
+    expect(continuing).toMatchObject({ status: 'pending_release', roundCount: 3, repeatedStateCount: 1 });
     releaseControllerSession(store, workId, secondSession.controllerId);
     const recovered = claimStalledControllerRoundRelays(store, {
       nowMs: Date.parse(continuing.updatedAt) + 2 * 60_000,
       graceMs: 60_000,
     });
     expect(recovered).toHaveLength(1);
-    expect(recovered[0]).toMatchObject({ status: 'dispatching', roundCount: 2, repeatedStateCount: 1 });
+    expect(recovered[0]).toMatchObject({ status: 'dispatching', roundCount: 3, repeatedStateCount: 1 });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
     startExecutionSession(controllerHome, {
       sessionId: 'chatgpt-session-3',
@@ -1681,7 +1690,7 @@ describe('scheduled external Controller wake', () => {
       disposition: 'continue_immediately',
       relayScopeId: second.relayScopeId,
     });
-    expect(blocked).toMatchObject({ status: 'blocked', repeatedStateCount: 2, blockedReason: 'repeated_state:2>=2' });
+    expect(blocked).toMatchObject({ status: 'blocked', roundCount: 4, repeatedStateCount: 2, blockedReason: 'repeated_state:2>=2' });
     releaseControllerSession(store, workId, thirdSession.controllerId);
     const afterBlockedGrace = Date.parse(blocked.updatedAt) + 2 * 60_000;
     expect(claimStalledControllerRoundRelays(store, { nowMs: afterBlockedGrace, graceMs: 60_000 })).toEqual([]);
@@ -1706,7 +1715,7 @@ describe('scheduled external Controller wake', () => {
     expect(rearmed).toHaveLength(1);
     expect(rearmed[0]).toMatchObject({
       status: 'dispatching',
-      roundCount: 4,
+      roundCount: 5,
       repeatedStateCount: 0,
       reason: 'semantic_state_changed_after_repeated_state_block',
     });
@@ -1714,7 +1723,7 @@ describe('scheduled external Controller wake', () => {
     expect(rearmed[0]?.authorityId).not.toBe(blocked.authorityId);
   });
 
-  test('starts a fresh launch-failure budget for a later external wake after the prior closed chain exhausted it', () => {
+  test('does not let a later external wake launder a failed occurrence into a fresh launch-failure budget', () => {
     const root = temp('forge-controller-relay-fresh-failure-budget-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
     for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'relay@example.test'], ['config', 'user.name', 'Relay Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
@@ -1723,8 +1732,8 @@ describe('scheduled external Controller wake', () => {
     const workId = 'WORK-RELAY-FRESH-FAILURE-BUDGET';
     createWorkContract({ controllerHome, repoId: repository.repoId }, {
       workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, mode: 'goal_workloop',
-      objective: 'Allow a later scheduled wake to recover after a transient launcher failure exhausted the prior relay chain.',
-      acceptanceCriteria: ['A new explicit wake gets a fresh relay-local failure budget.'],
+      objective: 'Keep a failed ControllerRound fenced until an explicit legal resume or recovery contract is used.',
+      acceptanceCriteria: ['A later external occurrence cannot reset or bypass a failed lineage.'],
       allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
     });
@@ -1738,18 +1747,18 @@ describe('scheduled external Controller wake', () => {
     const failed = finishControllerRoundRelayDispatch(store, { workId, ok: false, error: 'HTTP 502' });
     expect(failed).toMatchObject({ status: 'failed', consecutiveFailures: 1, maxFailures: 1 });
 
-    const second = beginInitialControllerRoundDispatch(store, {
-      workId,
-      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-retry' },
-      maxFailures: 1,
-    });
-    expect(second).toMatchObject({ status: 'dispatching', consecutiveFailures: 0, maxFailures: 1, roundCount: 1, repeatedStateCount: 0 });
-    expect(second.blockedReason).toBeUndefined();
     expect(() => beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-duplicate' },
+      occurrenceId: 'occurrence-retry',
+      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-retry' },
       maxFailures: 1,
-    })).toThrow(/CONTROLLER_RELAY_ROUND_ALREADY_OPEN/);
+    })).toThrow(/CONTROLLER_RELAY_FAILED_REQUIRES_EXPLICIT_RESUME/);
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'failed',
+      consecutiveFailures: 1,
+      maxFailures: 1,
+      roundCount: 1,
+    });
   });
 
   test('recovers continue_immediately when the controller lease is released before pending_release can enter dispatching', () => {

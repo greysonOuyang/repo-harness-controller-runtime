@@ -204,11 +204,12 @@ describe('autonomous continuation lifecycle', () => {
 
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
+      occurrenceId: 'occurrence-test',
       identity: {
-        controllerId: 'schedule:test', controllerType: 'chatgpt',
-        principalId: 'forge-scheduler',
+        controllerId: 'chatgpt-principal', controllerType: 'chatgpt',
+        principalId: 'chatgpt-principal',
         controllerInstanceId: 'runtime-test',
-        sessionId: 'occurrence-test',
+        sessionId: 'mcp-before-finalize',
       },
     });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
@@ -305,10 +306,11 @@ describe('autonomous continuation lifecycle', () => {
       status: 'goal_complete',
       controllerId: 'chatgpt-principal',
       principalId: 'chatgpt-principal',
-      sessionId: 'mcp-after-finalize',
+      sessionId: 'mcp-before-finalize',
     });
-    // The relay records the current replaceable transport, while terminal semantic
-    // closure must not rewrite or reclaim the physical Work lease or its durable authority.
+    // The rotated MCP transport authenticates this terminal closure but does not
+    // become durable ControllerRound authority. Preserve the original claimed relay
+    // epoch and do not rewrite or reclaim the physical Work lease.
     expect(completed.data.relay.authorityId).toBe(opened.authorityId);
     expect(getControllerSession(store, workId)?.sessionId).toBe('mcp-before-finalize');
 
@@ -595,11 +597,12 @@ describe('autonomous continuation lifecycle', () => {
     const round1 = beginInitialControllerRoundDispatch(store, {
       workId,
       bindingId: binding1.bindingId,
+      occurrenceId: 'occ-stage3b-round-1',
       maxRounds: 4,
       maxRepeatedState: 4,
       identity: {
-        controllerId: 'schedule:stage3b-round-1', controllerType: 'chatgpt',
-        principalId: 'forge-scheduler', controllerInstanceId: 'scheduler-runtime', sessionId: 'occ-stage3b-round-1',
+        controllerId: 'chatgpt-stage3b', controllerType: 'chatgpt',
+        principalId: 'chatgpt-stage3b', controllerInstanceId: 'provider-runtime-1', sessionId: 'provider-session-1',
       },
     });
     finishControllerRoundRelayDispatch(store, {
