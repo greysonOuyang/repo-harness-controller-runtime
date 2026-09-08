@@ -256,6 +256,25 @@ describe('controller check provenance and failure classification', () => {
     expect(existsSync(physicalRoot)).toBe(true);
   });
 
+  test('converges when a registered legacy check directory is retired more than once', () => {
+    const repoRoot = fixture({
+      legacy_repeat: { command: [process.execPath, '-e', 'process.exit(0)'] },
+    });
+    const seedAuthority = storageAuthority(repoRoot);
+    const registered = registerRepository({ path: repoRoot, controllerHome: seedAuthority.controllerHome });
+    const authority: RepositoryCheckStorageAuthority = {
+      controllerHome: seedAuthority.controllerHome,
+      repoId: registered.repoId,
+    };
+    const legacyPath = join(repoRoot, '.ai', 'harness', 'checks');
+    mkdirSync(legacyPath, { recursive: true });
+    writeFileSync(join(legacyPath, 'latest.json'), '{"legacy":true}\n');
+
+    expect(runControllerCheckRaw(repoRoot, 'legacy_repeat', undefined, undefined, authority).ok).toBe(true);
+    expect(runControllerCheckRaw(repoRoot, 'legacy_repeat', undefined, undefined, authority).ok).toBe(true);
+    expect(existsSync(legacyPath)).toBe(false);
+  });
+
   test('normalizes declared effects and binds them into check snapshots', () => {
     const repoRoot = fixture({
       effects: {

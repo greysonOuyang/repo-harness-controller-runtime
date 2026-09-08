@@ -21,6 +21,11 @@ function pathEntryExists(path: string): boolean {
   }
 }
 
+function isMissingPathError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object' && 'code' in error
+    && String((error as { code?: unknown }).code ?? '') === 'ENOENT');
+}
+
 function nextLegacyCheckQuarantinePath(storage: ResolvedRepositoryCheckStorage): string {
   const root = join(dirname(storage.physicalRoot), 'quarantine', 'legacy-checks');
   const stem = `${new Date().toISOString().replace(/[:.]/g, '-')}-${process.pid}`;
@@ -69,12 +74,21 @@ function retireRegisteredLegacyCheckStorage(storage: ResolvedRepositoryCheckStor
     throw new Error(`CHECK_STORAGE_REPOSITORY_PATH_FORBIDDEN: ${repositoryPath}`);
   }
 
-  const stat = lstatSync(repositoryPath);
+  let stat;
+  try {
+    stat = lstatSync(repositoryPath);
+  } catch (error) {
+    // Another Runner may have retired the directory after the existence
+    // probe. Treat that interleaving as successful convergence.
+    if (isMissingPathError(error)) return;
+    throw error;
+  }
   if (stat.isSymbolicLink()) {
     let target: string;
     try {
       target = realpathSync(repositoryPath);
-    } catch (_error) {
+    } catch (error) {
+      if (isMissingPathError(error)) return;
       throw new Error(`CHECK_STORAGE_REPOSITORY_PATH_FORBIDDEN: ${repositoryPath}`);
     }
     if (target !== realpathSync(storage.physicalRoot)) {
@@ -82,22 +96,43 @@ function retireRegisteredLegacyCheckStorage(storage: ResolvedRepositoryCheckStor
     }
     // A retired compatibility link has no independent authority. Remove only
     // the link; the Controller-Home target remains untouched.
-    unlinkSync(repositoryPath);
+    try {
+      unlinkSync(repositoryPath);
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+    }
     return;
   }
   if (!stat.isDirectory()) {
     throw new Error(`CHECK_STORAGE_REPOSITORY_PATH_FORBIDDEN: ${repositoryPath}`);
   }
 
-  const entries = readdirSync(repositoryPath);
+  let entries: string[];
+  try {
+    entries = readdirSync(repositoryPath);
+  } catch (error) {
+    if (isMissingPathError(error)) return;
+    throw error;
+  }
   if (entries.length === 0) {
-    rmSync(repositoryPath, { recursive: true, force: true });
+    try {
+      rmSync(repositoryPath, { recursive: true, force: true });
+    } catch (error) {
+      if (!isMissingPathError(error)) throw error;
+    }
     return;
   }
 
   const quarantine = nextLegacyCheckQuarantinePath(storage);
   mkdirSync(dirname(quarantine), { recursive: true });
-  moveLegacyCheckDirectory(repositoryPath, quarantine);
+  try {
+    moveLegacyCheckDirectory(repositoryPath, quarantine);
+  } catch (error) {
+    // A concurrent retire may have won the rename race. Do not turn a
+    // converged Controller-Home state into a spurious check failure.
+    if (isMissingPathError(error)) return;
+    throw error;
+  }
 }
 
 function resolveAuthority(repoRoot: string, explicit?: RepositoryCheckStorageAuthority): RepositoryCheckStorageAuthority {
