@@ -39,17 +39,19 @@ digest and 100 production top-level packages. The receipts were generated at:
 
 ## Formal macOS A/B
 
-The raw external bundle is:
+The final raw external bundle is:
 
 ```text
-/tmp/forge-v2-ab-final-1788879701083208000
+/tmp/forge-v2-ab-final-resource2-1788960000
 ```
 
-Its manifest is `sha256:0c306e3bb38e3010719e536df40077404cb5ea64d19fb32405f7c56991542ba2`;
+Its manifest is `sha256:c909ee48b32cbaf15d607235a15f111057ea200ab5617116f66378bb09ebab9d`;
 the `statistics.json` SHA-256 is
-`55dfe125874a4055bfd250c9cdbd19464219424a5587bef6a727238ee73d48e5`.
+`7581a1804f056c2459483f97d6e965a79d6734875cfa984ea2dbfa8766aeb9fd`.
 The run used protocol digest
-`sha256:015f2a5c16e135341d6e531e3e6bca7d902d1c361f933c0d1be15981c3e8236d`,
+`sha256:14473ca08b47d2a1e4f0905e7e37d580b64e1159e7d8a085f52debc88ea52bd3`,
+evaluator implementation digest
+`sha256:0d8fc21209caf142d5545eb3b99c3c17674dc1e6f2de91af5443bf2de08c51ad`,
 24 shared scenarios, both cache modes, three repetitions, and both arms
 (144 paired samples). Every trial completed without a candidate failure or
 timeout.
@@ -59,11 +61,15 @@ Observed metrics:
 - `task_correctness`: 100% on both arms; no newly introduced failures or
   timeouts.
 - `tool_interaction_count`: measured and passed.
-- `latency_ms`: baseline mean `335.148 ms`, candidate mean `354.308 ms`
-  (`+5.72%` by arm mean); the runner's paired relative mean is `+10.58%`, with
-  a scenario-blocked 95% relative interval `[+5.07%, +16.09%]`. The paired
-  aggregate is marked regressed and does not establish the required 15%
-  improvement subset.
+- `latency_ms`: baseline mean `329.381 ms`, candidate mean `350.254 ms`; the
+  runner's paired relative mean is `+10.92%`, with a scenario-blocked 95%
+  relative interval `[+4.78%, +17.06%]`. The paired aggregate is marked
+  regressed and does not establish the required 15% improvement subset.
+- `peak_rss_bytes`: baseline mean `47,465,472`, candidate mean `47,572,651`
+  (`+0.29%` relative; scenario-blocked 95% interval `[-0.23%, +0.82%]`).
+- `cpu_ms`: resource accounting is present, but only three scenario blocks have
+  non-zero CPU deltas because the host reports short-lived calls at zero CPU
+  resolution; this remains insufficient precision for a CPU conclusion.
 - `behavioral_invariant_success`, `regression_reintroduction_rate`,
   `impact_coverage`, and `change_precision` were not measured by the shared
   corpus. The runner therefore correctly returned

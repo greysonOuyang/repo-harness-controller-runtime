@@ -1,7 +1,7 @@
 {
-  "processId": "proc_mts933t2_6958211c",
-  "evaluatorImplementationDigest": "sha256:17141479c81c22a26c1a81a61260a93c7afdf43592aac495cea113b2d69f4a0d",
-  "rawBundleDigest": "sha256:5a7132aa15aabbafd3067c96771e7f828c747c307ceba496681752ca8b6e5081",
+  "processId": "proc_v2_aa_resource_final2_1788960000",
+  "evaluatorImplementationDigest": "sha256:0d8fc21209caf142d5545eb3b99c3c17674dc1e6f2de91af5443bf2de08c51ad",
+  "rawBundleDigest": "sha256:a44c5c064c0c7ca9b8994a20eb1a591951cb04dc61849d5b0344e193aa827885",
   "scope": "candidate_symmetry_and_harness_noise",
   "formalTrialSample": false,
   "baselineSourceRevision": "c873cfeb11a223ced342e7101c016261b4a93b38",
@@ -17,17 +17,17 @@
   "failureCount": 0,
   "latencyDeltaMs": {
     "count": 24,
-    "mean": -45.92743770833431,
-    "p50": -2.58972900000299,
-    "p95": 123.70196079999586,
-    "min": -659.5798340000038,
-    "max": 144.50675000000047,
-    "meanAbsolute": 96.54018370832561,
-    "positiveCount": 9,
-    "negativeCount": 15,
+    "mean": -1.1334442916668952,
+    "p50": 4.299874500007718,
+    "p95": 92.10722514999142,
+    "min": -382.7854149999912,
+    "max": 170.22320900001796,
+    "meanAbsolute": 60.34562145832456,
+    "positiveCount": 13,
+    "negativeCount": 11,
     "confidence95": {
-      "low": -115.43890059688799,
-      "high": 23.58402518021937,
+      "low": -45.293772753732085,
+      "high": 43.02688417039829,
       "sampleCount": 24,
       "unit": "scenario"
     }

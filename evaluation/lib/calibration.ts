@@ -59,6 +59,8 @@ export const FORMAL_CROSS_VERSION_METRICS: readonly EvaluationMetricDefinition[]
   { id: 'change_precision', tier: 'execution_quality', direction: 'higher_is_better', unit: 'ratio', gate: 'non_blocking', regressionTolerance: 0 },
   { id: 'tool_interaction_count', tier: 'efficiency', direction: 'lower_is_better', unit: 'count', gate: 'non_blocking', regressionTolerance: 0 },
   { id: 'latency_ms', tier: 'performance', direction: 'lower_is_better', unit: 'ms', gate: 'non_blocking', regressionTolerance: 0 },
+  { id: 'cpu_ms', tier: 'performance', direction: 'lower_is_better', unit: 'ms', gate: 'non_blocking', regressionTolerance: 0 },
+  { id: 'peak_rss_bytes', tier: 'performance', direction: 'lower_is_better', unit: 'bytes', gate: 'non_blocking', regressionTolerance: 0 },
 ]);
 
 export const FORMAL_FAILURE_TAXONOMY = Object.freeze(['candidate_failure', 'candidate_timeout'] as const);

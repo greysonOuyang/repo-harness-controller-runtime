@@ -25,11 +25,11 @@ The output authority also binds the production dependency graph: 100 package ent
 
 ## v1.7.2 A/A calibration
 
-Fresh A/A Process `proc_mts933t2_6958211c` used the same current baseline artifact on both arms across the 24-scenario shared corpus. All 48 trials passed with zero candidate failures or timeouts.
+Fresh A/A Process `proc_v2_aa_resource_final2_1788960000` used the same current baseline artifact on both arms across the 24-scenario shared corpus. All 48 trials passed with zero candidate failures or timeouts. The evaluator implementation digest is `sha256:0d8fc21209caf142d5545eb3b99c3c17674dc1e6f2de91af5443bf2de08c51ad`.
 
-For latency, the signed delta is arm B minus arm A, one paired sample per scenario. Mean delta was `-45.927 ms`, p50 `-2.590 ms`, p95 `123.702 ms`, with 9 positive and 15 negative samples. The scenario-blocked 95% confidence interval was `[-115.439 ms, 23.584 ms]`; because it crosses zero, the run does not establish a systematic harness arm advantage. This is symmetry/noise calibration only, never V2 superiority evidence or a regression tolerance.
+For latency, the signed delta is arm B minus arm A, one paired sample per scenario. Mean delta was `-1.133 ms`, p50 `4.300 ms`, p95 `92.107 ms`, with 13 positive and 11 negative samples. The scenario-blocked 95% confidence interval was `[-45.294 ms, 43.027 ms]`; because it crosses zero, the run does not establish a systematic harness arm advantage. This is symmetry/noise calibration only, never V2 superiority evidence or a regression tolerance.
 
-The raw evidence bundle contains `experiment.json`, `statistics.json`, and 24 scenario JSON files. For this freeze, `rawBundleDigest` is reproducible as `sha256(JSON.stringify(manifest))`, where `manifest` has schema `forge-aa-raw-bundle-manifest/v1` and lists every raw JSON file sorted by relative path with its SHA-256 and byte length. The resulting digest is `sha256:5a7132aa15aabbafd3067c96771e7f828c747c307ceba496681752ca8b6e5081`. Earlier S5 commits stored raw bundle digests without preserving their construction algorithm, so this documented convention starts with this freeze rather than pretending that missing provenance existed.
+The raw evidence bundle is `/tmp/forge-v2-aa-resource-final2-1788960000`; its `rawBundleDigest` is `sha256:a44c5c064c0c7ca9b8994a20eb1a591951cb04dc61849d5b0344e193aa827885`. It is reproducible as `sha256(JSON.stringify(manifest))`, where `manifest` has schema `forge-aa-raw-bundle-manifest/v1` and lists every raw JSON file sorted by relative path with its SHA-256 and byte length. Earlier S5 commits stored raw bundle digests without preserving their construction algorithm, so this documented convention starts with this freeze rather than pretending that missing provenance existed.
 
 ## Process-isolation and S6 gate
 

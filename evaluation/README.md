@@ -27,8 +27,11 @@ duplicate trials, mixed candidate artifacts and inconsistent environment facts.
 Unobserved dimensions remain unmeasured. A partially measured metric is listed
 with its missing/total trial count, retains its raw reports, and makes the overall
 assessment `inconclusive_missing_metrics`; it is never silently averaged over
-only the successful subset or treated as a passing zero. The current shared
-corpus alone does not provide complete engineering-quality or CPU/RSS coverage.
+only the successful subset or treated as a passing zero. The public-MCP runner
+records evaluator-owned CPU/RSS for every observed server command where the host
+exposes the child process, and the formal freeze includes `cpu_ms` and
+`peak_rss_bytes`. The shared corpus still does not provide the separate
+engineering-task suite required for V2 release.
 
 `lib/candidate-runner.ts` executes both candidates through the same declared external
 public surface (`public_cli` or `public_mcp`). Candidate artifacts are content-addressed as a complete file or directory tree, verified, and required to contain the artifact entry explicitly bound to the public command. Each trial executes a private materialized copy, so transitive candidate code and candidate-side mutation cannot drift behind a stable identity; the evaluator never imports candidate `src/runtime`,
