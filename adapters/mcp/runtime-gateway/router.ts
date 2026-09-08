@@ -390,12 +390,9 @@ export function classifyGatewayExecutionPath(
     if (args.mode === 'durable' || args.force_durable === true) {
       return { path: 'durable', reasons: ['caller_requested_durable_check'] };
     }
-    // A batch containing release/multi-phase checks is routed through the fast
-    // facade only so the batch validator can fail closed with structured
-    // scheduling evidence. It must never create a partial Durable workflow.
-    if (batchCheckIds.length === 0 && checkId && checkRequiresDurableWorkflow(checkId)) {
-      return { path: 'durable', reasons: ['multi_phase_or_release_check'] };
-    }
+    // Gateway owns transport placement, not Check lifecycle semantics. Until
+    // the registered ControllerCheck is resolved by the Check owner below,
+    // never infer Durable handling from a caller-provided id string.
     // Route as "fast" so shouldCreateDurableJob returns false; actual execution
     // uses Process Runtime (direct or managed handle) in routeDurableMcpCall / legacy handler.
     return {
@@ -424,12 +421,6 @@ export function classifyGatewayExecutionPath(
   if (name === 'verify_edit_session') {
     if (args.mode === 'durable' || args.force_durable === true) {
       return { path: 'durable', reasons: ['caller_requested_durable_edit_verification'] };
-    }
-    const checkIds = Array.isArray(args.check_ids)
-      ? args.check_ids.map(String).map((entry) => entry.trim()).filter(Boolean)
-      : [];
-    if (checkIds.some((checkId) => checkRequiresDurableWorkflow(checkId))) {
-      return { path: 'durable', reasons: ['multi_phase_or_release_edit_check'] };
     }
     return {
       path: 'fast',
@@ -965,7 +956,7 @@ export async function routeDurableMcpCall(
           message: `run_check batch contains unregistered checks: ${checkScheduling.invalidCheckIds.join(', ')}`,
         }, true);
       }
-      const durableCheckIds = batchCheckIds.filter((id) => checkRequiresDurableWorkflow(id, availableChecksById.get(id)));
+      const durableCheckIds = batchCheckIds.filter((id) => checkRequiresDurableWorkflow(availableChecksById.get(id)));
       if (durableCheckIds.length > 0) {
         return result({
           accepted: false,

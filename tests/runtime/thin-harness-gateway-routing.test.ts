@@ -110,7 +110,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       'readonly-command': 'fast',
       'managed-local-command': 'fast',
       'focused-check': 'fast',
-      'release-check': 'durable',
+      'release-check': 'fast',
       'interactive-write': 'direct',
       'external-controller': 'durable',
       'unknown-tool': 'reject',
@@ -690,6 +690,14 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
           command: [process.execPath, '-e', 'process.exit(0)'],
           timeoutMs: 10_000,
           effects: { reads: ['src/release'] },
+          selection: { costClass: 'L4', riskFloor: 'high', phases: ['release'] },
+        },
+        'release-named-simulator-compile': {
+          description: 'release migration deploy wording around an ordinary Simulator compile',
+          command: [process.execPath, '-e', 'process.exit(0)'],
+          timeoutMs: 10_000,
+          effects: { reads: ['src'] },
+          selection: { costClass: 'L2', riskFloor: 'medium', phases: ['post_edit', 'pre_finalize'] },
         },
       },
     }, null, 2));
@@ -721,6 +729,14 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(durable?.isError).toBe(true);
     expect(durable?.structuredContent).toMatchObject({ accepted: false, reason: 'batch_contains_durable_check' });
     expect(listProcessRecords(fx.controllerHome, fx.repository.repoId)).toHaveLength(processesBefore);
+
+    const ordinaryDespiteWords = await routeDurableMcpCall(fx.ctx, 'run_check', {
+      repo_id: fx.repository.repoId,
+      check_ids: ['release-named-simulator-compile'],
+      request_id: 'batch-ordinary-release-wording',
+    });
+    expect(ordinaryDespiteWords?.isError).not.toBe(true);
+    expect(ordinaryDespiteWords?.structuredContent).toMatchObject({ accepted: true, batch: true });
   });
 
   test('controller instructions make bounded dependency attachment explicit instead of normal polling', () => {

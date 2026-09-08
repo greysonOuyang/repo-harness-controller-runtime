@@ -263,7 +263,7 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
       requestedChecks,
     }) : undefined;
     const registeredCheck = checks.find((entry) => entry.id === normalizedCheckId);
-    const durableClassCheck = checkRequiresDurableWorkflow(normalizedCheckId, registeredCheck);
+    const durableClassCheck = checkRequiresDurableWorkflow(registeredCheck);
     const allowDurableCheckExecution = Boolean(
       durableClassCheck
       && workContract
