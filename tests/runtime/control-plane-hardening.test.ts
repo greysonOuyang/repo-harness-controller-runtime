@@ -2329,10 +2329,10 @@ describe('scheduled external Controller wake', () => {
       controllerId: rotated.controllerId,
       controllerType: rotated.controllerType,
       principalId: rotated.principalId ?? rotated.controllerId,
-      // The rotated transport authenticates terminal closure but does not rewrite
-      // the already-acknowledged durable ControllerRound claim epoch.
-      controllerInstanceId: 'runtime-test',
-      sessionId: 'chatgpt-session-original',
+      // Terminal closure keeps the same controller/principal and claim generation,
+      // while the new Runtime instance becomes the durable transport identity.
+      controllerInstanceId: postFinalizeIdentity.controllerInstanceId,
+      sessionId: postFinalizeIdentity.sessionId,
       claimGeneration: rotated.claimGeneration,
     });
     expect(() => submitControllerRoundDisposition(store, {
