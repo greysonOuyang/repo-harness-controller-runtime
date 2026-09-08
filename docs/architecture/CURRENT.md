@@ -41,6 +41,14 @@ Quality is prioritized over interactive performance; performance is prioritized 
 
 ## Execution lanes
 
+### Semantic classification authority
+
+Execution placement, lifecycle, retry, authorization, and acceptance decisions consume typed domain contracts after ingress normalization. Human-readable ids, descriptions, prompts, log text, and error messages are evidence or presentation, not machine authority. When a legacy transport can provide only strings, one bounded compatibility ingress may normalize an explicitly constrained code/token into typed state with provenance; downstream routers and domain services must consume that typed state rather than repeat regex or substring inference. Compatibility decoders never become persistence or semantic owners.
+
+### Failure contract authority
+
+Machine-visible failures have a stable code plus an explicit class and retry disposition; transport projections such as HTTP status derive from that contract. Free-form messages exist for diagnostics and user presentation. A producer-specific adapter may translate a native SDK/OS error into the failure contract once, but retry policy must not be inferred from words such as `temporary`, `worker`, or `network`, and authorization must not be inferred from arbitrary prose. Ambiguous non-idempotent outcomes use an explicit reconciliation-before-retry disposition rather than generic transient retry.
+
 ### Ephemeral Direct — default
 
 Ordinary local reads, Git inspection, edits, local scripts, builds, and short checks should execute with minimal controller overhead. No persistent Work is created merely because the task is complex or investigative.
