@@ -7,6 +7,7 @@ import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 import { createFirstPartyPluginAdapterMap } from './first-party-registry';
+import { reconcileFirstPartyExternalPluginRegistration, reconcileFirstPartyExternalPluginRegistrations } from './first-party-external-registration';
 import { REPOSITORY_PLUGIN_CONFIG_IDS, repositoryPluginConfigFileName, repositoryPluginConfigPath } from './config-store';
 import { getExternalPluginAdapter, listExternalPluginAdapters } from './external-adapter';
 import { AssistantPluginError, isAssistantPluginError, toAssistantPluginError, type AssistantPluginEffectOutcome } from './errors';
@@ -114,10 +115,12 @@ export function getControllerPluginManifest(controllerHome: string, pluginId: st
 }
 
 export function syncControllerPluginRegistry(controllerHome: string) {
+  reconcileFirstPartyExternalPluginRegistrations(controllerHome);
   return syncAssistantPluginRegistry(controllerHome, controllerPluginRepository(controllerHome));
 }
 
 export function syncControllerPluginManifest(controllerHome: string, pluginId: string) {
+  reconcileFirstPartyExternalPluginRegistration(controllerHome, pluginId);
   return syncAssistantPluginManifest(controllerHome, controllerPluginRepository(controllerHome), pluginId);
 }
 

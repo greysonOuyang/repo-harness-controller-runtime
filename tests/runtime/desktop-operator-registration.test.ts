@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
 import { validateMacOsCapabilityBrokerHandshake } from '../../src/runtime/plugins/macos-capability-broker';
-import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
+import { getExternalPluginRegistration, installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
+import { syncControllerPluginManifest } from '../../src/runtime/plugins/store';
 import { mkdtempSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -163,6 +164,46 @@ describe('Desktop Operator trusted external registration', () => {
       expectedProgramContains: 'forge-desktop-operator',
     });
     expect(input.actions.map((action) => action.actionId)).not.toContain('provider_restart');
+  });
+
+  test('controller sync rematerializes same-version first-party policy drift through the canonical registration authority', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-desktop-registration-reconcile-'));
+    const desired = createDesktopOperatorRegistrationInput({
+      socketPath: '/tmp/forge-desktop-operator.sock',
+      launchAgentLabel: 'com.moretea.desktop-operator',
+      expectedProgramContains: 'forge-desktop-operator',
+      pluginVersion: '0.2.3',
+      enabled: false,
+    });
+    const staleActions = desired.actions.filter((action) => action.actionId !== 'desktop_pointer_click');
+    const staleCapabilities = desired.capabilities.map((capability) => ({
+      ...capability,
+      actions: capability.actions.filter((actionId) => actionId !== 'desktop_pointer_click'),
+    }));
+    const stale = installExternalPluginRegistration(controllerHome, {
+      ...desired,
+      actions: staleActions,
+      capabilities: staleCapabilities,
+    });
+    expect(stale.revision).toBe(1);
+    expect(stale.actions.map((action) => action.actionId)).not.toContain('desktop_pointer_click');
+
+    syncControllerPluginManifest(controllerHome, 'desktop_operator');
+    const reconciled = getExternalPluginRegistration(controllerHome, 'desktop_operator')!;
+    expect(reconciled.revision).toBe(2);
+    expect(reconciled.pluginVersion).toBe('0.2.3');
+    expect(reconciled.enabled).toBe(false);
+    expect(reconciled.transport).toMatchObject({ kind: 'unix_socket_jsonl', socketPath: '/tmp/forge-desktop-operator.sock' });
+    expect(reconciled.lifecycle).toEqual({
+      kind: 'verified_user_launch_agent',
+      label: 'com.moretea.desktop-operator',
+      expectedProgramContains: 'forge-desktop-operator',
+    });
+    expect(reconciled.actions.map((action) => action.actionId)).toContain('desktop_pointer_click');
+    expect(reconciled.capabilities.find((capability) => capability.capabilityId === 'desktop.interact')?.actions).toContain('desktop_pointer_click');
+
+    syncControllerPluginManifest(controllerHome, 'desktop_operator');
+    expect(getExternalPluginRegistration(controllerHome, 'desktop_operator')?.revision).toBe(2);
   });
 
   test('installs through the existing CAS/fingerprinted registration authority', () => {
