@@ -1108,6 +1108,13 @@ function authenticatedFacadeControllerIdentity(
   const requestedSessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
   const requestedAuthorityId = typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '';
   if (!principalId) {
+    // Preserve the bounded legacy stdio contract when no authenticated
+    // transport identity exists at all. Modern MCP requests carry a principal
+    // without a protocol session and reach the principal guard below; an
+    // unauthenticated legacy request must not silently mint one.
+    if (!transportSessionId && !requestedSessionId) {
+      throw new Error('CONTROLLER_AUTHENTICATED_SESSION_REQUIRED: reconnect or provide session_id through the authenticated MCP transport');
+    }
     throw new Error('CONTROLLER_AUTHENTICATED_PRINCIPAL_REQUIRED: use an authenticated MCP transport');
   }
   // Legacy MCP sessions remain replaceable transport bindings. Modern MCP has no
