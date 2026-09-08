@@ -2,13 +2,9 @@ import { randomUUID, timingSafeEqual } from 'crypto';
 import { existsSync, watch } from 'fs';
 import { dirname } from 'path';
 import express, { type Request, type Response, type NextFunction } from 'express';
-import { tokenHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/token.js';
-import { revocationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/revoke.js';
-import { clientRegistrationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/register.js';
-import { redirectUriMatches } from '@modelcontextprotocol/sdk/server/auth/handlers/authorize.js';
-import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
-import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { NodeStreamableHTTPServerTransport, toNodeHandler, toWebRequest, type NodeMcpRequestHandler } from "@modelcontextprotocol/node";
+import { createMcpHandler, isLegacyRequest, type McpRequestContext, type OAuthClientInformationFull } from "@modelcontextprotocol/server";
+import { tokenHandler, revocationHandler, clientRegistrationHandler, redirectUriMatches, InvalidTokenError } from "@modelcontextprotocol/server-legacy/auth";
 import {
   buildMultiRepositoryToolDefinitions,
   createCanonicalRuntimeProxy,
@@ -111,24 +107,6 @@ function rawBodyToJson(body: Buffer): unknown | undefined {
 
 function isInitializeRequest(body: unknown): boolean {
   return typeof body === 'object' && body !== null && (body as Record<string, unknown>).method === 'initialize';
-}
-
-function isServerDiscoverRequest(body: unknown): boolean {
-  return typeof body === 'object' && body !== null && (body as Record<string, unknown>).method === 'server/discover';
-}
-
-function sendLegacyServerDiscoverUnsupported(res: Response, body: unknown): void {
-  const record = typeof body === 'object' && body !== null ? body as Record<string, unknown> : {};
-  const id = typeof record.id === 'string' || typeof record.id === 'number' || record.id === null ? record.id : null;
-  res.setHeader('Cache-Control', 'no-store');
-  res.status(404).json({
-    jsonrpc: '2.0',
-    id,
-    error: {
-      code: -32601,
-      message: 'Method not found',
-    },
-  });
 }
 
 function initializeClientIdentity(req: Request, body: unknown, route: McpSessionRoute, principalId: string): string {
@@ -705,7 +683,33 @@ const MCP_SESSION_ABSOLUTE_LIFETIME_MS = positiveIntegerEnv('FORGE_MCP_SESSION_A
 const MCP_ACTIVE_POST_STALL_MS = positiveIntegerEnv('FORGE_MCP_ACTIVE_POST_STALL_MS', 10 * 60_000);
 
 type McpToolContext = ReturnType<typeof createMcpToolContext>;
-type HttpSessionRegistry = McpSessionRegistry<StreamableHTTPServerTransport, McpToolContext>;
+type HttpSessionRegistry = McpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>;
+
+function principalIdFromModernRequestContext(context: McpRequestContext): string {
+  const clientId = context.authInfo?.clientId?.trim();
+  if (clientId) return `oauth-client:${clientId}`;
+  const authorization = context.requestInfo?.headers.get('authorization')?.trim() ?? '';
+  return /^Bearer\s+/i.test(authorization) ? 'mcp-bearer-client' : 'controller-http-client';
+}
+
+function createModernMcpHttpHandler(
+  baseOptions: McpServerOptions,
+  resolveRuntimeSchema?: (context: McpToolContext) => Promise<CanonicalRuntimeToolSchema | undefined>,
+  sharedRuntimeProxy?: CanonicalRuntimeProxy,
+): { handler: ReturnType<typeof createMcpHandler>; nodeHandler: NodeMcpRequestHandler } {
+  const handler = createMcpHandler(async (requestContext) => {
+    const toolContext = createMcpToolContext({
+      ...baseOptions,
+      principalId: principalIdFromModernRequestContext(requestContext),
+    });
+    const runtimeSchema = await resolveRuntimeSchema?.(toolContext);
+    return createForgeMcpServerFromContext(toolContext, runtimeSchema, sharedRuntimeProxy);
+  }, {
+    legacy: 'reject',
+    responseMode: 'auto',
+  });
+  return { handler, nodeHandler: toNodeHandler(handler) };
+}
 
 async function handleMcpPost(
   req: Request,
@@ -718,6 +722,7 @@ async function handleMcpPost(
   currentToolSurfaceFingerprint: () => string | undefined,
   resolveRuntimeSchema?: (context: McpToolContext) => Promise<CanonicalRuntimeToolSchema | undefined>,
   sharedRuntimeProxy?: CanonicalRuntimeProxy,
+  modernHandler?: NodeMcpRequestHandler,
 ): Promise<void> {
   let body: unknown;
   try {
@@ -726,16 +731,14 @@ async function handleMcpPost(
     res.status(400).json({ error: 'invalid JSON request body' });
     return;
   }
-  const sessionId = req.headers['mcp-session-id'] as string | undefined;
-  // MCP 2026-07-28 clients probe legacy servers with server/discover before
-  // falling back to the initialize-era protocol. Forge still serves the
-  // legacy stateful transport, so reject the unsupported modern RPC with the
-  // protocol-prescribed Method not found / HTTP 404 response instead of
-  // misclassifying it as a missing-session HTTP 400.
-  if (isServerDiscoverRequest(body)) {
-    sendLegacyServerDiscoverUnsupported(res, body);
-    return;
+  if (modernHandler) {
+    const webRequest = await toWebRequest(req, body);
+    if (!(await isLegacyRequest(webRequest, body))) {
+      await modernHandler(req, res, body);
+      return;
+    }
   }
+  const sessionId = req.headers['mcp-session-id'] as string | undefined;
   if (isInitializeRequest(body)) {
     if (sessionId) {
       res.setHeader('Mcp-Session-Reset', 'reinitialized');
@@ -757,7 +760,7 @@ async function handleMcpPost(
     }
     stats.initializing += 1;
     stats.activePosts += 1;
-    let transport: StreamableHTTPServerTransport | undefined;
+    let transport: NodeStreamableHTTPServerTransport | undefined;
     let reservationId: string | undefined;
     let initializedSessionId: string | undefined;
     try {
@@ -797,7 +800,7 @@ async function handleMcpPost(
       });
       let runtimeSchema = await resolveRuntimeSchema?.(sessionContext);
       let server: ReturnType<typeof createForgeMcpServerFromContext> | undefined;
-      transport = new StreamableHTTPServerTransport({
+      transport = new NodeStreamableHTTPServerTransport({
         sessionIdGenerator: () => randomUUID(),
         onsessioninitialized: (newSessionId: string): void => {
           registry.commitInitialize(reservationId!, {
@@ -989,7 +992,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   tokenStore?.load();
   const oauthProvider = tokenStore ? createMcpOAuthProvider(tokenStore) : null;
   const configuredPublicOrigin = getConfiguredPublicOrigin(serviceConfig);
-  const sessionRegistry = new McpSessionRegistry<StreamableHTTPServerTransport, McpToolContext>({
+  const sessionRegistry = new McpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>({
     maximumSessions: MAX_MCP_SESSIONS,
     maximumSessionsPerPrincipal: MAX_MCP_SESSIONS_PER_PRINCIPAL,
     idleTtlMs: MCP_SESSION_IDLE_TTL_MS,
@@ -1350,10 +1353,16 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     next();
   };
 
-  // Primary MCP path: OAuth (or bearer when --auth bearer). Unchanged for ChatGPT.
+  // Modern MCP 2026-07-28 is the canonical public serving boundary. The SDK
+  // owns protocol-era classification and serves modern requests without
+  // Mcp-Session-Id. Existing 2025-era traffic is routed explicitly to the
+  // bounded stateful compatibility path below.
+  const modernMcp = createModernMcpHttpHandler(baseOptions, resolveRuntimeSchema, sharedRuntimeProxy);
+
+  // Primary MCP path: OAuth (or bearer when --auth bearer).
   app.use('/mcp', setMcpResponseHeaders);
   app.post('/mcp', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, modernMcp.nodeHandler).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -1371,7 +1380,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   // Legacy Grok OAuth resource. New Grok connectors should use canonical /mcp.
   app.use('/mcp-grok', setMcpResponseHeaders);
   app.post('/mcp-grok', requireMcpHttpAuth(authMode, authToken, oauthProvider, configuredPublicOrigin, '/mcp-grok'), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-grok', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-grok', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, modernMcp.nodeHandler).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -1389,7 +1398,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
   // Bearer-only MCP path for clients that can send Authorization headers. Never advertises OAuth resource_metadata.
   app.use('/mcp-bearer', setMcpResponseHeaders);
   app.post('/mcp-bearer', requireMcpHttpAuth('bearer', authToken, null, configuredPublicOrigin), express.raw({ type: '*/*', limit: '1mb' }), (req, res) => {
-    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-bearer', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy).catch((error: unknown) => {
+    handleMcpPost(req, res, baseOptions, sessionRegistry, runtimeStats, '/mcp-bearer', forgeInstance, currentRuntimeToolSurfaceFingerprint, resolveRuntimeSchema, sharedRuntimeProxy, modernMcp.nodeHandler).catch((error: unknown) => {
       if (!res.headersSent) sendMcpRequestError(res, error);
     });
   });
@@ -1421,6 +1430,7 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     if (toolSurfaceNotificationTimer) clearTimeout(toolSurfaceNotificationTimer);
     runtimeStatusWatcher?.close();
     void sessionRegistry.closeAll('shutdown');
+    void modernMcp.handler.close();
     void sharedRuntimeProxy?.close();
   });
 

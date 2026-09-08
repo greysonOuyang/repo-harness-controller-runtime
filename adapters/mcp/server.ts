@@ -1,9 +1,9 @@
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
+import { Server } from "@modelcontextprotocol/server";
+import type { Tool } from "@modelcontextprotocol/server";
+import { Client, SdkError, SdkErrorCode, SdkHttpError, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { mcpServerInstructions } from './instructions';
 import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext } from './tool-mapping/tools';
+import { mcpToolDefinitionFromSdk, mcpToolDefinitionToSdk, type McpToolDefinition } from '../../packages/protocols/mcp/tool-contract';
 import { createLegacyMcpToolContext } from './legacy-context';
 import {
   buildMultiRepositoryToolDefinitions,
@@ -36,7 +36,7 @@ type ServerToolContext = McpToolContext | MultiRepositoryMcpToolContext;
 
 /** A per-session schema read directly from the Canonical Runtime's tools/list. */
 export interface CanonicalRuntimeToolSchema {
-  definitions: Tool[];
+  definitions: McpToolDefinition[];
   toolNames: string[];
   fingerprint: string;
 }
@@ -491,8 +491,20 @@ export function canonicalRuntimeToolCallIsReplaySafe(name: string, args: Record<
 }
 
 export function canonicalRuntimeToolCallFailureIsTransient(error: unknown): boolean {
-  const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error ?? '');
-  return /Connection closed|socket[^\n]*closed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|UND_ERR_SOCKET|fetch failed|MCP_REQUEST_FAILED/i.test(message);
+  if (SdkHttpError.isInstance(error)) return error.status === 404;
+  if (SdkError.isInstance(error)) {
+    return [
+      SdkErrorCode.NotConnected,
+      SdkErrorCode.ConnectionClosed,
+      SdkErrorCode.SendFailed,
+      SdkErrorCode.RequestTimeout,
+    ].includes(error.code);
+  }
+  const record = error && typeof error === 'object' ? error as { code?: unknown; cause?: unknown } : undefined;
+  const directCode = typeof record?.code === 'string' ? record.code : undefined;
+  const cause = record?.cause && typeof record.cause === 'object' ? record.cause as { code?: unknown } : undefined;
+  const causeCode = typeof cause?.code === 'string' ? cause.code : undefined;
+  return ['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'UND_ERR_SOCKET'].includes(directCode ?? causeCode ?? '');
 }
 
 export async function callCanonicalRuntimeToolWithReplay<T>(input: {
@@ -533,7 +545,7 @@ export async function readCanonicalRuntimeToolSchema(
   const proxy = sharedProxy ?? createCanonicalRuntimeProxy(ctx);
   try {
     const response = await proxy.listTools();
-    const definitions = response.tools as Tool[];
+    const definitions = response.tools.map(mcpToolDefinitionFromSdk);
     const toolNames = definitions
       .map((tool) => tool.name)
       .filter((name): name is string => typeof name === 'string' && name.length > 0)
@@ -828,7 +840,6 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
           args,
           call: async () => await activeClient.callTool(
             forwardedRequest,
-            undefined,
             { timeout: CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS },
           ),
           reconnect: async () => {
@@ -904,26 +915,25 @@ export function createForgeMcpServerFromContext(
   server.oninitialized = () => {
     void server.sendToolListChanged().catch(() => undefined);
   };
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
+  server.setRequestHandler('tools/list', async () => {
     if (isMultiRepositoryContext(baseContext) && !runtimeSchema && !getRuntimeWriteClaim() && !canonicalRuntimeSchemaMatchesGateway(baseContext)) {
       throw new Error('MCP_TOOL_SURFACE_MISMATCH: Gateway source does not match the Canonical Runtime schema.');
     }
-    return {
-      tools: runtimeSchema?.definitions ?? (isMultiRepositoryContext(baseContext)
-        ? controllerExposureSnapshot(baseContext).definitions
-        : buildMcpToolDefinitions(baseContext.policy, { enableChatgptBrowser: baseContext.enableChatgptBrowser === true })),
-    };
+    const definitions = runtimeSchema?.definitions ?? (isMultiRepositoryContext(baseContext)
+      ? controllerExposureSnapshot(baseContext).definitions
+      : buildMcpToolDefinitions(baseContext.policy, { enableChatgptBrowser: baseContext.enableChatgptBrowser === true }));
+    return { tools: definitions.map(mcpToolDefinitionToSdk) };
   });
-  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+  server.setRequestHandler('tools/call', async (request, handlerContext) => {
     const name = request.params.name;
     const args = (request.params.arguments ?? {}) as Record<string, unknown>;
     const forwardedBaseContext = canonicalRuntimeRequestContext(
       baseContext,
       (request.params as { _meta?: unknown })._meta,
     );
-    const ctx: ServerToolContext = { ...forwardedBaseContext, signal: extra.signal };
+    const ctx: ServerToolContext = { ...forwardedBaseContext, signal: handlerContext.mcpReq.signal };
     if (isMultiRepositoryContext(ctx)) {
-      const rpcId = (request as unknown as { id?: unknown }).id;
+      const rpcId = handlerContext.mcpReq.id;
       return traceControllerMcpRequest(ctx, name, args, typeof rpcId === 'string' || typeof rpcId === 'number' ? rpcId : undefined, async (requestId, _traceId, phaseTimings) => {
         // The public Gateway only exposes its stable facade schema. It may
         // proxy execution, but it never discovers one Runtime schema and

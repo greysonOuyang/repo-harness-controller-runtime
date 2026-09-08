@@ -1,11 +1,10 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { classifyFailure } from '../../src/runtime/recovery/classifier';
 import { classifyRuntimeReadinessSemantics, evaluateRuntimeHealth, type RuntimeHealthObservations } from '../../src/runtime/health';
 import {
@@ -21,7 +20,7 @@ import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import type { TaskLedgerProjection } from '../../src/cli/controller/task-ledger';
 import { recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
 import { classifyForgeIncidentForRepair, maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
-import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
+import { callRuntimeTool, sessionlessFacadeControllerAuthorityMatches } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../src/cli/mcp/multi-repository';
 import { createForgeMcpServer } from '../../src/cli/mcp/server';
 import { registerRepository } from '../../src/cli/repositories/registry';
@@ -189,6 +188,29 @@ function controllerFixture(): { controllerHome: string; repoRoot: string; owners
 }
 
 describe('runtime observability', () => {
+  test('requires exact durable Work authority when modern MCP has no transport session', () => {
+    const authorityId = 'ctrl_exact_sessionless_authority';
+    const owner = {
+      schemaVersion: 1 as const,
+      workId: 'work-sessionless-authority',
+      controllerId: 'controller-a',
+      controllerType: 'chatgpt' as const,
+      sessionId: 'legacy-session-a',
+      authorityDigest: createHash('sha256').update(authorityId).digest('hex'),
+      principalId: 'principal-a',
+      controllerInstanceId: 'runtime-a',
+      claimGeneration: 1,
+      claimedAt: '2026-09-08T00:00:00.000Z',
+      leaseExpiresAt: '2026-09-08T01:00:00.000Z',
+    };
+
+    expect(sessionlessFacadeControllerAuthorityMatches(owner, { controllerAuthorityId: authorityId })).toBe(true);
+    expect(sessionlessFacadeControllerAuthorityMatches(owner, { controllerAuthorityId: 'wrong-authority' })).toBe(false);
+    expect(sessionlessFacadeControllerAuthorityMatches(owner, {})).toBe(false);
+    expect(sessionlessFacadeControllerAuthorityMatches({ ...owner, authorityDigest: undefined }, {})).toBe(false);
+    expect(sessionlessFacadeControllerAuthorityMatches(owner, { transportSessionId: 'legacy-session-b' })).toBe(true);
+  });
+
   test('keeps legacy terminal execution attention in history without resurrecting it as a current release blocker', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-terminal-attention-ch-'));
     const repoId = 'repo-terminal-attention';
@@ -880,7 +902,7 @@ describe('runtime observability', () => {
       await server.connect(serverTransport);
       const client = new Client({ name: `runtime-tools-${toolset ?? 'default'}`, version: '1.0.0' }, { capabilities: {} });
       let toolListChanged = 0;
-      client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+      client.setNotificationHandler('notifications/tools/list_changed', () => {
         toolListChanged += 1;
       });
       await client.connect(clientTransport);

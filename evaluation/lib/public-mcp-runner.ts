@@ -1,8 +1,8 @@
 import { performance } from 'node:perf_hooks';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { Client } from "@modelcontextprotocol/client";
 import { buildReport, writeReport } from './report.ts';
 import {
   assertOutsideSource,

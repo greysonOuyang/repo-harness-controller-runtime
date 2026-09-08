@@ -1190,7 +1190,7 @@ describe('rh_work terminalization authority', () => {
     expect(getWorkContract(store, workId)?.workKind).toBe('remote_effect');
   }, 15_000);
 
-  test('direct Work authority follows the authenticated principal/runtime across explicit and MCP transport rotation', async () => {
+  test('direct Work authority remains exact across modern sessionless request rotation', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const workA = 'work-explicit-session-a';
@@ -1203,42 +1203,55 @@ describe('rh_work terminalization authority', () => {
       sessionId: undefined,
     }) as unknown as MultiRepositoryMcpToolContext;
 
-    const missing = structured(await callRuntimeTool(
+    const claimedA = structured(await callRuntimeTool(
       withoutTransport(),
       'rh_work',
       { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workA },
     ));
-    expect(missing.status).toBe('blocked');
-    expect(missing.summary).toContain('CONTROLLER_AUTHENTICATED_SESSION_REQUIRED');
-
-    expect(structured(await callRuntimeTool(
+    const claimedB = structured(await callRuntimeTool(
       withoutTransport(),
       'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workA, session_id: 'opaque-a' },
-    )).status).toBe('ok');
-    expect(structured(await callRuntimeTool(
-      withoutTransport(),
-      'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workB, session_id: 'opaque-b' },
-    )).status).toBe('ok');
-
-    // Explicit session_id is the transport binding when no MCP transport exists;
-    // it is not a durable conversation/scope authority. The exact Work plus the
-    // authenticated principal/current Runtime owns the direct mutation.
-    const rotatedStopB = structured(await callRuntimeTool(
-      withoutTransport(),
-      'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'chatgpt', reason: 'same owner via replacement explicit transport', session_id: 'opaque-a' },
+      { repo_id: fx.repository.repoId, operation: 'controller_claim', work_id: workB },
     ));
-    expect(rotatedStopB.status).toBe('ok');
+    expect(claimedA.status).toBe('ok');
+    expect(claimedB.status).toBe('ok');
+    const authorityA = String(claimedA.data.controllerAuthorityId ?? '');
+    const authorityB = String(claimedB.data.controllerAuthorityId ?? '');
+    expect(authorityA).toStartWith('ctrl_');
+    expect(authorityB).toStartWith('ctrl_');
+    expect(authorityA).not.toBe(authorityB);
+
+    const wrongWorkAuthority = structured(await callRuntimeTool(
+      withoutTransport(),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'chatgpt',
+        reason: 'wrong Work authority must not cross sessionless requests', controller_authority_id: authorityA,
+      },
+    ));
+    expect(wrongWorkAuthority.status).toBe('blocked');
+    expect(wrongWorkAuthority.summary).toContain('WORK_CONTROLLER_SCOPE_MISMATCH');
+
+    const stopB = structured(await callRuntimeTool(
+      withoutTransport(),
+      'rh_work',
+      {
+        repo_id: fx.repository.repoId, operation: 'stop', work_id: workB, requested_by: 'chatgpt',
+        reason: 'exact Work authority across sessionless request rotation', controller_authority_id: authorityB,
+      },
+    ));
+    expect(stopB.status).toBe('ok');
     expect(getWorkContract(store, workB)?.status).toBe('cancelled');
 
-    const rotatedStopA = structured(await callRuntimeTool(
+    const stopA = structured(await callRuntimeTool(
       withoutTransport(),
       'rh_work',
-      { repo_id: fx.repository.repoId, operation: 'stop', work_id: workA, requested_by: 'chatgpt', reason: 'same owner via another replacement explicit transport', session_id: 'opaque-b' },
+      {
+        repo_id: fx.repository.repoId, operation: 'stop', work_id: workA, requested_by: 'chatgpt',
+        reason: 'exact Work authority across another sessionless request', controller_authority_id: authorityA,
+      },
     ));
-    expect(rotatedStopA.status).toBe('ok');
+    expect(stopA.status).toBe('ok');
     expect(getWorkContract(store, workA)?.status).toBe('cancelled');
   }, 15_000);
 

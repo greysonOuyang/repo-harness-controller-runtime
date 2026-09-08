@@ -48,7 +48,10 @@ export const CROSS_VERSION_EVALUATOR_FILES = Object.freeze([
 ] as const);
 
 export const CROSS_VERSION_EVALUATOR_RUNTIME_PACKAGES = Object.freeze([
-  '@modelcontextprotocol/sdk',
+  '@modelcontextprotocol/client',
+  '@modelcontextprotocol/node',
+  '@modelcontextprotocol/server',
+  '@modelcontextprotocol/server-legacy',
 ] as const);
 
 export const FORMAL_CROSS_VERSION_METRICS: readonly EvaluationMetricDefinition[] = Object.freeze([

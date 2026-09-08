@@ -12,15 +12,9 @@ import {
   writeFileSync,
 } from 'fs';
 import { dirname } from 'path';
-import type { OAuthRegisteredClientsStore } from '@modelcontextprotocol/sdk/server/auth/clients.js';
-import { InvalidGrantError, InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
-import type { AuthorizationParams, OAuthServerProvider } from '@modelcontextprotocol/sdk/server/auth/provider.js';
-import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import type {
-  OAuthClientInformationFull,
-  OAuthTokenRevocationRequest,
-  OAuthTokens,
-} from '@modelcontextprotocol/sdk/shared/auth.js';
+import type { AuthInfo, OAuthClientInformationFull, OAuthTokenRevocationRequest, OAuthTokens } from "@modelcontextprotocol/server";
+import { InvalidGrantError, InvalidTokenError } from "@modelcontextprotocol/server-legacy/auth";
+import type { OAuthRegisteredClientsStore, AuthorizationParams, OAuthServerProvider } from "@modelcontextprotocol/server-legacy/auth";
 
 interface TokenData {
   accessTokens?: Record<string, AuthInfo>;

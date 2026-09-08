@@ -1,9 +1,8 @@
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { basename, isAbsolute, join, relative, resolve, sep } from 'path';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { CallToolResult as SdkCallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import type { CallToolResult as SdkCallToolResult } from "@modelcontextprotocol/client";
 import { collectRuntimePerformanceDiagnostics, inferLocalControllerProcess } from '../../../src/runtime/diagnostics/performance';
 import { defaultSemanticProviderRegistry, type SemanticNavigationKind, type SemanticNavigationRequest } from '../../../src/runtime/context/semantic-navigation';
 import { buildContextClosureReceipt } from '../../../src/runtime/context/context-closure';
@@ -1216,15 +1215,17 @@ function authenticatedFacadeControllerIdentity(
   const requestedControllerId = typeof args.controller_id === 'string' ? args.controller_id.trim() : '';
   const requestedSessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
   const requestedAuthorityId = typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '';
-  if (!principalId || (!transportSessionId && !requestedSessionId)) {
-    throw new Error('CONTROLLER_AUTHENTICATED_SESSION_REQUIRED: reconnect or provide session_id through the authenticated MCP transport');
+  if (!principalId) {
+    throw new Error('CONTROLLER_AUTHENTICATED_PRINCIPAL_REQUIRED: use an authenticated MCP transport');
   }
-  // Transport session is the replaceable execution binding. When a transport is
-  // present, legacy/frozen clients may carry the durable controller capability in
-  // session_id; never feed that capability to ExecutionSession APIs. Without a
-  // transport, session_id retains its legacy meaning as the explicit session.
-  const sessionId = transportSessionId || requestedSessionId;
-  const controllerAuthorityId = requestedAuthorityId || (transportSessionId && requestedSessionId !== transportSessionId ? requestedSessionId : '');
+  // Legacy MCP sessions remain replaceable transport bindings. Modern MCP has no
+  // protocol session, so a fresh request-scoped execution binding is minted when
+  // the caller does not provide an explicit compatibility carrier. Durable Work
+  // authority is never derived from this request binding.
+  const sessionId = transportSessionId || requestedSessionId || `mcp_request_${randomUUID().replace(/-/g, '')}`;
+  const controllerAuthorityId = requestedAuthorityId
+    || (!transportSessionId && requestedSessionId ? requestedSessionId : '')
+    || (transportSessionId && requestedSessionId !== transportSessionId ? requestedSessionId : '');
   if (requestedControllerId && requestedControllerId !== principalId) {
     throw new Error('CONTROLLER_ID_CONTEXT_MISMATCH: controller_id must match the authenticated principal');
   }
@@ -1305,6 +1306,23 @@ function assertFacadeControllerRoundAuthority(
   throw new Error(`WORK_CONTROLLER_ROUND_AUTHORITY_UPGRADE_REQUIRED: ${workId}`);
 }
 
+export function sessionlessFacadeControllerAuthorityMatches(
+  owner: NonNullable<ReturnType<typeof getControllerSession>> | undefined,
+  identity: { transportSessionId?: string; controllerAuthorityId?: string },
+): boolean {
+  if (!owner || identity.transportSessionId) return true;
+  return controllerSessionAuthorityMatches(owner, identity.controllerAuthorityId);
+}
+
+function assertSessionlessFacadeControllerAuthority(
+  owner: NonNullable<ReturnType<typeof getControllerSession>> | undefined,
+  identity: { transportSessionId?: string; controllerAuthorityId?: string },
+  workId: string,
+): void {
+  if (sessionlessFacadeControllerAuthorityMatches(owner, identity)) return;
+  throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; sessionless MCP requests must present the exact Work-bound controller authority.`);
+}
+
 function bindFacadeControllerOwnership(
   ctx: MultiRepositoryMcpToolContext,
   store: { controllerHome: string; repoId: string },
@@ -1312,6 +1330,8 @@ function bindFacadeControllerOwnership(
   identity: ReturnType<typeof authenticatedFacadeControllerIdentity>,
   options: { allowClaimIfMissing?: boolean; leaseMs?: number } = {},
 ) {
+  const existingOwner = getControllerSession(store, workId);
+  assertSessionlessFacadeControllerAuthority(existingOwner, identity, workId);
   const runtime = runtimeIdentitySnapshot(ctx);
   return bindControllerSessionToCurrentRuntime(store, {
     workId,
@@ -1392,6 +1412,7 @@ function currentTerminalCleanupAuthority(
   const owner = getControllerSession(store, workId);
   if (!owner) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${workId}`);
   const identity = authenticatedFacadeControllerIdentity(ctx, args);
+  assertSessionlessFacadeControllerAuthority(owner, identity, workId);
   const authority = assertControllerOwnershipAuthority(owner, {
     workId,
     controllerId: identity.controllerId,
@@ -1456,15 +1477,18 @@ function claimNewFacadeWork(
   args: Record<string, unknown>,
 ) {
   const identity = authenticatedFacadeControllerIdentity(ctx, args);
-  return resumeControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
+  const authority = mintControllerSessionAuthority();
+  const session = resumeControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, {
     workId,
     controllerId: identity.controllerId,
     controllerType: identity.controllerType,
     sessionId: identity.sessionId,
+    authorityDigest: authority.authorityDigest,
     principalId: identity.principalId,
     controllerInstanceId: identity.controllerInstanceId,
     leaseMs: typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
   });
+  return { session, controllerAuthorityId: authority.authorityId };
 }
 
 function bindFacadeExecutionSession(
@@ -3074,6 +3098,7 @@ async function runFacadeVerify(
       try {
         const identity = authenticatedFacadeControllerIdentity(ctx, args);
         const owner = getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, work.workId);
+        if (!sessionlessFacadeControllerAuthorityMatches(owner, identity)) return false;
         return Boolean(
           owner
           && owner.controllerId === identity.controllerId
@@ -6042,16 +6067,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             }
             if (work && !['cancelled', 'completed', 'failed'].includes(work.status)) {
               const identity = authenticatedFacadeControllerIdentity(ctx, args);
-              const existingOwner = getControllerSession(store, workId);
-              const relay = getControllerRoundRelay(store, workId);
-              if (
-                existingOwner
-                && !relay
-                && identity.controllerAuthorityId
-                && !controllerSessionAuthorityMatches(existingOwner, identity.controllerAuthorityId)
-              ) {
-                throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; explicit Work-bound controller authority does not match.`);
-              }
               // Continue uses the same Kernel rebind authority as terminalization.
               // MCP transport identity is replaceable; principal/controller and
               // canonical Runtime ownership remain fenced by the ControllerSession.
@@ -6199,8 +6214,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             const handle = ensureFacadeWorkHandle(ctx, repository, facadeWorkId, args);
             if (handle) facadeData.executionHandle = { workId: handle.workId, checkoutId: handle.checkoutId, managedWorktree: handle.managedWorktree, state: handle.state };
             if (facadeData.workContractCreated === true && !terminalSuccessorAdmission) {
-              const owner = claimNewFacadeWork(ctx, repository, facadeWorkId, args);
-              facadeData.controllerSession = owner;
+              const claimed = claimNewFacadeWork(ctx, repository, facadeWorkId, args);
+              facadeData.controllerSession = claimed.session;
+              facadeData.controllerAuthorityId = claimed.controllerAuthorityId;
+              facadeData.controllerAuthorityCarrier = 'controller_authority_id_or_session_id_compat';
               facadeData.ownershipClaimed = true;
             }
             if (terminalSuccessorAdmission) {

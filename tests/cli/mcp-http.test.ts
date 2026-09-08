@@ -4,6 +4,7 @@ import { createServer } from 'net';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY } from '@modelcontextprotocol/server';
 import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from '../../src/cli/mcp/auth';
 import { runMcpSetupChatgpt } from '../../src/cli/mcp/setup';
 import { mergeNoProxy, withDirectNetworkProxyBypass } from '../../src/cli/mcp/proxy-env';
@@ -305,17 +306,36 @@ describe('mcp http transport', () => {
         });
         expect(badJson.status).toBe(400);
 
+        const modernMeta = {
+          [PROTOCOL_VERSION_META_KEY]: '2026-07-28',
+          [CLIENT_INFO_META_KEY]: { name: 'forge-modern-http-test', version: '1.0.0' },
+          [CLIENT_CAPABILITIES_META_KEY]: {},
+        };
+        const modernHeaders = {
+          authorization: 'Bearer ' + token,
+          'content-type': 'application/json',
+          'mcp-protocol-version': '2026-07-28',
+        };
         const modernProbe = await fetch(`http://127.0.0.1:${port}/mcp`, {
           method: 'POST',
-          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 'discover-1', method: 'server/discover', params: {} }),
+          headers: { ...modernHeaders, 'mcp-method': 'server/discover' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'discover-1', method: 'server/discover', params: { _meta: modernMeta } }),
         });
-        expect(modernProbe.status).toBe(404);
-        expect(await modernProbe.json()).toEqual({
-          jsonrpc: '2.0',
-          id: 'discover-1',
-          error: { code: -32601, message: 'Method not found' },
+        expect(modernProbe.status).toBe(200);
+        expect(modernProbe.headers.get('mcp-session-id')).toBeNull();
+        const modernDiscover = await modernProbe.json() as { result?: { supportedVersions?: string[] } };
+        expect(modernDiscover.result?.supportedVersions).toContain('2026-07-28');
+
+        const modernTools = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: { ...modernHeaders, 'mcp-method': 'tools/list' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'tools-modern-1', method: 'tools/list', params: { _meta: modernMeta } }),
         });
+        expect(modernTools.status).toBe(200);
+        expect(modernTools.headers.get('mcp-session-id')).toBeNull();
+        const modernToolsBody = await modernTools.json() as { result?: { tools?: unknown[] } };
+        expect(Array.isArray(modernToolsBody.result?.tools)).toBe(true);
+
         const postProbeHealth = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
         expect(postProbeHealth.sessions.active).toBe(0);
 
