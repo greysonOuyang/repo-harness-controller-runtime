@@ -37,6 +37,9 @@ export const CROSS_VERSION_EVALUATOR_FILES = Object.freeze([
   'evaluation/lib/trace.ts',
   'evaluation/lib/types.ts',
   'evaluation/lib/validators.ts',
+  'scripts/run-supervised-command.ts',
+  'src/runtime/shared/bounded-child-supervisor.ts',
+  'src/runtime/shared/process-tree.ts',
 ] as const);
 
 export const CROSS_VERSION_EVALUATOR_RUNTIME_PACKAGES = Object.freeze([
