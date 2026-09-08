@@ -1580,12 +1580,24 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(RECOVERY_CLI_COMMANDS).toContain('activate-runtime-release');
     expect(RECOVERY_CLI_COMMANDS).toContain('migrate-controller-home-worker');
   });
-  test('frozen Recovery clients may omit machine identity while explicit wrong-machine identity still fails closed', async () => {
+  test('frozen Recovery clients can use their exported activation schema while partial or wrong explicit identity still fails closed', async () => {
     const home = controllerHome();
     const config = createRecoveryConfig(home);
-    await expect(dispatchRecoveryTool(config, 'activate_runtime_release', {
+    const frozenActivation = await dispatchRecoveryTool(config, 'activate_runtime_release', {
       request_id: 'frozen-schema-client',
-    })).rejects.toThrow('RECOVERY_RELEASE_PATH_REQUIRED');
+      release_path: join(home, 'runtime', 'releases', 'missing-release'),
+      expected_active_release_id: 'release-baseline',
+      expected_authority_revision: 1,
+    }) as { attempted?: boolean; noOp?: boolean; detail?: string };
+    expect(frozenActivation).toMatchObject({ attempted: false, noOp: true });
+    expect(frozenActivation.detail).toContain('RUNTIME_RELEASE_CANDIDATE_MANIFEST_MISSING');
+    expect(frozenActivation.detail).not.toContain('RECOVERY_TARGET_IDENTITY_REQUIRED');
+
+    const identity = recoveryMachineIdentity(config);
+    await expect(dispatchRecoveryTool(config, 'restart_primary_runtime', {
+      request_id: 'partial-machine-test',
+      expected_host: identity.host,
+    })).rejects.toThrow('RECOVERY_TARGET_IDENTITY_REQUIRED:expected_platform');
     await expect(dispatchRecoveryTool(config, 'restart_primary_runtime', {
       request_id: 'wrong-machine-test',
       ...recoveryMutationIdentityArgs(config),

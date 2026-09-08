@@ -49,6 +49,12 @@ Execution placement, lifecycle, retry, authorization, and acceptance decisions c
 
 Machine-visible failures have a stable code plus an explicit class and retry disposition; transport projections such as HTTP status derive from that contract. Free-form messages exist for diagnostics and user presentation. A producer-specific adapter may translate a native SDK/OS error into the failure contract once, but retry policy must not be inferred from words such as `temporary`, `worker`, or `network`, and authorization must not be inferred from arbitrary prose. Ambiguous non-idempotent outcomes use an explicit reconciliation-before-retry disposition rather than generic transient retry.
 
+### Tool Contract ABI authority
+
+The published tool contract is a transport ABI, not a second semantic authority. Current and frozen clients must enter the same canonical typed handlers. New frozen `rh_work` compatibility travels through the versioned `semantic.v1` envelope; older ad-hoc `capability_id` prefixes are shrinking migration debt and new prefixes are rejected by the runtime architecture gate.
+
+A bridge may derive only required machine identity or CAS expectations that the target authority itself exposes through a typed status contract. Explicit caller expectations are never overwritten, partial caller-owned machine identity is rejected rather than mixed with server-derived identity, and an upgraded tool whose required fields cannot be represented fails before mutation with `RECOVERY_TOOL_SCHEMA_UNREPRESENTABLE`. Tool-surface or installed-runtime skew must remain an explicit stale/coherence condition; it must not masquerade as a missing plugin, missing user input, or authorization decision.
+
 ### Root-cause repair workflow
 
 Repeated defects in routing, lifecycle, retry, authorization, schema compatibility, state projection, or placement are treated as architecture signals rather than isolated bug tickets. The required repair sequence is:

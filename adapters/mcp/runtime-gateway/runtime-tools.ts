@@ -160,9 +160,16 @@ import {
   previewRuntimeStorageRepair,
   applyRuntimeStorageRepair,
 } from '../../../src/runtime/recovery';
-import { gatewayToken, loadRecoveryConfig, recoveryMutationIdentityExpectations } from '../../../src/runtime/standalone-recovery/core';
-import { RECOVERY_MUTATION_IDENTITY_FIELDS } from '../../../src/runtime/standalone-recovery/mutation-identity-contract';
+import { gatewayToken, loadRecoveryConfig } from '../../../src/runtime/standalone-recovery/core';
 import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource } from '../../../src/runtime/root/release-materialize';
+import {
+  assertCompleteExplicitRecoveryIdentity,
+  hydrateRecoveryToolArguments,
+  isRecoveryStatusDerivableField,
+  recoveryToolRequiredFields,
+  recoveryToolSchemaUnrepresentableError,
+  recoveryToolUnrepresentableRequiredFields,
+} from './recovery-tool-contract';
 import {
   getLocalBridgeJobEventsSnapshot,
   getLocalBridgeJobSnapshot,
@@ -660,33 +667,6 @@ function recoveryStructuredPayload(response: Awaited<ReturnType<Client['callTool
   return payload as Record<string, unknown>;
 }
 
-function recoveryMutationIdentityCarrier(status: Record<string, unknown>): Record<string, string> {
-  const identity = status.identity;
-  if (!identity || typeof identity !== 'object' || Array.isArray(identity)) throw new Error('RECOVERY_TARGET_IDENTITY_STATUS_INVALID:identity');
-  const record = identity as Record<string, unknown>;
-  const recovery = record.recovery;
-  const targetRuntime = record.targetRuntime;
-  if (!recovery || typeof recovery !== 'object' || Array.isArray(recovery)) throw new Error('RECOVERY_TARGET_IDENTITY_STATUS_INVALID:recovery');
-  if (!targetRuntime || typeof targetRuntime !== 'object' || Array.isArray(targetRuntime)) throw new Error('RECOVERY_TARGET_IDENTITY_STATUS_INVALID:targetRuntime');
-  const recoveryRecord = recovery as Record<string, unknown>;
-  const targetRecord = targetRuntime as Record<string, unknown>;
-  if (typeof record.host !== 'string' || typeof record.platform !== 'string' || typeof record.controllerHome !== 'string') {
-    throw new Error('RECOVERY_TARGET_IDENTITY_STATUS_INVALID:machine');
-  }
-  if (typeof targetRecord.id !== 'string') throw new Error('RECOVERY_TARGET_IDENTITY_STATUS_INVALID:targetRuntime');
-  const carrier = recoveryMutationIdentityExpectations({
-    host: record.host,
-    platform: record.platform as NodeJS.Platform,
-    controllerHome: record.controllerHome,
-    recovery: { ...(typeof recoveryRecord.releaseRevision === 'string' ? { releaseRevision: recoveryRecord.releaseRevision } : {}) },
-    targetRuntime: { id: targetRecord.id } as Parameters<typeof recoveryMutationIdentityExpectations>[0]['targetRuntime'],
-  });
-  for (const field of RECOVERY_MUTATION_IDENTITY_FIELDS) {
-    if (!carrier[field]) throw new Error(`RECOVERY_TARGET_IDENTITY_STATUS_INVALID:${field}`);
-  }
-  return carrier;
-}
-
 async function recoveryToolArguments(
   client: Client,
   name: string,
@@ -695,12 +675,17 @@ async function recoveryToolArguments(
   const listed = await client.listTools();
   const descriptor = listed.tools.find((tool) => tool.name === name);
   if (!descriptor) throw new Error(`RECOVERY_TOOL_UNKNOWN: ${name}`);
-  const schema = descriptor.inputSchema as { required?: unknown } | undefined;
-  const required = Array.isArray(schema?.required) ? schema.required.filter((value): value is string => typeof value === 'string') : [];
-  const identityRequired = RECOVERY_MUTATION_IDENTITY_FIELDS.every((field) => required.includes(field));
-  if (!identityRequired) return args;
-  const status = recoveryStructuredPayload(await client.callTool({ name: 'runtime_status', arguments: {} }), 'runtime_status');
-  return { ...args, ...recoveryMutationIdentityCarrier(status) };
+  assertCompleteExplicitRecoveryIdentity(name, args);
+  const required = recoveryToolRequiredFields(descriptor.inputSchema);
+  const missing = required.filter((field) => !Object.prototype.hasOwnProperty.call(args, field));
+  if (missing.length === 0) return args;
+  const unrepresentable = recoveryToolUnrepresentableRequiredFields(descriptor.inputSchema, args);
+  if (unrepresentable.length) throw recoveryToolSchemaUnrepresentableError(name, unrepresentable);
+  const needsStatus = missing.some(isRecoveryStatusDerivableField);
+  const status = needsStatus
+    ? recoveryStructuredPayload(await client.callTool({ name: 'runtime_status', arguments: {} }), 'runtime_status')
+    : undefined;
+  return hydrateRecoveryToolArguments({ toolName: name, inputSchema: descriptor.inputSchema, args, status });
 }
 
 async function callStandaloneRecoveryTool(
@@ -4141,10 +4126,21 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             throw new Error('PLAN_OBLIGATION_COMPATIBILITY_CONFLICT');
           }
           if (frozenSemanticOperation) {
-            const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
-            if (!requirementId) throw new Error('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED: requirement_id must remain explicit outside the compatibility envelope');
+            const requirementScoped = frozenSemanticOperation.operation !== 'work_review';
+            if (requirementScoped) {
+              const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
+              if (!requirementId) throw new Error('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED: requirement_id must remain explicit outside the compatibility envelope');
+            }
             for (const key of Object.keys(frozenSemanticOperation.args)) {
               if (args[key] !== undefined) throw new Error(`FROZEN_SEMANTIC_COMPATIBILITY_CONFLICT: native field ${key} is also present`);
+            }
+            if (frozenSemanticOperation.operation === 'work_review') {
+              const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+              if (!explicitWorkId) throw new Error('FROZEN_SEMANTIC_COMPATIBILITY_SCOPE_REQUIRED: work_id must remain explicit outside the work_review envelope');
+              if (frozenImplementationReview) throw new Error('WORK_IMPLEMENTATION_REVIEW_COMPATIBILITY_CONFLICT');
+              if (args.review_decision !== undefined || args.review_rationale !== undefined) {
+                throw new Error('WORK_IMPLEMENTATION_REVIEW_COMPATIBILITY_CONFLICT');
+              }
             }
           }
         } catch (error) {
@@ -4189,6 +4185,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           // verification, ControllerRound authority and lifecycle remain canonical.
           Object.assign(args, frozenSemanticOperation.args);
         }
+        if (frozenSemanticOperation?.operation === 'work_review') {
+          args.review_decision = frozenSemanticOperation.args.decision;
+          args.review_rationale = typeof args.reason === 'string' ? args.reason : '';
+        }
         if (frozenImplementationReview) {
           const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
           if (!explicitWorkId || explicitWorkId !== frozenImplementationReview.workId) {
@@ -4201,7 +4201,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           args.review_decision = frozenImplementationReview.decision;
           args.review_rationale = typeof args.reason === 'string' ? args.reason : '';
         }
-        const operation = frozenSemanticOperation?.operation ?? frozenControllerRoundOperation?.operation ?? (frozenControllerDisposition
+        const frozenSemanticFacadeOperation = frozenSemanticOperation?.operation === 'work_review'
+          ? 'review'
+          : frozenSemanticOperation?.operation;
+        const operation = frozenSemanticFacadeOperation ?? frozenControllerRoundOperation?.operation ?? (frozenControllerDisposition
           ? 'controller_disposition'
           : frozenImplementationReview ? 'review'
           : frozenScheduleDeleteId ? 'schedule_delete' : requestedOperation);

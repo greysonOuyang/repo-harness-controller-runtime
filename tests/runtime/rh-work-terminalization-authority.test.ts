@@ -3992,11 +3992,11 @@ describe('rh_work terminalization authority', () => {
       {
         repo_id: repository.repoId,
         checkout_id: workspace.checkoutId,
-        operation: 'review',
+        operation: 'repair',
         work_id: workId,
         requested_by: 'chatgpt',
-        review_decision: 'approved',
-        review_rationale: 'The exact verified no-change candidate is approved before any managed resource is removed.',
+        capability_id: buildFrozenSemanticCompatibilityCapability({ operation: 'work_review', args: { decision: 'approved' } }),
+        reason: 'The exact verified no-change candidate is approved before any managed resource is removed.',
       },
     ));
     expect(reviewed.status).toBe('ok');

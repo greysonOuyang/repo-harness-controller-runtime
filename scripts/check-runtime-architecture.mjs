@@ -186,6 +186,56 @@ function requireExactShrinkingInventory(label, actual, allowed) {
   }
 }
 
+const FROZEN_CAPABILITY_PREFIX_FILES = [
+  'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  'adapters/mcp/controller-round-compatibility.ts',
+  'adapters/mcp/frozen-client-semantic-compatibility.ts',
+];
+const CANONICAL_FROZEN_SEMANTIC_PREFIX = 'semantic.v1:';
+
+function frozenCapabilityPrefixRecordsFromSources(sources) {
+  const records = new Set();
+  const protocolLiteral = /(['"`])([a-z][a-z0-9_-]*(?:\.[a-z0-9_-]+)+:)\1/g;
+  for (const { path, source } of sources) {
+    for (const match of source.matchAll(protocolLiteral)) {
+      const prefix = match[2];
+      if (prefix === CANONICAL_FROZEN_SEMANTIC_PREFIX) continue;
+      records.add(`${path}::${prefix}`);
+    }
+  }
+  return records;
+}
+
+const capabilityPrefixFixture = process.env.FORGE_CAPABILITY_PREFIX_GUARDRAIL_FIXTURE;
+if (capabilityPrefixFixture) {
+  const fixture = JSON.parse(capabilityPrefixFixture);
+  const actual = frozenCapabilityPrefixRecordsFromSources(Array.isArray(fixture.sources) ? fixture.sources : []);
+  const allowed = new Set(Array.isArray(fixture.allowed) ? fixture.allowed : []);
+  requireExactShrinkingInventory('frozen capability prefix fixture debt', actual, allowed);
+  if (failures.length) {
+    console.error('[frozen-capability-prefix-guardrail] FAILED');
+    for (const failure of failures) console.error(`- ${failure}`);
+    process.exit(1);
+  }
+  console.log(`[frozen-capability-prefix-guardrail] OK (${actual.size} debt entries)`);
+  process.exit(0);
+}
+
+const LEGACY_FROZEN_CAPABILITY_PREFIX_DEBT = new Set([
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::controller.authority.recover:',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::plan.step.retry:',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::schedule.delete:',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::work.review:',
+  'adapters/mcp/controller-round-compatibility.ts::controller.disposition:',
+  'adapters/mcp/controller-round-compatibility.ts::controller.round:',
+  'adapters/mcp/controller-round-compatibility.ts::plan.obligations.v1:',
+]);
+requireExactShrinkingInventory(
+  'legacy frozen capability prefix debt',
+  frozenCapabilityPrefixRecordsFromSources(FROZEN_CAPABILITY_PREFIX_FILES.map((path) => ({ path, source: text(path) }))),
+  LEGACY_FROZEN_CAPABILITY_PREFIX_DEBT,
+);
+
 const SEMANTIC_AUTHORITY_CRITICAL_ROOTS = [
   'packages/kernel',
   'src/runtime/control-plane',
