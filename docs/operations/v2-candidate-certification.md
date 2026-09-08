@@ -4,6 +4,19 @@ This report records the current candidate-level evidence for
 `plans/plan-20260906-v2-release-ready.md`. It is an authored evidence index;
 Controller Home remains the runtime receipt authority.
 
+The machine-checkable certification contract is
+`evaluation/lib/certification.ts`. Given an external evidence manifest, run:
+
+```bash
+bun run check:v2-certification /absolute/path/to/v2-certification.json
+```
+
+The command exits non-zero for missing, failed, unreceipted, or inconclusive
+evidence. It does not create Runtime state and it does not turn this report into
+an authority. A passing manifest must bind both release identities, the frozen
+A/B protocol/result, both platform reports, every engineering-task repeat, and
+the integrated lifecycle/failure evidence.
+
 ## Candidate and baseline identity
 
 - Candidate source revision: `4c252cac1b0d725b6ac3c7f645c8c631ed6f1eb6`
