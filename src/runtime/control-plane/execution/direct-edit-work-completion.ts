@@ -5,13 +5,12 @@ import { getEditSession, listEditSessions, type EditSession } from '../../../cli
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { runProcess } from '../../../effects/process-runner';
-import { getWorkContract, recordWorkImplementationReview, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { getWorkContract, implementationReviewChangedPathDigest, recordWorkImplementationReview, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { completeWorkWithReceipt } from './work-completion-authority';
 import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkContract, type WorkReconciliationRecord } from '../facade/types';
 import { historicalVerificationEvidenceAtRevision, workspaceValidationFingerprint } from './verification-evidence';
 import { readWorkHandle, type WorkHandleState } from './work-handle-store';
 import { assertWorkPathsWithinScope, findWorkPathScopeViolation } from './work-path-scope';
-import { implementationReviewChangedPathDigest } from '../facade/work-implementation-review';
 import { implementationReviewContentFingerprint, implementationReviewIndexFingerprint } from './implementation-review-content';
 import { transferWorkVerificationAcrossContentEquivalentCommit } from './work-verification-service';
 import {
