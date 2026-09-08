@@ -352,7 +352,7 @@ function workOwnedDirtyPaths(
 
 export function implementationReviewCommittedBaseRevision(
   repository: Pick<RepositoryRecord, 'canonicalRoot' | 'defaultBranch'>,
-  handle: Pick<WorkHandleState, 'workId' | 'managedWorktree' | 'deliveryTargetBranch' | 'baseCommit' | 'deliveryBaseCommit'>,
+  handle: Pick<WorkHandleState, 'workId' | 'managedWorktree' | 'deliveryTargetBranch' | 'baseCommit' | 'deliveryBaseCommit'> & Partial<Pick<WorkHandleState, 'state'>>,
   fallbackBaseRevision: string | undefined,
   head: string | undefined,
   explicitTargetBranch?: string,
@@ -369,8 +369,13 @@ export function implementationReviewCommittedBaseRevision(
   // the previous fail-closed behavior below.
   if (
     targetHead === head
-    && handle.deliveryBaseCommit?.trim()
-    && handle.deliveryBaseCommit.trim() !== (handle.baseCommit?.trim() || fallbackBaseRevision?.trim())
+    && (
+      handle.state === 'merged'
+      || (
+        handle.deliveryBaseCommit?.trim()
+        && handle.deliveryBaseCommit.trim() !== (handle.baseCommit?.trim() || fallbackBaseRevision?.trim())
+      )
+    )
   ) return base;
   // Review may exclude canonical target-only history only after proving that the
   // recorded delivery base advances linearly to the exact target and that this

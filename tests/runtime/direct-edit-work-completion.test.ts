@@ -1158,6 +1158,33 @@ describe('standalone Direct Edit Work completion', () => {
 
 
 describe('managed implementation-review delivery baseline', () => {
+  test('preserves the original delivery base after Forge has merged the exact candidate even when deliveryBaseCommit equals baseCommit', () => {
+    const fx = fixture();
+    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    execFileSync('git', ['checkout', '-qb', 'work/review-equal-base'], { cwd: fx.repoRoot });
+    writeFileSync(join(fx.repoRoot, 'src', 'example.ts'), 'export const reviewed = true;\n');
+    execFileSync('git', ['add', 'src/example.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'reviewed equal-base candidate'], { cwd: fx.repoRoot });
+    const candidateHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
+
+    execFileSync('git', ['checkout', '-q', 'main'], { cwd: fx.repoRoot });
+    execFileSync('git', ['merge', '--ff-only', 'work/review-equal-base'], { cwd: fx.repoRoot });
+
+    const preDeliveryHandle = {
+      workId: 'work-review-equal-base', managedWorktree: true, deliveryTargetBranch: 'main',
+      baseCommit: baseRevision, deliveryBaseCommit: baseRevision,
+    };
+    expect(implementationReviewCommittedBaseRevision(
+      { canonicalRoot: fx.repoRoot, defaultBranch: 'main' }, preDeliveryHandle, baseRevision, candidateHead, 'main',
+    )).toBe(candidateHead);
+
+    const mergedHandle = { ...preDeliveryHandle, state: 'merged' as const };
+    expect(implementationReviewCommittedBaseRevision(
+      { canonicalRoot: fx.repoRoot, defaultBranch: 'main' }, mergedHandle, baseRevision, candidateHead, 'main',
+    )).toBe(baseRevision);
+  });
+
   test('preserves the durable delivery base after the target catches the exact reviewed candidate', () => {
     const fx = fixture();
     const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
