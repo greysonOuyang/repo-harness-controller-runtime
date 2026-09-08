@@ -11,6 +11,8 @@ import {
 
 const digest = `sha256:${'a'.repeat(64)}`;
 const commit = 'a'.repeat(40);
+const baselineDigest = `sha256:${'b'.repeat(64)}`;
+const baselineCommit = 'b'.repeat(40);
 
 function passEvidence() {
   return { status: 'pass' as const, receiptDigest: digest };
@@ -24,7 +26,7 @@ function manifest(): any {
   return {
     schemaVersion: V2_CERTIFICATION_SCHEMA,
     candidate: { sourceRevision: commit, artifactDigest: digest, versionLabel: 'v2-candidate' },
-    baseline: { sourceRevision: commit, artifactDigest: digest, versionLabel: 'v1.7.2' },
+    baseline: { sourceRevision: baselineCommit, artifactDigest: baselineDigest, versionLabel: 'v1.7.2' },
     integrated: { threeStep: passEvidence(), failureFencing: passEvidence() },
     platforms,
     quality: { openP0P1: 0, candidateRegressions: 0 },

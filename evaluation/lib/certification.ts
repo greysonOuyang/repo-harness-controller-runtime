@@ -194,10 +194,13 @@ export function parseV2CertificationManifest(raw: unknown): V2CertificationManif
   const failures = finite(abValue.failures, 'ab.failures');
   const timeouts = finite(abValue.timeouts, 'ab.timeouts');
   if (![failures, timeouts].every((n) => Number.isInteger(n) && n >= 0)) fail('ab failures/timeouts must be non-negative integers');
+  const candidate = identity(value.candidate, 'candidate');
+  const baseline = identity(value.baseline, 'baseline');
+  if (candidate.sourceRevision === baseline.sourceRevision && candidate.artifactDigest === baseline.artifactDigest) fail('candidate and baseline identities must differ');
   return {
     schemaVersion: V2_CERTIFICATION_SCHEMA,
-    candidate: identity(value.candidate, 'candidate'),
-    baseline: identity(value.baseline, 'baseline'),
+    candidate,
+    baseline,
     integrated: { threeStep: evidence(integrated.threeStep, 'integrated.threeStep'), failureFencing: evidence(integrated.failureFencing, 'integrated.failureFencing') },
     platforms: platformReports,
     quality,
