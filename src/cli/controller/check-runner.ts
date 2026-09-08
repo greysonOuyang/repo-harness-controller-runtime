@@ -442,24 +442,69 @@ function checkRevisionPathspecs(): string[] {
   return ['.', ...CHECK_REVISION_EXCLUDES.map((path) => `:(exclude)${path}`)];
 }
 
-export function currentControllerCheckRevision(repoRoot: string): string {
+interface ControllerCheckContentObservation {
+  revision: string;
+  fileDigests?: Map<string, string>;
+  listingAvailable: boolean;
+}
+
+function observeControllerCheckContent(
+  repoRoot: string,
+  options: { captureFileDigests?: boolean } = {},
+): ControllerCheckContentObservation {
   const files = runProcess('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', ...checkRevisionPathspecs()], {
     cwd: repoRoot,
     timeoutMs: 10_000,
     maxOutputBytes: 8 * 1024 * 1024,
   });
   const revision = createHash('sha256').update('controller-check-content-v2\n');
-  if (!files.ok) return revision.update(`git-error:${files.error || files.stderr}`).digest('hex').slice(0, 24);
+  const fileDigests = options.captureFileDigests ? new Map<string, string>() : undefined;
+  if (!files.ok) {
+    return {
+      revision: revision.update(`git-error:${files.error || files.stderr}`).digest('hex').slice(0, 24),
+      ...(fileDigests ? { fileDigests } : {}),
+      listingAvailable: false,
+    };
+  }
   for (const relativePath of files.stdout.split('\0').filter(Boolean).sort()) {
     if (relativePath.startsWith('tasks/') || relativePath.startsWith('plans/')) continue;
     revision.update(`${relativePath}\0`);
     try {
-      revision.update(readFileSync(resolve(repoRoot, relativePath)));
+      const content = readFileSync(resolve(repoRoot, relativePath));
+      revision.update(content);
+      fileDigests?.set(relativePath, createHash('sha256').update(content).digest('hex'));
     } catch (_error) {
       revision.update('missing');
+      fileDigests?.set(relativePath, 'missing');
     }
   }
-  return revision.digest('hex').slice(0, 24);
+  return {
+    revision: revision.digest('hex').slice(0, 24),
+    ...(fileDigests ? { fileDigests } : {}),
+    listingAvailable: true,
+  };
+}
+
+export function currentControllerCheckRevision(repoRoot: string): string {
+  return observeControllerCheckContent(repoRoot).revision;
+}
+
+function controllerCheckWriteScopeContainsPath(scope: string, relativePath: string): boolean {
+  return scope === '.' || relativePath === scope || relativePath.startsWith(`${scope}/`);
+}
+
+function controllerCheckInputIntegrityChanged(
+  check: ControllerCheck,
+  input: ControllerCheckContentObservation,
+  completed: ControllerCheckContentObservation,
+): boolean {
+  if (!input.listingAvailable || !completed.listingAvailable || !input.fileDigests || !completed.fileDigests) return true;
+  const writeScopes = check.effects?.writes ?? [];
+  for (const [relativePath, digest] of input.fileDigests) {
+    if (writeScopes.some((scope) => controllerCheckWriteScopeContainsPath(scope, relativePath))) continue;
+    if ((completed.fileDigests.get(relativePath) ?? 'missing') !== digest) return true;
+  }
+  return false;
 }
 
 function checkDefinitionDigest(check: ControllerCheck): string {
@@ -647,9 +692,10 @@ function buildCheckCacheKey(
     .slice(0, 24);
 }
 
-export function controllerCheckExecutionIdentity(
+function controllerCheckExecutionIdentityForRevision(
   repoRoot: string,
   id: string,
+  revision: string,
   requestedTimeoutMs?: number,
   snapshot?: ControllerCheckSnapshot,
   executionStateFingerprint?: string,
@@ -661,7 +707,6 @@ export function controllerCheckExecutionIdentity(
   const timeoutMs = requestedTimeoutMs === undefined
     ? check.timeoutMs
     : Math.min(check.timeoutMs, boundedTimeout(requestedTimeoutMs));
-  const revision = currentControllerCheckRevision(repoRoot);
   const definitionDigest = checkDefinitionDigest(check);
   const environmentFingerprint = controllerCheckEnvironmentFingerprint(check, executionStateFingerprint);
   const checkoutClean = checkWorkspaceClean(repoRoot);
@@ -680,6 +725,23 @@ export function controllerCheckExecutionIdentity(
     crossCheckoutReusable,
     reuseScope: crossCheckoutReusable ? 'repository' : 'checkout',
   };
+}
+
+export function controllerCheckExecutionIdentity(
+  repoRoot: string,
+  id: string,
+  requestedTimeoutMs?: number,
+  snapshot?: ControllerCheckSnapshot,
+  executionStateFingerprint?: string,
+): ControllerCheckExecutionIdentity {
+  return controllerCheckExecutionIdentityForRevision(
+    repoRoot,
+    id,
+    currentControllerCheckRevision(repoRoot),
+    requestedTimeoutMs,
+    snapshot,
+    executionStateFingerprint,
+  );
 }
 
 function persistCheckEvidence(
@@ -776,7 +838,8 @@ export function runControllerCheck(
   }
   const storage = ensureRepositoryCheckStorage(repoRoot, storageAuthority);
   prepareControllerCheckDependencies(repoRoot, check);
-  const identity = controllerCheckExecutionIdentity(repoRoot, id, requestedTimeoutMs, snapshot);
+  const inputIntegrity = observeControllerCheckContent(repoRoot, { captureFileDigests: true });
+  const identity = controllerCheckExecutionIdentityForRevision(repoRoot, id, inputIntegrity.revision, requestedTimeoutMs, snapshot);
   const timeoutMs = identity.timeoutMs;
   const revision = identity.revision;
   const cacheKey = identity.cacheKey;
@@ -870,8 +933,9 @@ export function runControllerCheck(
   } finally {
     lease?.release();
   }
-  const completedRevision = currentControllerCheckRevision(repoRoot);
-  const stale = completedRevision !== revision;
+  const completedContent = observeControllerCheckContent(repoRoot, { captureFileDigests: true });
+  const completedRevision = completedContent.revision;
+  const stale = controllerCheckInputIntegrityChanged(check, inputIntegrity, completedContent);
   const executedAt = new Date().toISOString();
   const withoutPath = {
     check,
@@ -1149,7 +1213,15 @@ export function runControllerCheckAsync(
   } catch (error) {
     return Promise.reject(error);
   }
-  const identity = controllerCheckExecutionIdentity(repoRoot, id, options.requestedTimeoutMs, options.snapshot, options.executionStateFingerprint);
+  const inputIntegrity = observeControllerCheckContent(repoRoot, { captureFileDigests: true });
+  const identity = controllerCheckExecutionIdentityForRevision(
+    repoRoot,
+    id,
+    inputIntegrity.revision,
+    options.requestedTimeoutMs,
+    options.snapshot,
+    options.executionStateFingerprint,
+  );
   const timeoutMs = identity.timeoutMs;
   const revision = identity.revision;
   const cacheKey = identity.cacheKey;
@@ -1251,7 +1323,8 @@ export function runControllerCheckAsync(
         lease?.setChildPid(pid);
         notifySpawn(pid);
       }, options.isolatedControllerHome, options.liveControllerHome);
-      const completedRevision = currentControllerCheckRevision(repoRoot);
+      const completedContent = observeControllerCheckContent(repoRoot, { captureFileDigests: true });
+      const completedRevision = completedContent.revision;
       let liveStateStale = false;
       if (liveCertification) {
         try {
@@ -1263,7 +1336,7 @@ export function runControllerCheckAsync(
           liveStateStale = true;
         }
       }
-      const repositoryStale = completedRevision !== revision;
+      const repositoryStale = controllerCheckInputIntegrityChanged(check, inputIntegrity, completedContent);
       const stale = repositoryStale || liveStateStale;
       const finalized = {
         ...result,
