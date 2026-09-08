@@ -14,6 +14,7 @@ import {
   applyRuntimeMaintenance,
   applyStaleWorkContractMaintenanceCandidate,
   cleanupRuntimeQuarantine,
+  runtimeLegacyCheckQuarantineRoot,
   classifyFailure,
   detectDirtyPathConflicts,
   recoveryActionById,
@@ -688,6 +689,30 @@ describe('runtime maintenance executor', () => {
     });
     expect(again.migratedLegacyCount).toBe(0);
     expect(again.removedCount).toBe(0);
+  });
+
+  it('bounds retired legacy-check quarantine with the shared maintenance budget', () => {
+    const { controllerHome, repository } = tempRepo();
+    const legacyChecks = runtimeLegacyCheckQuarantineRoot(controllerHome, repository.repoId);
+    const stale = join(legacyChecks, 'old-check-bytes');
+    mkdirSync(stale, { recursive: true });
+    writeFileSync(join(stale, 'latest.json'), '{"legacy":true}\n');
+    const old = new Date(Date.now() - 2 * 60 * 60_000);
+    utimesSync(stale, old, old);
+
+    const report = cleanupRuntimeQuarantine(controllerHome, repository.repoId, repository.canonicalRoot, {
+      nowMs: Date.now(),
+      retentionMs: 60_000,
+      maxRetainedEntries: 10,
+      maxRetainedBytes: 1024 * 1024,
+      maxEntries: 20,
+      maxRemovals: 1,
+      additionalRoots: [legacyChecks],
+    });
+
+    expect(report.roots).toContain(legacyChecks);
+    expect(report.removedCount).toBe(1);
+    expect(existsSync(stale)).toBe(false);
   });
 
   it('detaches a clean legacy remote_effect worktree without terminalizing the external Work', () => {

@@ -30,3 +30,6 @@ Legacy check storage has one bounded retirement path. When a registered reposito
 Retirement is idempotent under concurrent Runner startup: if another owner wins the
 rename, unlink, or empty-directory removal race, the losing owner observes the
 already-converged Controller Home state rather than manufacturing a second failure.
+Retired legacy-check entries share the central Runtime quarantine retention policy
+with Local Job quarantine; full maintenance uses one bounded scan/removal budget
+across both namespaces.

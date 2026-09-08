@@ -29,7 +29,12 @@ import {
 } from './local-jobs-repair';
 import { gcTerminalProcesses, type ProcessGcResult } from '../execution/process-runtime/gc';
 import { cleanupStaleWorkVerificationSnapshots, type WorkVerificationSnapshotRetentionReport } from '../control-plane/execution/work-verification-snapshot';
-import { cleanupRuntimeQuarantine, quarantineRuntimePath, type RuntimeQuarantineRetentionReport } from './quarantine-retention';
+import {
+  cleanupRuntimeQuarantine,
+  quarantineRuntimePath,
+  runtimeLegacyCheckQuarantineRoot,
+  type RuntimeQuarantineRetentionReport,
+} from './quarantine-retention';
 import { readWorkHandle, resolveWorkDeliveryTargetBranch } from '../control-plane/execution/work-handle-store';
 import { listRecoverableProcessRecords } from '../execution/process-runtime/store';
 import { isManagedProcessActive } from '../execution/process-runtime/types';
@@ -1514,6 +1519,7 @@ export function applyRuntimeMaintenance(
     ? cleanupRuntimeQuarantine(controllerHome, repository.repoId, repository.canonicalRoot, {
       maxEntries: Math.max(100, (options.maxCandidates ?? 50) * 3),
       maxRemovals: Math.max(1, options.maxCandidates ?? 50),
+      additionalRoots: [runtimeLegacyCheckQuarantineRoot(controllerHome, repository.repoId)],
     })
     : undefined;
 

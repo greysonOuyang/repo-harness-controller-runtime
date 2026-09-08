@@ -236,7 +236,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     storage: 'Controller Home quarantine namespaces',
     terminalCondition: 'Quarantined artifact is reconciled/recovered or exceeds a safe retention window with no active audit/recovery hold.',
     activeProtection: 'Unresolved/corrupt evidence is preserved until an explicit safe disposition exists.',
-    retentionCapacity: 'Local Job quarantine lives under Controller Home with a 30-day default retention horizon, 200-entry and 256 MiB capacity bounds, plus bounded scan/removal budgets; legacy repo-local quarantine roots are migration-only and retired after evidence relocation.',
+    retentionCapacity: 'Local Job and retired legacy-check quarantine entries share a Controller Home 30-day default retention horizon, 200-entry and 256 MiB capacity bounds, plus one bounded scan/removal budget; legacy repo-local quarantine roots are migration-only and retired after evidence relocation.',
     cleanupAuthority: 'Central Runtime full maintenance owns quarantine retention; repair/quarantine writers only relocate evidence into the Controller Home quarantine root and never infer semantic completion.',
     recoverySemantics: 'Quarantine remains diagnostic evidence, never a shadow active authority; legacy symlinks are relocated without traversal, and repeated maintenance is idempotent and fail-closed on unreadable evidence.',
     closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/recovery/quarantine-retention.ts','src/runtime/recovery/maintenance-executor.ts','src/runtime/recovery/local-jobs-repair.ts','tests/runtime/capability-recovery.test.ts'],
