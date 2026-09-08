@@ -33,3 +33,10 @@ already-converged Controller Home state rather than manufacturing a second failu
 Retired legacy-check entries share the central Runtime quarantine retention policy
 with Local Job quarantine; full maintenance uses one bounded scan/removal budget
 across both namespaces.
+
+The retired `.codegraph` cache follows the same boundary but remains a
+rebuildable cache rather than evidence. Its legacy copy/symlink migration is
+serialized by the existing Controller lock using the exact repository-cache
+identity, so concurrent initializers converge on one Controller Home target
+instead of racing `copy`/`remove` operations or creating a second cache
+authority.
