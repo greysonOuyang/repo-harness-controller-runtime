@@ -9,7 +9,7 @@ License values come from `package-lock.json` where available. For lock entries w
 | `@modelcontextprotocol/client` | `2.0.0` | runtime | `MIT` | package-lock.json |
 | `@modelcontextprotocol/node` | `2.0.0` | runtime | `MIT` | package-lock.json |
 | `@modelcontextprotocol/server` | `2.0.0` | runtime | `MIT` | package-lock.json |
-| `@modelcontextprotocol/server-legacy` | `2.0.0` | runtime compatibility | `MIT` | package-lock.json |
+| `@modelcontextprotocol/server-legacy` | `2.0.0` | runtime | `MIT` | package-lock.json |
 | `commander` | `14.0.3` | runtime | `MIT` | package metadata |
 | `express` | `5.2.1` | runtime | `MIT` | package metadata |
 | `playwright` | `1.61.1` | runtime | `Apache-2.0` | package metadata |
