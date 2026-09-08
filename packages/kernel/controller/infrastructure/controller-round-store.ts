@@ -16,7 +16,7 @@ import { getHandoffItem, listHandoffItems } from '../../../../src/runtime/contro
 import { getWorkContract, readWorkContractStore, isTerminalWorkContractStatus, type WorkContract } from '../../work/api/index';
 import { isTerminalHandoffStatus } from '../../../protocols/handoff/index';
 import type { ControllerSession, ControllerType } from '../domain/types';
-import { deriveClosedRoundQualitySignals, type AssistantContextSnapshot, type AssistantContextUsage, type ClosedRoundObservation, type ExecutionQualityDecision, type ExecutionQualitySignal } from '../domain/execution-quality';
+import { deriveClosedRoundQualitySignals, type AssistantContextSnapshot, type AssistantContextUsage, type ClosedRoundObservation, type ExecutionQualityAdjustmentResult, type ExecutionQualityDecision, type ExecutionQualitySignal } from '../domain/execution-quality';
 import {
   CONTROLLER_ROUND_DISPOSITIONS,
   CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR,
@@ -46,6 +46,7 @@ export interface SubmitControllerRoundDispositionInput {
   identity: ControllerRoundRelayIdentity;
   disposition: ControllerRoundDisposition;
   executionQualityDecisions?: ExecutionQualityDecision[];
+  executionQualityAdjustmentResults?: Array<Omit<ExecutionQualityAdjustmentResult, 'verifiedAt'>>;
   assistantContextDigest?: string;
   assistantContextUsage?: AssistantContextUsage[];
   relayScopeId?: string;
@@ -240,6 +241,34 @@ function relevantWork(options: ControllerRoundRelayStoreOptions, record: Pick<Co
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
+function semanticVerificationFacts(work: WorkContract): Array<{
+  checkId: string; verificationInputFingerprint: string; checkDefinitionDigest: string;
+  checkEnvironmentFingerprint: string; checkCacheKey: string; outcome: string; status: string;
+}> {
+  const unique = new Map<string, {
+    checkId: string; verificationInputFingerprint: string; checkDefinitionDigest: string;
+    checkEnvironmentFingerprint: string; checkCacheKey: string; outcome: string; status: string;
+  }>();
+  for (const record of work.checkRefs.slice(-32)) {
+    const receipt = record.receipt;
+    if (!receipt || !record.verificationInputFingerprint || !receipt.checkDefinitionDigest
+      || !receipt.checkEnvironmentFingerprint || !receipt.checkCacheKey
+      || !['valid_pass', 'valid_fail'].includes(record.outcome)
+      || !['passed', 'failed'].includes(receipt.status)) continue;
+    const fact = {
+      checkId: record.checkId,
+      verificationInputFingerprint: record.verificationInputFingerprint,
+      checkDefinitionDigest: receipt.checkDefinitionDigest,
+      checkEnvironmentFingerprint: receipt.checkEnvironmentFingerprint,
+      checkCacheKey: receipt.checkCacheKey,
+      outcome: record.outcome,
+      status: receipt.status,
+    };
+    unique.set(JSON.stringify(fact), fact);
+  }
+  return [...unique.values()].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+}
+
 function mechanicalStateFingerprint(
   options: ControllerRoundRelayStoreOptions,
   work: WorkContract,
@@ -256,6 +285,7 @@ function mechanicalStateFingerprint(
       dispatchState: entry.dispatchState,
       evidenceState: entry.evidenceState,
       completionOutcome: entry.completionOutcome,
+      verificationFacts: semanticVerificationFacts(entry),
       executionConcurrency: entry.executionConcurrency ? {
         status: entry.executionConcurrency.status,
         source: entry.executionConcurrency.source,
@@ -637,16 +667,42 @@ export function submitControllerRoundDisposition(
     }
     const previous = relayHistory(options, relayScopeId)[0];
     const assistantContextUsage = validatedAssistantContextUsage(existing.value, input);
+    const at = nowIso(options);
     const qualityDecisions = input.executionQualityDecisions ?? [];
     if (!Array.isArray(qualityDecisions) || qualityDecisions.length > 8) throw new Error('CONTROLLER_QUALITY_DECISION_LIMIT');
     const pending = new Set(pendingQualitySignals(existing.value).map(signal => signal.fingerprint));
+    const normalizedQualityDecisions: ExecutionQualityDecision[] = [];
     for (const decision of qualityDecisions) {
       if (!pending.has(decision.fingerprint) || !['no_adjustment', 'adjustment'].includes(decision.action)
         || typeof decision.reason !== 'string' || !decision.reason.trim() || decision.reason.length > 1000
         || decision.action === 'adjustment' && (typeof decision.verificationCondition !== 'string' || !decision.verificationCondition.trim() || decision.verificationCondition.length > 1000)) {
         throw new Error('CONTROLLER_QUALITY_DECISION_INVALID');
       }
+      normalizedQualityDecisions.push({ ...decision, decidedAt: at });
       pending.delete(decision.fingerprint);
+    }
+    const knownDecisions = [...(existing.value.qualityDecisions ?? []), ...normalizedQualityDecisions];
+    const submittedAdjustmentResults = input.executionQualityAdjustmentResults ?? [];
+    if (!Array.isArray(submittedAdjustmentResults) || submittedAdjustmentResults.length > 8) throw new Error('CONTROLLER_QUALITY_ADJUSTMENT_RESULT_LIMIT');
+    const knownResultFingerprints = new Set((existing.value.qualityAdjustmentResults ?? []).map(result => result.fingerprint));
+    const normalizedAdjustmentResults: ExecutionQualityAdjustmentResult[] = [];
+    for (const submitted of submittedAdjustmentResults) {
+      const decision = knownDecisions.find(candidate => candidate.fingerprint === submitted.fingerprint);
+      const refs = Array.isArray(submitted.evidenceRefs) ? submitted.evidenceRefs.map(ref => String(ref).trim()).filter(Boolean) : [];
+      if (!decision || decision.action !== 'adjustment' || !decision.decidedAt
+        || !['improved', 'not_improved', 'inconclusive'].includes(submitted.outcome)
+        || typeof submitted.reason !== 'string' || !submitted.reason.trim() || submitted.reason.length > 1000
+        || refs.length < 1 || refs.length > 16 || new Set(refs).size !== refs.length
+        || knownResultFingerprints.has(submitted.fingerprint)) {
+        throw new Error('CONTROLLER_QUALITY_ADJUSTMENT_RESULT_INVALID');
+      }
+      const decidedAt = Date.parse(decision.decidedAt);
+      if (!Number.isFinite(decidedAt) || refs.some(ref => {
+        const check = work.checkRefs.find(candidate => candidate.receipt?.receiptId === ref);
+        return !check || !check.receipt || !Number.isFinite(Date.parse(check.recordedAt)) || Date.parse(check.recordedAt) <= decidedAt;
+      })) throw new Error('CONTROLLER_QUALITY_ADJUSTMENT_VERIFICATION_EVIDENCE_INVALID');
+      normalizedAdjustmentResults.push({ fingerprint: submitted.fingerprint, outcome: submitted.outcome, evidenceRefs: refs, reason: submitted.reason.trim(), verifiedAt: at });
+      knownResultFingerprints.add(submitted.fingerprint);
     }
     const requestedMaxRounds = boundedInteger(input.maxRounds, DEFAULT_MAX_ROUNDS, 1, 32);
     const requestedMaxRepeatedState = boundedInteger(input.maxRepeatedState, DEFAULT_MAX_REPEATED_STATE, 1, 8);
@@ -661,16 +717,16 @@ export function submitControllerRoundDisposition(
       if (isTerminalHandoffStatus(handoff.status)) throw new Error(`CONTROLLER_RELAY_HANDOFF_TERMINAL: ${handoff.status}`);
       if (handoff.workId && handoff.workId !== work.workId) throw new Error(`CONTROLLER_RELAY_HANDOFF_WORK_MISMATCH: ${handoffId}`);
     }
-    const at = nowIso(options);
     const observationWindow = [
       ...(existing.value.observationWindow ?? []),
       closedRoundObservation(work, `${relayScopeId}:${existing.value.roundCount}`, stateFingerprint, input.disposition === 'wait' || input.disposition === 'wait_for_user', existing.value.assistantContextSnapshot, assistantContextUsage),
     ].slice(-8);
-    const accumulatedQualityDecisions = [...(existing.value.qualityDecisions ?? []), ...qualityDecisions].slice(-64);
+    const accumulatedQualityDecisions = [...(existing.value.qualityDecisions ?? []), ...normalizedQualityDecisions].slice(-64);
+    const accumulatedQualityAdjustmentResults = [...(existing.value.qualityAdjustmentResults ?? []), ...normalizedAdjustmentResults].slice(-64);
     return applyControllerRoundTransition(options, existing, {
       type: 'semantic_disposition_submitted', at, disposition: input.disposition, stateFingerprint,
       maxRounds: requestedMaxRounds, maxRepeatedState: requestedMaxRepeatedState, maxFailures: requestedMaxFailures,
-      qualityDecisions: accumulatedQualityDecisions, observationWindow,
+      qualityDecisions: accumulatedQualityDecisions, qualityAdjustmentResults: accumulatedQualityAdjustmentResults, observationWindow,
       ...(handoffId ? { handoffId } : {}),
       ...(bounded(input.reason, 1_000) ? { reason: bounded(input.reason, 1_000) } : {}),
       ...(bindingId ? { bindingId } : {}),

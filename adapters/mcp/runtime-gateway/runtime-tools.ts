@@ -31,6 +31,9 @@ import { completeRemoteEffectWorkFromProcessReceipt } from '../../../packages/ke
 import { getRepositoryCommandProcess, waitRepositoryCommandProcess } from '../../../src/runtime/execution/process-runtime/command-facade';
 import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { executeRegisteredWorkflow, observeAndReconcileRegisteredWorkflow } from '../../../src/runtime/workflows/runtime';
+import { readWorkflowRun } from '../../../src/runtime/control-plane/persistence/workflow-run-store';
+import { schedulePublicationOutcomeCollection } from '../../../src/runtime/root/assistant-learning-loop';
+import { recordControllerExperience, recordControllerOutcome, type ControllerExperienceDraft, type ControllerOutcomeObservationDraft } from '../../../src/runtime/context/assistant-work-context';
 import { ensureXiaohongshuWorkflowInstalled, XIAOHONGSHU_WORKFLOW_IDS } from '../../../src/runtime/workflows/first-party/xiaohongshu';
 import { buildJobOperationDigest } from '../../../src/runtime/control-plane/facade/operation-digest';
 import { readWorkHandle, resolveWorkDeliveryTargetBranch, transitionWorkHandle, workDeliveryBaseRevision, type WorkHandleState } from '../../../src/runtime/control-plane/execution/work-handle-store';
@@ -4428,6 +4431,23 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               inputs: workflowInputs,
               timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
             };
+            const learningMetadata = (workflow: Awaited<ReturnType<typeof executeRegisteredWorkflow>>) => {
+              const persisted = readWorkflowRun(ctx.controllerHome, workId, runId)?.value;
+              let outcomeCollectionSchedule;
+              let outcomeCollectionError: string | undefined;
+              if (workflow.status === 'succeeded' && workflow.publicationReceipt) {
+                try {
+                  outcomeCollectionSchedule = schedulePublicationOutcomeCollection({ controllerHome: ctx.controllerHome, repoId: repository.repoId, workId, publication: workflow.publicationReceipt, workflowInputs });
+                } catch (error) {
+                  outcomeCollectionError = error instanceof Error ? error.message : 'OUTCOME_COLLECTION_SCHEDULE_FAILED';
+                }
+              }
+              return {
+                ...(persisted?.evidenceRef ? { workflowEvidenceRef: persisted.evidenceRef } : {}),
+                ...(outcomeCollectionSchedule ? { outcomeCollectionSchedule } : {}),
+                ...(outcomeCollectionError ? { outcomeCollectionError } : {}),
+              };
+            };
             if (operation === 'workflow_reconcile') {
               const reconciliationRequestId = String(args.workflow_reconciliation_request_id ?? '').trim();
               if (!reconciliationRequestId) throw new Error('WORKFLOW_RECONCILIATION_REQUEST_ID_REQUIRED');
@@ -4436,7 +4456,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 const resumed = await executeRegisteredWorkflow(base);
                 return result(buildFacadeResult({
                   summary: `Workflow ${workflowId}/${runId} reconciled from canonical observation and resumed without replaying the uncertain effect.`,
-                  data: { workflow: resumed },
+                  data: { workflow: resumed, ...learningMetadata(resumed) },
                 }) as unknown as Record<string, unknown>);
               }
               return result(buildFacadeResult({
@@ -4449,13 +4469,64 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             return result(buildFacadeResult({
               status: executed.status === 'failed' || executed.status === 'reconcile_required' ? 'blocked' : 'ok',
               summary: `Workflow ${workflowId}/${runId} is ${executed.status}.`,
-              data: { workflow: executed },
+              data: { workflow: executed, ...learningMetadata(executed) },
             }) as unknown as Record<string, unknown>, executed.status === 'failed' || executed.status === 'reconcile_required');
           } catch (error) {
             return result(buildFacadeResult({
               status: 'blocked',
               summary: error instanceof Error ? error.message : 'Workflow execution failed.',
               data: { workflowExecuted: false },
+            }) as unknown as Record<string, unknown>, true);
+          }
+        }
+
+        if (operation === 'outcome_record' || operation === 'experience_record') {
+          try {
+            const workId = String(args.work_id ?? '').trim();
+            if (!workId) throw new Error('LEARNING_LOOP_WORK_ID_REQUIRED');
+            const work = getWorkContract(store, workId);
+            if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+            assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+            const owner = getControllerSession(store, workId);
+            const relay = getControllerRoundRelay(store, workId);
+            if (!owner) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${workId}`);
+            const authorityId = relay?.authorityId?.trim() || (typeof args.controller_authority_id === 'string' ? args.controller_authority_id.trim() : '');
+            if (!authorityId) throw new Error('LEARNING_LOOP_CONTROLLER_AUTHORITY_REQUIRED');
+            const identity = { workId, controllerId: owner.controllerId, authorityId };
+            if (operation === 'outcome_record') {
+              if (!args.outcome_observation || typeof args.outcome_observation !== 'object' || Array.isArray(args.outcome_observation)) {
+                throw new Error('OUTCOME_OBSERVATION_REQUIRED');
+              }
+              const outcome = recordControllerOutcome({
+                controllerHome: ctx.controllerHome,
+                repoId: repository.repoId,
+                identity,
+                draft: args.outcome_observation as ControllerOutcomeObservationDraft,
+              });
+              return result(buildFacadeResult({
+                summary: `OutcomeObservation ${outcome.id} recorded from canonical Work/ControllerRound evidence.`,
+                data: { outcome },
+              }) as unknown as Record<string, unknown>);
+            }
+            if (!args.experience_draft || typeof args.experience_draft !== 'object' || Array.isArray(args.experience_draft)) {
+              throw new Error('EXPERIENCE_DRAFT_REQUIRED');
+            }
+            const experience = recordControllerExperience({
+              controllerHome: ctx.controllerHome,
+              repoId: repository.repoId,
+              identity,
+              draft: args.experience_draft as ControllerExperienceDraft,
+              qualityAdjustmentFingerprint: typeof args.quality_adjustment_fingerprint === 'string' ? args.quality_adjustment_fingerprint.trim() || undefined : undefined,
+            });
+            return result(buildFacadeResult({
+              summary: `Experience ${experience.id} recorded from canonical evidence for reuse by the next ControllerRound.`,
+              data: { experience },
+            }) as unknown as Record<string, unknown>);
+          } catch (error) {
+            return result(buildFacadeResult({
+              status: 'blocked',
+              summary: error instanceof Error ? error.message : 'Learning-loop record failed.',
+              data: { recorded: false },
             }) as unknown as Record<string, unknown>, true);
           }
         }
@@ -4622,6 +4693,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                     identity,
                     disposition: disposition as ControllerRoundDisposition,
                     executionQualityDecisions: args.execution_quality_decisions as Parameters<typeof submitControllerRoundDisposition>[1]['executionQualityDecisions'],
+                    executionQualityAdjustmentResults: args.execution_quality_adjustment_results as Parameters<typeof submitControllerRoundDisposition>[1]['executionQualityAdjustmentResults'],
                     assistantContextDigest: typeof args.assistant_context_digest === 'string' ? args.assistant_context_digest : undefined,
                     assistantContextUsage: args.assistant_context_usage as Parameters<typeof submitControllerRoundDisposition>[1]['assistantContextUsage'],
                     relayScopeId: frozenControllerDisposition?.relayScopeId ?? (typeof args.relay_scope_id === 'string' ? args.relay_scope_id : undefined),

@@ -1,4 +1,4 @@
-import type { AssistantContextSnapshot, ClosedRoundObservation, ExecutionQualityDecision } from './execution-quality';
+import type { AssistantContextSnapshot, ClosedRoundObservation, ExecutionQualityAdjustmentResult, ExecutionQualityDecision } from './execution-quality';
 import type { ControllerType } from './types';
 
 export const CONTROLLER_ROUND_DISPOSITIONS = [
@@ -55,6 +55,8 @@ export interface ControllerRoundRelayRecord {
   /** Round owner appends only at semantic close; oldest entries expire with this bounded record. */
   observationWindow?: ClosedRoundObservation[];
   qualityDecisions?: ExecutionQualityDecision[];
+  /** Verified post-adjustment outcomes; these never reset ControllerRound budgets. */
+  qualityAdjustmentResults?: ExecutionQualityAdjustmentResult[];
   /** Exact bounded assistant context identity delivered for the currently claimed round. */
   assistantContextSnapshot?: AssistantContextSnapshot;
   roundCount: number;

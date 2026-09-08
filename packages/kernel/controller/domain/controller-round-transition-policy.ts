@@ -34,7 +34,7 @@ export type ControllerRoundTransitionEvent =
   | { type: 'semantic_state_changed'; at: string; stateFingerprint: string; session: ControllerSession & { claimGeneration: number }; principalId: string; controllerInstanceId: string }
   | { type: 'stalled_round_observed'; at: string; stateFingerprint: string; proposedAuthorityId: string; lastError?: string }
   | { type: 'provider_environment_recovered'; at: string; evidenceId: string }
-  | { type: 'semantic_disposition_submitted'; at: string; disposition: ControllerRoundDisposition; stateFingerprint: string; maxRounds: number; maxRepeatedState: number; maxFailures: number; handoffId?: string; reason?: string; bindingId?: string; qualityDecisions?: ControllerRoundRelayRecord['qualityDecisions']; observationWindow?: ControllerRoundRelayRecord['observationWindow'] }
+  | { type: 'semantic_disposition_submitted'; at: string; disposition: ControllerRoundDisposition; stateFingerprint: string; maxRounds: number; maxRepeatedState: number; maxFailures: number; handoffId?: string; reason?: string; bindingId?: string; qualityDecisions?: ControllerRoundRelayRecord['qualityDecisions']; qualityAdjustmentResults?: ControllerRoundRelayRecord['qualityAdjustmentResults']; observationWindow?: ControllerRoundRelayRecord['observationWindow'] }
   | { type: 'successor_bound'; at: string; successorWorkId: string }
   | { type: 'controller_release_observed'; at: string; proposedAuthorityId: string }
   | { type: 'successor_release_handoff'; at: string; successorWorkId: string; successorStateFingerprint: string; proposedAuthorityId: string }
@@ -91,7 +91,7 @@ export function decideControllerRoundTransition(
         schemaVersion: 1, repoId: event.repoId, relayScopeId: event.relayScopeId, originWorkId: event.originWorkId,
         ...(event.requirementId ? { requirementId: event.requirementId } : {}), disposition: 'continue_immediately',
         status: blockedReason ? 'blocked' : 'dispatching', lifecycleStage: 'dispatching',
-        observationWindow: previous?.observationWindow, qualityDecisions: previous?.qualityDecisions,
+        observationWindow: previous?.observationWindow, qualityDecisions: previous?.qualityDecisions, qualityAdjustmentResults: previous?.qualityAdjustmentResults,
         controllerId: event.identity.controllerId.trim().slice(0, 240) || 'controller-host', controllerType: event.identity.controllerType,
         principalId: event.identity.principalId.trim().slice(0, 240) || event.identity.controllerId.trim().slice(0, 240),
         controllerInstanceId: event.identity.controllerInstanceId.trim().slice(0, 240), sessionId: event.identity.sessionId.trim().slice(0, 240),
@@ -223,6 +223,7 @@ export function decideControllerRoundTransition(
         disposition: event.disposition, status, lifecycleStage: 'semantic_round_closed', stateFingerprint: event.stateFingerprint,
         roundCount, repeatedStateCount, maxRounds, maxRepeatedState, maxFailures,
         ...(event.qualityDecisions ? { qualityDecisions: event.qualityDecisions } : {}),
+        ...(event.qualityAdjustmentResults ? { qualityAdjustmentResults: event.qualityAdjustmentResults } : {}),
         ...(event.observationWindow ? { observationWindow: event.observationWindow } : {}),
         ...(event.handoffId ? { handoffId: event.handoffId } : {}),
         ...(event.reason ? { reason: event.reason } : {}),
@@ -246,6 +247,7 @@ export function decideControllerRoundTransition(
         ...current, originWorkId: event.successorWorkId, predecessorWorkId: current.originWorkId, successorWorkId: undefined,
         status: 'dispatching', lifecycleStage: 'dispatching', authorityId: event.proposedAuthorityId,
         stateFingerprint: event.successorStateFingerprint, repeatedStateCount: 0, controllerInstanceId: '', sessionId: '', claimGeneration: 0,
+        assistantContextSnapshot: undefined,
         bindingId: undefined, providerDispatchEffectId: undefined, providerDispatchAttempt: 0, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined,
         blockedReason: undefined, lastError: undefined, nextRecoveryAt: undefined, dispatchedAt: undefined, claimedAt: undefined, updatedAt: event.at,
       };
@@ -254,7 +256,7 @@ export function decideControllerRoundTransition(
     case 'controller_release_observed': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
       if (current.status !== 'pending_release') return { kind: 'no_op', current, reason: 'release_not_pending' };
-      return accept(current, { authorityId: event.proposedAuthorityId, status: 'dispatching', lifecycleStage: 'dispatching', updatedAt: event.at }, 'controller_round_relay_dispatch_begin');
+      return accept(current, { authorityId: event.proposedAuthorityId, status: 'dispatching', lifecycleStage: 'dispatching', assistantContextSnapshot: undefined, updatedAt: event.at }, 'controller_round_relay_dispatch_begin');
     }
     case 'terminal_work_observed': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };

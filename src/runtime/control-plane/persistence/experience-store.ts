@@ -44,9 +44,14 @@ function canonicalWorkflowEvidenceAvailable(input: { controllerHome: string; rep
       }
       if (ref.startsWith('EVD-')) return readExecutionEvidence(input.controllerHome, input.repoId, ref).evidenceId === ref;
     }
+    if (source.checkRefs.some(check => check.receipt?.receiptId === ref && ['passed', 'failed'].includes(check.receipt.status))) return true;
     if (ref.startsWith('workflow-run-') || ref.startsWith('workflow-publication-')) {
       const runs = listControlPlaneRecords<WorkflowRunRecord>(input.controllerHome, { namespace: WORKFLOW_RUN_NAMESPACE, scope: sourceWorkId, limit: 1000 });
       return runs.some(row => row.value.evidenceRef === ref || row.value.publicationReceipt?.receiptId === ref);
+    }
+    const outcome = readControlPlaneRecord<OutcomeObservation>(input.controllerHome, OUTCOME_OBSERVATION_NAMESPACE, `${scope.kind}:${scope.id}`, ref)?.value;
+    if (outcome && outcome.sourceWorkId === sourceWorkId) {
+      return canonicalWorkflowEvidenceAvailable(input, outcome.evidenceRef, scope, sourceWorkId);
     }
     return false;
   } catch { return false; }
@@ -68,7 +73,7 @@ function assertMemoryWriteAuthority(input: { controllerHome: string; repoId: str
 }
 
 /** One SQLite writer; nested domain operations share the same transaction. */
-export function controllerExperienceStore(input: { controllerHome: string; repoId: string; identity?: ExperienceWriteIdentity }): ExperienceStorePort {
+export function controllerExperienceStore(input: { controllerHome: string; repoId: string; identity?: ExperienceWriteIdentity; now?: () => string }): ExperienceStorePort {
   let transaction: SqliteDatabase | undefined;
   const key = (scope: ScopeRef) => `${scope.kind}:${scope.id}`;
   const work = (id: string) => getWorkContract(input, id);
@@ -108,7 +113,7 @@ export function controllerExperienceStore(input: { controllerHome: string; repoI
   };
 }
 
-export function controllerOutcomeObservationStore(input: { controllerHome: string; repoId: string; identity?: ExperienceWriteIdentity }): OutcomeObservationStorePort {
+export function controllerOutcomeObservationStore(input: { controllerHome: string; repoId: string; identity?: ExperienceWriteIdentity; now?: () => string }): OutcomeObservationStorePort {
   let transaction: SqliteDatabase | undefined;
   const key = (scope: ScopeRef) => `${scope.kind}:${scope.id}`;
   return {

@@ -119,4 +119,15 @@ export interface ExecutionQualityDecision {
   action: 'no_adjustment' | 'adjustment';
   reason: string;
   verificationCondition?: string;
+  /** Kernel-recorded time of the Controller decision. Callers do not supply this authority. */
+  decidedAt?: string;
+}
+
+export interface ExecutionQualityAdjustmentResult {
+  fingerprint: string;
+  outcome: 'improved' | 'not_improved' | 'inconclusive';
+  evidenceRefs: string[];
+  reason: string;
+  /** Kernel-recorded time after all referenced post-adjustment verification receipts exist. */
+  verifiedAt: string;
 }

@@ -172,11 +172,14 @@ export function createWorkContinuationSchedule(
   const requestedControllerType = input.controllerType;
   if (!requestedWorkId && scheduleMode !== 'browser_keepalive') throw new Error('WORK_ID_REQUIRED');
   const work = requestedWorkId ? activeWork(controllerHome, repoId, requestedWorkId) : undefined;
-  const retainedSession = scheduleMode === 'continuation' && work
+  const retainedSession = (scheduleMode === 'continuation' || scheduleMode === 'browser_watch') && work
     ? getRetainedControllerSession({ controllerHome, repoId }, work.workId)
     : undefined;
   if (scheduleMode === 'continuation' && !retainedSession) {
     throw new Error(`SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED: ${work!.workId}`);
+  }
+  if (scheduleMode === 'browser_watch' && !retainedSession) {
+    throw new Error(`SCHEDULE_BROWSER_WATCH_CONTROLLER_SESSION_REQUIRED: ${work!.workId}`);
   }
   if (retainedSession?.controllerType === 'human') throw new Error('SCHEDULE_CONTINUATION_HUMAN_HOST_UNSUPPORTED');
   const controllerType = (retainedSession?.controllerType ?? requestedControllerType ?? 'chatgpt') as ContinuationControllerType;
@@ -191,7 +194,7 @@ export function createWorkContinuationSchedule(
       : scheduleMode === 'browser_keepalive'
         ? (work ? `Keep browser session alive for Work ${work.workId}` : 'Keep browser session alive')
         : `Continue Work ${work!.workId}`);
-  const controllerBinding = scheduleMode === 'continuation'
+  const controllerBinding = (scheduleMode === 'continuation' || scheduleMode === 'browser_watch')
     ? ensureScheduledControllerBinding(
         { controllerHome, repoId },
         {
@@ -209,7 +212,10 @@ export function createWorkContinuationSchedule(
         controllerBindingId: controllerBinding!.bindingId,
         continuationHint: input.continuationPrompt,
       })
-    : probeArguments(input, controllerType, scheduleMode === 'browser_keepalive');
+    : {
+        ...probeArguments(input, controllerType, scheduleMode === 'browser_keepalive'),
+        ...(scheduleMode === 'browser_watch' ? { controller_binding_id: controllerBinding!.bindingId } : {}),
+      };
   assertAutomatedOperationAllowed(operation, actionArguments);
   const policy = {
     maxActiveOccurrences: 1,

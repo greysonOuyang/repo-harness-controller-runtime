@@ -96,7 +96,7 @@ export function prepareControllerAssistantContextBundle(
   store: ControllerRoundCompositionStore,
   workId: string,
 ): { rendered: string; snapshot: AssistantContextSnapshot; resolution: AssistantContextResolution } | undefined {
-  const resolution = prepareAssistantWorkContext({ ...store, workId });
+  const resolution = prepareAssistantWorkContext({ controllerHome: store.controllerHome, repoId: store.repoId, workId });
   if (!resolution) return undefined;
   return { rendered: renderAssistantContext(resolution), snapshot: controllerAssistantContextSnapshot(resolution), resolution };
 }
