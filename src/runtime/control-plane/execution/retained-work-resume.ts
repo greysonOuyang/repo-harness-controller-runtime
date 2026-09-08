@@ -8,7 +8,7 @@ import { listRepositories, repositoryCheckoutLifecycle, selectRepositoryCheckout
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import { ensureManagedWorkspace } from '../../execution/managed-workspace';
 import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
-import { getWorkContract, resumeRetainedCancelledWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { getWorkContract, recordWorkEvidenceState, resumeRetainedCancelledWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { gitCommitAtRef, gitWorktreeSnapshot } from './work-lifecycle-audit';
 import { findWorkPathScopeViolation } from './work-path-scope';
 import { readWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
@@ -195,10 +195,11 @@ function restoreArchivedBlockedDeliveryCheckout(input: {
     phase: 'verification',
     status: 'running',
     state: 'active',
+    dispatchState: 'running',
     summary: `Archived candidate ${candidateRevision} was rehydrated from verified blocked-terminal preservation; fresh verification is required before delivery.`,
   });
   if (work.evidenceState === 'partial' || work.evidenceState === 'valid') {
-    updateWorkContract(store, work.workId, { evidenceState: 'stale' });
+    recordWorkEvidenceState(store, work.workId, 'stale');
   }
   writeWorkHandle(controllerHome, {
     ...handle,

@@ -9,7 +9,7 @@ import type { MultiRepositoryMcpToolContext } from '../../src/cli/mcp/multi-repo
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { getRepository, reconcileRepositoryCheckouts, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
 import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
-import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkEvidenceState, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest, workRequiresImplementationReview } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
@@ -1019,7 +1019,7 @@ describe('rh_work terminalization authority', () => {
       work_id: workId,
       capability_id: `controller.round:controller_claim:${relay.authorityId}:${relay.relayScopeId}`,
     }));
-    expect(claimed.status).toBe('ok');
+    expect(claimed).toMatchObject({ status: 'ok' });
     expect(getControllerSession(store, workId)?.sessionId).toBe('transport-frozen-round');
 
     const wrongVerify = structured(await callRuntimeTool(caller, 'rh_work', {
@@ -1052,6 +1052,142 @@ describe('rh_work terminalization authority', () => {
       reason: 'Frozen-schema controller round completed its bounded attempt.',
     }));
     expect(released.status).toBe('ok');
+  }, 15_000);
+
+  test('Requirement-scoped frozen claim preserves the exact durable authority on a non-origin Work and rejects unrelated Work inference', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const requirementId = 'REQ-frozen-requirement-authority';
+    const otherRequirementId = 'REQ-frozen-requirement-authority-other';
+    const originWorkId = 'work-frozen-requirement-origin';
+    const siblingWorkId = 'work-frozen-requirement-sibling';
+    const unrelatedWorkId = 'work-frozen-requirement-unrelated';
+    const runtimeInstanceId = 'runtime-frozen-requirement';
+    const principalId = 'principal-frozen-requirement';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Frozen Requirement authority',
+      outcomeStatement: 'One durable ControllerRound authority governs mechanically related Work across transport rollover.',
+    });
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: otherRequirementId,
+      title: 'Unrelated frozen Requirement authority',
+      outcomeStatement: 'Unrelated Work cannot inherit another Requirement ControllerRound authority.',
+    });
+    for (const [workId, linkedRequirementId] of [
+      [originWorkId, requirementId],
+      [siblingWorkId, requirementId],
+      [unrelatedWorkId, otherRequirementId],
+    ] as const) {
+      createWorkContract(store, {
+        workId,
+        repoId: fx.repository.repoId,
+        requirementId: linkedRequirementId,
+        mode: 'goal_workloop',
+        objective: `durable authority regression for ${workId}`,
+        acceptanceCriteria: ['preserve durable semantic authority'],
+        allowedPaths: [],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: 'chatgpt',
+        workKind: 'local_effect',
+        status: 'ready',
+      });
+    }
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId: originWorkId,
+      requirementId,
+      relayScopeId: `requirement:${requirementId}`,
+      identity: {
+        controllerId: 'schedule:frozen-requirement',
+        controllerType: 'chatgpt',
+        principalId: 'forge-scheduler',
+        controllerInstanceId: runtimeInstanceId,
+        sessionId: 'occurrence-frozen-requirement',
+      },
+    });
+    finishControllerRoundRelayDispatch(store, {
+      workId: originWorkId,
+      ok: true,
+      bindingId: `chatgpt:${fx.repository.repoId}:${originWorkId}`,
+    });
+    const capabilityId = `controller.round:controller_claim:${relay.authorityId}:${relay.relayScopeId}`;
+
+    const first = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-requirement-a', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: siblingWorkId, capability_id: capabilityId },
+    ));
+    expect(first.status).toBe('ok');
+    expect(first.data.controllerAuthorityId).toBe(relay.authorityId);
+    expect(first.data.controllerAuthorityCarrier).toBe('controller_authority_id');
+    expect(getControllerSession(store, siblingWorkId)?.sessionId).toBe('transport-frozen-requirement-a');
+
+    const second = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-requirement-b', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: siblingWorkId, capability_id: capabilityId },
+    ));
+    expect(second.status).toBe('ok');
+    expect(second.data.controllerAuthorityId).toBe(relay.authorityId);
+    expect(getControllerSession(store, siblingWorkId)?.sessionId).toBe('transport-frozen-requirement-b');
+
+    const rejected = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, 'transport-frozen-requirement-c', runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'repair', work_id: unrelatedWorkId, capability_id: capabilityId },
+    ));
+    expect(rejected.status).toBe('blocked');
+    expect(rejected.summary).toContain('WORK_CONTROLLER_ROUND_AUTHORITY_UNBOUND');
+    expect(getControllerSession(store, unrelatedWorkId)).toBeUndefined();
+  }, 15_000);
+
+  test('continue preserves durable remote_effect semantics without requiring repository source changes', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-remote-effect-continue-durable-kind';
+    const principalId = 'principal-remote-effect-continue';
+    const sessionId = 'transport-remote-effect-continue';
+    const runtimeInstanceId = 'runtime-remote-effect-continue';
+    createWorkContract(store, {
+      workId,
+      repoId: fx.repository.repoId,
+      mode: 'goal_workloop',
+      objective: 'Resume a durable external effect without fabricating repository implementation.',
+      acceptanceCriteria: ['remote effect remains externally owned'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: { requireHandoffOnAmbiguity: true },
+      requestedBy: 'chatgpt',
+      workKind: 'remote_effect',
+      status: 'running',
+      phase: 'implementation',
+    });
+    publishCurrentRuntime(fx.controllerHome, runtimeInstanceId);
+    claimControllerSession(store, {
+      workId,
+      controllerId: principalId,
+      controllerType: 'chatgpt',
+      sessionId,
+      principalId,
+      controllerInstanceId: runtimeInstanceId,
+      leaseMs: 60_000,
+    });
+    const continued = structured(await callRuntimeTool(
+      ctx(fx.controllerHome, fx.repository, principalId, sessionId, runtimeInstanceId),
+      'rh_work',
+      { repo_id: fx.repository.repoId, operation: 'continue', work_id: workId, requested_by: 'chatgpt' },
+    ));
+    expect(continued.data.work).toMatchObject({ workId });
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId)).toMatchObject({
+      workId,
+      workKind: 'remote_effect',
+    });
+    expect(continued.summary).not.toContain('Repository-change Work has no current net source changes');
+    expect(getWorkContract(store, workId)?.workKind).toBe('remote_effect');
   }, 15_000);
 
   test('direct Work authority follows the authenticated principal/runtime across explicit and MCP transport rotation', async () => {
@@ -1433,7 +1569,7 @@ describe('rh_work terminalization authority', () => {
     expect(getControllerRoundRelay(store, workId)?.status).toBe('waiting');
 
     // A meaningful Work state change opens exactly one successor round.
-    updateWorkContract(store, workId, { evidenceState: 'partial' });
+    recordWorkEvidenceState(store, workId, 'partial');
     expect(readControllerRoundSemanticStateFingerprint(store, workId)).not.toBe(baselineFingerprint);
     const changed = await resumeScheduledControllerContinuation(store, {
       scheduleId: schedule.scheduleId,

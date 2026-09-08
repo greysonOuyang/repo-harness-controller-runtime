@@ -2,7 +2,7 @@ import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getRepository, resolveRepositorySelection, selectRepositoryCheckout } from '../../../cli/repositories/registry';
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
-import { appendWorkEvidence, getWorkContract, updateWorkContract } from '../../../../packages/kernel/work/api/index';
+import { appendWorkEvidence, getWorkContract, promoteWorkToRepositoryChange, updateWorkContract } from '../../../../packages/kernel/work/api/index';
 import { controllerSessionPrincipalId, getControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { isTerminalWorkContractStatus } from '../facade/types';
 import { currentPermissionSnapshotVersion } from './validation';
@@ -188,7 +188,7 @@ export function markRepositoryMutationStarted(input: {
   const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
   const contract = getWorkContract(store, input.workId);
   if (contract?.workKind === 'local_effect' || contract?.workKind === 'remote_effect') {
-    updateWorkContract(store, input.workId, { workKind: 'repository_change' });
+    promoteWorkToRepositoryChange(store, input.workId);
   }
   const handle = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
   if (!handle || handle.managedWorktree || handle.state !== 'prepared') return handle;
@@ -241,7 +241,7 @@ export function ensureRepositoryMutationWorkHandle(input: {
   if (contract.workKind === 'local_effect' || contract.workKind === 'remote_effect') {
     promotedFrom = contract.workKind;
     if (input.deferEffectPromotion !== true) {
-      contract = updateWorkContract(store, input.workId, { workKind: 'repository_change' });
+      contract = promoteWorkToRepositoryChange(store, input.workId);
     }
   }
   if (contract.workKind !== 'repository_change' && input.deferEffectPromotion !== true) {

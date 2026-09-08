@@ -252,6 +252,13 @@ export function mintControllerSessionAuthority(): { authorityId: string; authori
   return { authorityId, authorityDigest: digestControllerAuthority(authorityId) };
 }
 
+/** Bind an already-authorized opaque capability without persisting its plaintext value. */
+export function controllerSessionAuthorityDigest(authorityId: string): string {
+  const normalized = authorityId.trim();
+  if (!normalized) throw new Error('WORK_CONTROLLER_AUTHORITY_REQUIRED');
+  return digestControllerAuthority(normalized);
+}
+
 /** Verify an opaque capability without exposing or persisting its plaintext value. */
 export function controllerSessionAuthorityMatches(owner: ControllerSession, authorityId: string | undefined): boolean {
   const expected = owner.authorityDigest?.trim() || '';

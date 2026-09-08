@@ -247,6 +247,7 @@ import {
   assertControllerOwnershipAuthority,
   bindControllerSessionToCurrentRuntime,
   claimControllerSession,
+  controllerSessionAuthorityDigest,
   controllerSessionAuthorityMatches,
   controllerSessionPrincipalId,
   getControllerSession,
@@ -265,6 +266,7 @@ import {
   reconcileControllerRoundAfterTerminalWork,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
+  resolveRequirementControllerRoundRelayForWork,
   submitControllerRoundDisposition,
   type ControllerRoundRelayRecord,
   type ControllerRoundDisposition,
@@ -4549,16 +4551,36 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             const work = getWorkContract(store, workId);
             if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
             const identity = authenticatedFacadeControllerIdentity(ctx, args);
-            assertFacadeControllerRoundAuthority(ctx, store, workId, args);
+            let authorizedRelay = assertFacadeControllerRoundAuthority(ctx, store, workId, args);
             const observedOwner = getControllerSession(store, workId);
             const dispatchedRelay = getControllerRoundRelay(store, workId);
+            const requestedRelayScopeId = typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : '';
+            if (!authorizedRelay && identity.controllerAuthorityId && requestedRelayScopeId) {
+              authorizedRelay = resolveRequirementControllerRoundRelayForWork(store, {
+                workId,
+                authorityId: identity.controllerAuthorityId,
+                relayScopeId: requestedRelayScopeId,
+              });
+              if (!authorizedRelay) {
+                throw new Error(`WORK_CONTROLLER_ROUND_AUTHORITY_UNBOUND: ${workId}:${requestedRelayScopeId}`);
+              }
+            }
             if (observedOwner && observedOwner.authorityDigest
               && (observedOwner.sessionId !== identity.sessionId || (observedOwner.controllerInstanceId?.trim() || '') !== identity.controllerInstanceId)
               && !dispatchedRelay?.authorityId?.trim()
               && !controllerSessionAuthorityMatches(observedOwner, identity.controllerAuthorityId)) {
               throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; controller_claim requires the existing Work-bound controller authority after transport rotation.`);
             }
-            const directAuthority = dispatchedRelay?.authorityId?.trim() ? undefined : mintControllerSessionAuthority();
+            const inheritedRequirementAuthority = !dispatchedRelay?.authorityId?.trim() && authorizedRelay?.authorityId?.trim()
+              ? {
+                  authorityId: authorizedRelay.authorityId!.trim(),
+                  authorityDigest: controllerSessionAuthorityDigest(authorizedRelay.authorityId!),
+                }
+              : undefined;
+            const directAuthority = dispatchedRelay?.authorityId?.trim() || inheritedRequirementAuthority
+              ? undefined
+              : mintControllerSessionAuthority();
+            const sessionAuthority = inheritedRequirementAuthority ?? directAuthority;
             const crossOwnerRecovery = Boolean(observedOwner)
               && (
                 observedOwner!.controllerId !== identity.controllerId
@@ -4570,7 +4592,7 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
               controllerId: identity.controllerId,
               controllerType: identity.controllerType,
               sessionId: identity.sessionId,
-              ...(directAuthority ? { authorityDigest: directAuthority.authorityDigest } : {}),
+              ...(sessionAuthority ? { authorityDigest: sessionAuthority.authorityDigest } : {}),
               principalId: identity.principalId,
               controllerInstanceId: identity.controllerInstanceId,
               ...(crossOwnerRecovery
@@ -4613,8 +4635,10 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
                 relay,
                 assistantContext: assistantContextBundle?.rendered ?? prepareControllerAssistantContext(store, workId),
                 assistantContextSnapshot: assistantContextBundle?.snapshot,
-                controllerAuthorityId: dispatchedRelay?.authorityId?.trim() || directAuthority?.authorityId,
-                controllerAuthorityCarrier: dispatchedRelay?.authorityId?.trim() ? 'controller_authority_id' : 'controller_authority_id_or_session_id_compat',
+                controllerAuthorityId: dispatchedRelay?.authorityId?.trim() || inheritedRequirementAuthority?.authorityId || directAuthority?.authorityId,
+                controllerAuthorityCarrier: dispatchedRelay?.authorityId?.trim() || inheritedRequirementAuthority
+                  ? 'controller_authority_id'
+                  : 'controller_authority_id_or_session_id_compat',
               },
             }) as unknown as Record<string, unknown>);
           } catch (error) {

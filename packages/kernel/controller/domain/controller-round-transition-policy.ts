@@ -34,7 +34,7 @@ export type ControllerRoundTransitionEvent =
   | { type: 'semantic_state_changed'; at: string; stateFingerprint: string; session: ControllerSession & { claimGeneration: number }; principalId: string; controllerInstanceId: string }
   | { type: 'stalled_round_observed'; at: string; stateFingerprint: string; proposedAuthorityId: string; lastError?: string }
   | { type: 'provider_environment_recovered'; at: string; evidenceId: string }
-  | { type: 'semantic_disposition_submitted'; at: string; disposition: ControllerRoundDisposition; stateFingerprint: string; maxRounds: number; maxRepeatedState: number; maxFailures: number; handoffId?: string; reason?: string; bindingId?: string; qualityDecisions?: ControllerRoundRelayRecord['qualityDecisions']; qualityAdjustmentResults?: ControllerRoundRelayRecord['qualityAdjustmentResults']; observationWindow?: ControllerRoundRelayRecord['observationWindow'] }
+  | { type: 'semantic_disposition_submitted'; at: string; disposition: ControllerRoundDisposition; stateFingerprint: string; maxRounds: number; maxRepeatedState: number; maxFailures: number; controllerSession: Pick<ControllerSession, 'controllerId' | 'controllerType' | 'principalId' | 'controllerInstanceId' | 'sessionId' | 'claimGeneration'>; handoffId?: string; reason?: string; bindingId?: string; qualityDecisions?: ControllerRoundRelayRecord['qualityDecisions']; qualityAdjustmentResults?: ControllerRoundRelayRecord['qualityAdjustmentResults']; observationWindow?: ControllerRoundRelayRecord['observationWindow'] }
   | { type: 'successor_bound'; at: string; successorWorkId: string }
   | { type: 'controller_release_observed'; at: string; proposedAuthorityId: string }
   | { type: 'successor_release_handoff'; at: string; successorWorkId: string; successorStateFingerprint: string; proposedAuthorityId: string }
@@ -67,10 +67,17 @@ export function decideControllerRoundTransition(
         if (blocker) return { kind: 'reject', code: `CONTROLLER_RELAY_BLOCKED_OCCURRENCE_FORBIDDEN:${blocker}` };
         if (previous.status === 'waiting_for_user') return { kind: 'reject', code: 'CONTROLLER_RELAY_USER_RESUME_REQUIRED' };
         if (previous.status === 'goal_complete' || previous.status === 'handed_off') return { kind: 'reject', code: `CONTROLLER_RELAY_TERMINAL_OCCURRENCE_FORBIDDEN:${previous.status}` };
-        if (!event.abandonedReleaseRecovery && !event.occurrenceId?.trim()) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_OCCURRENCE_ID_REQUIRED' };
+        // A terminal provider failure is still the same relay attempt.  The
+        // provider adapter may retry that known, non-ambiguous failure without
+        // manufacturing a new semantic occurrence.  A caller that presents an
+        // occurrence id is explicitly asking to reopen the failed lineage as
+        // an external occurrence, which remains fenced below.  Other prior
+        // semantic states require an occurrence id so an external wake cannot
+        // silently replay an old lineage.
+        if (previous.status !== 'failed' && !event.abandonedReleaseRecovery && !event.occurrenceId?.trim()) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_OCCURRENCE_ID_REQUIRED' };
         if (event.occurrenceId?.trim() && previous.occurrenceId === event.occurrenceId.trim()) return { kind: 'reject', code: `CONTROLLER_RELAY_OCCURRENCE_ALREADY_APPLIED:${event.occurrenceId.trim()}` };
         if (previous.status === 'waiting' && previous.stateFingerprint === event.stateFingerprint) return { kind: 'reject', code: 'CONTROLLER_RELAY_WAITING_STATE_UNCHANGED' };
-        if (previous.status === 'failed' && !event.abandonedReleaseRecovery) return { kind: 'reject', code: 'CONTROLLER_RELAY_FAILED_REQUIRES_EXPLICIT_RESUME' };
+        if (previous.status === 'failed' && !event.abandonedReleaseRecovery && event.occurrenceId?.trim()) return { kind: 'reject', code: 'CONTROLLER_RELAY_FAILED_REQUIRES_EXPLICIT_RESUME' };
         if (event.abandonedReleaseRecovery && previous.status !== 'failed') return { kind: 'reject', code: 'CONTROLLER_RELAY_ABANDONED_RECOVERY_STATE_INVALID' };
       }
       const maxRounds = previous ? Math.min(previous.maxRounds, event.maxRounds) : event.maxRounds;
@@ -219,9 +226,23 @@ export function decideControllerRoundTransition(
         else if (current.consecutiveFailures >= maxFailures) blockedReason = `consecutive_failures:${current.consecutiveFailures}>=${maxFailures}`;
       }
       const status = blockedReason ? 'blocked' : continuing ? 'pending_release' : event.disposition === 'wait' ? 'waiting' : event.disposition === 'wait_for_user' ? 'waiting_for_user' : 'goal_complete';
+      const sessionIdentity = {
+        controllerId: event.controllerSession.controllerId,
+        controllerType: event.controllerSession.controllerType,
+        principalId: event.controllerSession.principalId?.trim() || event.controllerSession.controllerId,
+        controllerInstanceId: event.controllerSession.controllerInstanceId?.trim() || '',
+        // A transport/session rollover inside the same Runtime does not change
+        // the durable relay owner. A new Runtime instance is the explicit
+        // recovery boundary that permits the terminal identity handoff.
+        sessionId: event.controllerSession.controllerInstanceId?.trim() !== current.controllerInstanceId?.trim()
+          ? event.controllerSession.sessionId
+          : current.sessionId,
+        claimGeneration: event.controllerSession.claimGeneration ?? current.claimGeneration,
+      };
       return accept(current, {
         disposition: event.disposition, status, lifecycleStage: 'semantic_round_closed', stateFingerprint: event.stateFingerprint,
         roundCount, repeatedStateCount, maxRounds, maxRepeatedState, maxFailures,
+        ...(status === 'goal_complete' ? sessionIdentity : {}),
         ...(event.qualityDecisions ? { qualityDecisions: event.qualityDecisions } : {}),
         ...(event.qualityAdjustmentResults ? { qualityAdjustmentResults: event.qualityAdjustmentResults } : {}),
         ...(event.observationWindow ? { observationWindow: event.observationWindow } : {}),

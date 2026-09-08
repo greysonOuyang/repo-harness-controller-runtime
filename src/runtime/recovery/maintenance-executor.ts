@@ -8,7 +8,7 @@ import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } f
 import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../cli/repositories/registry';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
-import { getWorkContract, readWorkContractStore, transitionWorkContractPhase, updateWorkContract } from '../../../packages/kernel/work/api/index';
+import { cancelWorkContract, getWorkContract, readWorkContractStore, updateWorkContract } from '../../../packages/kernel/work/api/index';
 import { getControllerSession, listControllerSessions, withControllerSessionTerminalizationFence } from '../../../packages/kernel/controller/api/index';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
@@ -1101,13 +1101,14 @@ export function applyStaleWorkContractMaintenanceCandidate(
           result: 'work_semantic_completion_required',
         };
       }
-      transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, current.workId, {
-        phase: 'cleanup',
-        status: 'cancelled',
-        state: 'skipped',
-        summary: 'Cancelled by explicit full maintenance after the Work had already reached cleanup with prior semantic phases satisfied and no unique live repository source remained; durable evidence retained.',
-        evidenceRefs: current.evidenceRefs,
-      });
+      cancelWorkContract(
+        { controllerHome, repoId: repository.repoId },
+        current.workId,
+        {
+          summary: 'Cancelled by explicit full maintenance after the Work had already reached cleanup with prior semantic phases satisfied and no unique live repository source remained; durable evidence retained.',
+          evidenceRefs: current.evidenceRefs,
+        },
+      );
       return {
         ...candidate,
         path: source.path ?? candidate.path,

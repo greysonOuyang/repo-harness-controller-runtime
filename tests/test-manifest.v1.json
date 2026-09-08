@@ -898,6 +898,38 @@
       "module": "controller",
       "resource": "pure"
     },
+    "tests/runtime/assistant-learning-loop-e2e.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/content-equivalent-commit-authority.test.ts": {
+      "module": "workflow",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/failure-contract.test.ts": {
+      "module": "core",
+      "resource": "pure"
+    },
+    "tests/runtime/frozen-tool-contract-abi.test.ts": {
+      "module": "controller",
+      "resource": "pure"
+    },
+    "tests/runtime/process-check-classification.test.ts": {
+      "module": "process-runtime",
+      "resource": "pure"
+    },
+    "tests/runtime/semantic-authority-guardrail.test.ts": {
+      "module": "controller",
+      "resource": "pure"
+    },
+    "tests/runtime/source-controller-round-command-abi.test.ts": {
+      "module": "repository",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/work-v3-lifecycle-authority.test.ts": {
+      "module": "workflow",
+      "resource": "pure"
+    },
     "tests/runtime/workflow-asset-storage.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"

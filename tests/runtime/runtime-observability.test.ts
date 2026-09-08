@@ -34,7 +34,7 @@ import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
-import { createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { cancelWorkContract, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { claimControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { listWorkContinuationSchedules } from '../../src/runtime/workflow/schedules/work-continuation';
@@ -828,7 +828,7 @@ describe('runtime observability', () => {
         action: { operation: 'external_controller_wake', arguments: { work_id: repairWorkId, controller_type: 'chatgpt' } },
       });
 
-      updateWorkContract({ controllerHome, repoId: repository.repoId }, repairWorkId!, { status: 'cancelled' });
+      cancelWorkContract({ controllerHome, repoId: repository.repoId }, repairWorkId!, { summary: 'Close the prior repair generation before registering a successor.' });
       const recurrentAfterTerminal = makeIncident(5);
       recordMcpIncident(controllerHome, recurrentAfterTerminal);
       const successor = maybeRegisterMcpIncidentRepair({ controllerHome, runtimeSourceRoot: repoRoot, incident: recurrentAfterTerminal });

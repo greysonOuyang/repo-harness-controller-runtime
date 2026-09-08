@@ -18,7 +18,7 @@ import {
 import { ChatgptProviderDeliveryError, classifyChatgptProviderFailure } from '../../adapters/chatgpt/provider-delivery';
 import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser-delivery-host';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { createWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, recordWorkEvidenceState, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { bootstrapWslWindowsBridgeBrowser, chatgptBridgeTargetMatchesPage, findInstalledWslWindowsBridgeBrowser, isWslWindowsRuntime, observeWslWindowsBridgeBrowser, openWslWindowsBridgeTarget } from '../../src/cli/chatgpt-browser/bridge-provider';
 import { writeChatgptBridgeExtension } from '../../src/cli/chatgpt-browser/bridge-extension';
 import { ensureBridgeToken, readBrowserBinding } from '../../src/cli/chatgpt-browser/binding';
@@ -1170,7 +1170,7 @@ describe('controller relay repeated-state rearm', () => {
       blockedReason: 'repeated_state:2>=2',
     });
 
-    updateWorkContract(store, childWorkId, { evidenceState: 'partial' });
+    recordWorkEvidenceState(store, childWorkId, 'partial');
     const rearmed = acknowledgeControllerRoundClaim(store, { workId, session: secondSession });
     expect(rearmed).toMatchObject({ status: 'claimed', repeatedStateCount: 0, roundCount: blocked.roundCount });
     expect(rearmed?.stateFingerprint).not.toBe(blocked.stateFingerprint);

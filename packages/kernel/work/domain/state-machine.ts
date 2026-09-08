@@ -222,8 +222,7 @@ export function validateWorkSemanticTransition(
   const resumingRetainedCancelledWork = options.allowRetainedCancelledResume === true
     && current.status === 'cancelled'
     && current.dispatchState === 'terminal'
-    && current.phase === 'cleanup'
-    && current.phaseEvidence.cleanup.state === 'skipped'
+    && current.phaseEvidence[current.phase].state === 'skipped'
     && !current.completionReceipt
     && !current.completionOutcome
     && next.status === 'running'

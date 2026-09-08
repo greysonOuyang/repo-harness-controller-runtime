@@ -1,5 +1,7 @@
 import {
+  failWorkContract,
   getWorkContract,
+  recordWorkEvidenceState,
   requestWorkImplementationReview,
   transitionWorkContractPhase,
   updateWorkContract,
@@ -56,7 +58,7 @@ export function markWorkValidationPending(controllerHome: string, handle: WorkHa
   const evidenceState = contract.evidenceState === 'valid' || contract.evidenceState === 'stale'
     ? 'stale'
     : 'partial';
-  if (contract.evidenceState !== evidenceState) updateWorkContract(options, contractId, { evidenceState });
+  if (contract.evidenceState !== evidenceState) recordWorkEvidenceState(options, contractId, evidenceState);
 }
 
 /**
@@ -75,7 +77,7 @@ export function markWorkValidationCurrentFromReusedEvidence(controllerHome: stri
   const options = { controllerHome, repoId: handle.repositoryId };
   const contract = getWorkContract(options, contractId);
   if (!contract || contract.completionReceipt) return;
-  if (contract.evidenceState !== 'valid') updateWorkContract(options, contractId, { evidenceState: 'valid' });
+  if (contract.evidenceState !== 'valid') recordWorkEvidenceState(options, contractId, 'valid');
 }
 
 /**
@@ -123,7 +125,7 @@ export function projectWorkValidationOutcome(
       && (!validationWasRearmed || approvedReviewMatchesCurrentCandidate);
     if (currentReviewIsAuthoritative || approvedDeliveryIsAuthoritative) {
       if (approvedReviewMatchesCurrentCandidate && contract.evidenceState !== 'valid') {
-        updateWorkContract(options, contractId, { evidenceState: 'valid' });
+        recordWorkEvidenceState(options, contractId, 'valid');
       }
       return;
     }
@@ -134,7 +136,7 @@ export function projectWorkValidationOutcome(
       summary: summary ?? 'All requested validation receipts passed.',
       evidenceRefs: contract.evidenceRefs,
     });
-    updateWorkContract(options, contractId, { evidenceState: 'valid' });
+    recordWorkEvidenceState(options, contractId, 'valid');
     if (workRequiresImplementationReview(verified.workKind, verified.scopeEvidence?.actualChangedPaths ?? [])) {
       requestWorkImplementationReview(
         options,
@@ -154,14 +156,11 @@ export function projectWorkValidationOutcome(
   }
 
   if (outcome === 'failed') {
-    transitionWorkContractPhase(options, contractId, {
-      phase: 'cleanup',
-      status: 'failed',
-      state: 'failed',
-      summary: summary ?? 'A requested validation check failed; terminal cleanup is next.',
+    failWorkContract(options, contractId, {
+      phase: contract.phase,
+      summary: summary ?? `A requested validation check failed while Work was in ${contract.phase}.`,
       evidenceRefs: contract.evidenceRefs,
     });
-    updateWorkContract(options, contractId, { evidenceState: 'failed' });
     return;
   }
 
@@ -169,12 +168,15 @@ export function projectWorkValidationOutcome(
     phase: 'verification',
     status: 'running',
     state: 'blocked',
+    dispatchState: 'blocked',
     summary: summary ?? 'Validation infrastructure failed; retain the finite Work for retry without treating this as an acceptance failure.',
     evidenceRefs: contract.evidenceRefs,
   });
-  updateWorkContract(options, contractId, {
-    evidenceState: contract.evidenceState === 'valid' || contract.evidenceState === 'stale' ? 'stale' : 'partial',
-  });
+  recordWorkEvidenceState(
+    options,
+    contractId,
+    contract.evidenceState === 'valid' || contract.evidenceState === 'stale' ? 'stale' : 'partial',
+  );
 }
 
 function settleInfrastructureFailure(

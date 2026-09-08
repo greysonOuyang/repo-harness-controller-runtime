@@ -179,6 +179,29 @@ export function getControllerRoundRelay(
   return readRelayRecord(options, workId)?.value;
 }
 
+/**
+ * Resolve an existing Requirement-scoped ControllerRound authority for another
+ * Work that is mechanically part of the same durable Requirement/Work graph.
+ * This never mints, copies, or rebinds relay state; callers may only project the
+ * already-proven opaque authority into the target Work's ControllerSession.
+ */
+export function resolveRequirementControllerRoundRelayForWork(
+  options: ControllerRoundRelayStoreOptions,
+  input: { workId: string; authorityId: string; relayScopeId: string },
+): ControllerRoundRelayRecord | undefined {
+  const workId = input.workId.trim();
+  const authorityId = input.authorityId.trim();
+  const relayScopeId = input.relayScopeId.trim();
+  if (!workId || !authorityId || !relayScopeId.startsWith('requirement:')) return undefined;
+  const candidate = latestRelayRecordsByScope(options).find((entry) =>
+    entry.relayScopeId === relayScopeId
+    && entry.authorityId?.trim() === authorityId
+    && Boolean(entry.requirementId)
+    && `requirement:${entry.requirementId}` === relayScopeId);
+  if (!candidate) return undefined;
+  return relevantWork(options, candidate).some((work) => work.workId === workId) ? candidate : undefined;
+}
+
 function relayHistory(options: ControllerRoundRelayStoreOptions, relayScopeId: string): ControllerRoundRelayRecord[] {
   return listControlPlaneRecords<ControllerRoundRelayRecord>(options.controllerHome, {
     namespace: NAMESPACE,
@@ -726,6 +749,7 @@ export function submitControllerRoundDisposition(
     return applyControllerRoundTransition(options, existing, {
       type: 'semantic_disposition_submitted', at, disposition: input.disposition, stateFingerprint,
       maxRounds: requestedMaxRounds, maxRepeatedState: requestedMaxRepeatedState, maxFailures: requestedMaxFailures,
+      controllerSession: authority,
       qualityDecisions: accumulatedQualityDecisions, qualityAdjustmentResults: accumulatedQualityAdjustmentResults, observationWindow,
       ...(handoffId ? { handoffId } : {}),
       ...(bounded(input.reason, 1_000) ? { reason: bounded(input.reason, 1_000) } : {}),
@@ -986,9 +1010,10 @@ export function acknowledgeControllerRoundClaim(
       || ownerPrincipal !== sessionPrincipal
       || (owner.controllerInstanceId?.trim() || '') !== (input.session.controllerInstanceId?.trim() || '')
     ) throw new Error(`CONTROLLER_RELAY_CLAIM_IDENTITY_MISMATCH: ${input.workId}`);
-    if (current.value.controllerId !== owner.controllerId || current.value.principalId !== ownerPrincipal) {
-      throw new Error(`CONTROLLER_RELAY_CLAIM_CONFLICT: ${input.workId}`);
-    }
+    // The dispatching relay records the provider/launcher identity until the
+    // authenticated controller actually claims the round. The domain transition
+    // policy owns that one-way identity handoff; duplicating an equality guard
+    // here would turn provider dispatch metadata into a second claim authority.
     if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
       throw new Error(`CONTROLLER_RELAY_CLAIM_GENERATION_REQUIRED: ${input.workId}`);
     }

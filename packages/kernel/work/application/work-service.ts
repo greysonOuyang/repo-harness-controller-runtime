@@ -2,6 +2,7 @@ import {
   appendWorkEvidence as persistWorkEvidence,
   getWorkContract as readWorkContract,
   recordWorkCompletionReceipt as persistWorkCompletionReceipt,
+  canonicalizeWorkContractForAuthority,
   rebindPlanBoundWorkContract as buildPlanBoundWorkRebind,
   refreshPlanBoundWorkRevision as buildPlanBoundWorkRevisionRefresh,
   retirePlanBoundWorkContract as buildPlanBoundWorkRetirement,
@@ -86,6 +87,11 @@ export {
   getWorkContract,
   summarizeWorkContract,
   updateWorkContract,
+  promoteWorkToRepositoryChange,
+  recordWorkEvidenceState,
+  activateWorkContract,
+  failWorkContract,
+  cancelWorkContract,
   resumeRetainedCancelledWorkContract,
   recordWorkScopeEvidence,
   transitionWorkContractPhase,
@@ -97,6 +103,7 @@ export {
   appendWorkHandoffRef,
   appendVerificationRecord,
   recordWorkCompletionReceipt,
+  canonicalizeWorkContractForAuthority,
 } from '../infrastructure/work-contract-store';
 export type {
   CreateWorkContractInput,
@@ -108,6 +115,7 @@ export type {
   AcceptSubmittedWorkInput,
   WorkContractStoreLocation,
   WorkContractStoreOptions,
+  WorkContractMetadataPatch,
 } from '../infrastructure/work-contract-store';
 
 /**

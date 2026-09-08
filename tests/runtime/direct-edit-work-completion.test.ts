@@ -25,7 +25,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(requirementId?: string) {
+function fixture(requirementId?: string, workKind: 'repository_change' | 'remote_effect' = 'repository_change') {
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-direct-edit-work-repo-'));
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-direct-edit-work-home-'));
   roots.push(repoRoot, controllerHome);
@@ -55,6 +55,7 @@ function fixture(requirementId?: string) {
     checks: [],
     constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
     requestedBy: 'chatgpt',
+    workKind,
     ...(requirementId ? { requirementId } : {}),
     status: 'running',
   });
@@ -928,7 +929,7 @@ describe('standalone Direct Edit Work completion', () => {
   });
 
   test('narrowly reconciles an already-delivered effect Work only with exact validation, remote containment, and a clean source tree', () => {
-    const fx = fixture();
+    const fx = fixture(undefined, 'remote_effect');
     const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
     commitExample(fx.repoRoot);
     const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
@@ -938,7 +939,6 @@ describe('standalone Direct Edit Work completion', () => {
     execFileSync('git', ['update-ref', 'refs/remotes/origin/main', baseRevision], { cwd: fx.repoRoot });
     const checks = ['package:check:release-published'];
     updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, {
-      workKind: 'remote_effect',
       checks,
       checkRefs: [verificationRecord({
         repoId: fx.repoId, checkoutId: fx.checkoutId, workId: fx.workId,
@@ -960,10 +960,9 @@ describe('standalone Direct Edit Work completion', () => {
   });
 
   test('refuses historical effect reconciliation without bound validation receipts or while any source delta remains unresolved', () => {
-    const fx = fixture();
+    const fx = fixture(undefined, 'remote_effect');
     commitExample(fx.repoRoot);
     const targetRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).trim();
-    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, { workKind: 'remote_effect' });
     expect(() => acceptReviewedDirectEditWorkReconciliation(reconciliationInput(fx, targetRevision)))
       .toThrow('DIRECT_EDIT_WORK_RECONCILIATION_CHECK_EVIDENCE_REQUIRED');
 

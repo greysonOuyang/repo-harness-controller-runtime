@@ -24,7 +24,7 @@ import { persistControllerAccessMode } from '../../src/cli/mcp/access-mode';
 import { executionIdentityForRepository, executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
 import { readWorkHandle, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { pushExactWorkRemoteDelivery } from '../../src/runtime/control-plane/execution/work-remote-delivery';
-import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { cancelWorkContract, createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
@@ -669,7 +669,7 @@ describe('repository command execution lifecycle', () => {
       requestedBy: 'chatgpt',
       status: 'running',
     });
-    updateWorkContract({ controllerHome, repoId: repository.repoId }, workId, { status: 'cancelled' });
+    cancelWorkContract({ controllerHome, repoId: repository.repoId }, workId, { summary: 'Explicitly terminalize the Work before proving remote delivery is fenced.' });
 
     await expect(pushExactWorkRemoteDelivery({
       controllerHome,

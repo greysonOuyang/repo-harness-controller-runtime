@@ -18,6 +18,7 @@ import {
 } from '../../src/runtime/control-plane/facade/work-admission-policy';
 import {
   acceptSubmittedWorkContract,
+  cancelWorkContract,
   createWorkContract,
   updateWorkContract,
 } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -793,12 +794,12 @@ describe('canonical single Runtime', () => {
     expect(() => updateWorkContract(
       { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
       'WORK-HISTORICAL',
-      { status: 'blocked' },
+      { continuationPrompt: 'This metadata write must remain fenced during exclusive admission.' },
     )).toThrow('WORK_ADMISSION_BLOCKED');
-    expect(updateWorkContract(
+    expect(cancelWorkContract(
       { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
       'WORK-HISTORICAL',
-      { status: 'cancelled' },
+      { summary: 'Explicitly retire historical Work during exclusive admission.' },
     ).status).toBe('cancelled');
     const acceptedRetry = acceptSubmittedWorkContract(fixture.controllerHome, submittedInput);
     expect(acceptedRetry.deduplicated).toBe(true);
@@ -839,10 +840,10 @@ describe('canonical single Runtime', () => {
       historical.workId,
       { continuationPrompt: 'Continue converging this existing Work.' },
     ).continuationPrompt).toContain('Continue converging');
-    expect(updateWorkContract(
+    expect(cancelWorkContract(
       { controllerHome: fixture.controllerHome, repoId: 'repo-test' },
       historical.workId,
-      { status: 'cancelled' },
+      { summary: 'Explicitly retire historical Work during convergence.' },
     ).status).toBe('cancelled');
 
     const reservedWorkId = 'WORK-CONVERGENCE-RESERVED';

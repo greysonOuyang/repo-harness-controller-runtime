@@ -23,6 +23,7 @@ import {
 import { readRequirement } from '../persistence/requirement-store';
 import {
   getWorkContract,
+  canonicalizeWorkContractForAuthority,
   isDirectEditWorkCompletionReceipt,
   isRepositoryCompletionReceipt,
   rebindPlanBoundWorkContract,
@@ -1363,7 +1364,11 @@ export function replanActivePlanBoundWorkScope(
       if (!widened) throw new Error('PLAN_WORK_REPLAN_SCOPE_NOT_WIDENED');
       const workRecord = readControlPlaneRecordWithinTransaction<WorkContract>(database, 'work_contract', options.repoId, workId);
       if (!workRecord) throw new Error(`work contract not found: ${workId}`);
-      const work = workRecord.value;
+      // Replan runs inside the Plan + Work transaction. Normalize the exact
+      // row read there so a legacy Work missing the first-class review
+      // checkpoint is migrated by the canonical Work authority before the
+      // scope-only refresh validates phase evidence.
+      const work = canonicalizeWorkContractForAuthority(workRecord.value);
       if (work.requirementId !== priorPlan.requirementId) throw new Error('PLAN_WORK_REPLAN_REQUIREMENT_MISMATCH');
       const at = nowIso(options);
       const priorRevision = currentPlanRevision(priorPlan);

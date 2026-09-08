@@ -6,7 +6,7 @@ import { join } from 'path';
 import { ensureControllerHome } from '../src/cli/repositories/controller-home';
 import { registerRepository } from '../src/cli/repositories/registry';
 import { createRequirement, updateRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
-import { createWorkContract, updateWorkContract } from '../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, recordWorkEvidenceState, updateWorkContract } from '../src/runtime/control-plane/facade/work-contract-store';
 import { claimControllerSession } from '../src/runtime/control-plane/facade/controller-session-store';
 import {
   acknowledgeControllerRoundClaim,
@@ -157,7 +157,7 @@ try {
     throw new Error(`CANARY_UNCHANGED_WAIT_DISPATCHED:${unchanged.dispatch.status}:calls=${providerCallCount()}`);
   }
 
-  updateWorkContract(store, workId, { evidenceState: 'partial' });
+  recordWorkEvidenceState(store, workId, 'partial');
   const changedFingerprint = readControllerRoundSemanticStateFingerprint(store, workId);
   if (!changedFingerprint || changedFingerprint === baselineFingerprint) throw new Error('CANARY_MEANINGFUL_CHANGE_NOT_DETECTED');
   const changed = await resumeScheduledControllerContinuation(store, {

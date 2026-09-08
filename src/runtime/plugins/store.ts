@@ -23,7 +23,9 @@ import { acquireExecutionLeases, releaseExactExecutionLeases } from '../resource
 import { classifyRepositoryCommand } from '../../cli/repositories/command-classifier';
 import {
   acceptSubmittedWorkContract,
+  activateWorkContract,
   appendWorkEvidence,
+  failWorkContract,
   getWorkContract,
   recordWorkCompletionReceipt,
   updateWorkContract,
@@ -1350,12 +1352,15 @@ export async function submitAssistantPluginAction(
       }).contract
     : undefined;
   if (acceptedWork) {
-    updateWorkContract({ controllerHome, repoId: repository.repoId }, acceptedWork.workId, {
-      status: 'running',
-      workKind: 'local_effect',
-      dispatchState: 'running',
-      evidenceState: 'partial',
-    });
+    activateWorkContract(
+      { controllerHome, repoId: repository.repoId },
+      acceptedWork.workId,
+      {
+        phase: 'implementation',
+        summary: `Controller-local plugin action ${request.pluginId}/${request.actionId} started.`,
+        evidenceState: 'partial',
+      },
+    );
   }
   appendRuntimeEvent(controllerHome, {
     repoId: repository.repoId,
@@ -1604,17 +1609,19 @@ export async function submitAssistantPluginAction(
         });
       } else {
         const current = getWorkContract({ controllerHome, repoId: repository.repoId }, acceptedWork.workId);
-        updateWorkContract({ controllerHome, repoId: repository.repoId }, acceptedWork.workId, {
-          status: 'failed',
-          workKind: 'local_effect',
-          dispatchState: 'terminal',
-          evidenceState: 'failed',
-          evidenceRefs: [{
-            title: 'controller-local effect failed',
-            summary: `${request.pluginId}/${request.actionId}: ${message}`.slice(0, 1_000),
-            detailLevel: 'summary',
-          }, ...(current?.evidenceRefs ?? [])],
-        });
+        failWorkContract(
+          { controllerHome, repoId: repository.repoId },
+          acceptedWork.workId,
+          {
+            phase: current?.phase ?? 'implementation',
+            summary: `Controller-local plugin action failed: ${request.pluginId}/${request.actionId}: ${message}`.slice(0, 1_000),
+            evidenceRefs: [{
+              title: 'controller-local effect failed',
+              summary: `${request.pluginId}/${request.actionId}: ${message}`.slice(0, 1_000),
+              detailLevel: 'summary',
+            }, ...(current?.evidenceRefs ?? [])],
+          },
+        );
       }
     }
     const receipt: PluginActionReceipt = {

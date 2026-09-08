@@ -16,11 +16,14 @@ import {
   appendVerificationRecord,
   appendWorkEvidence,
   appendWorkHandoffRef,
+  cancelWorkContract,
   createWorkContract,
+  failWorkContract,
   getWorkContract,
   isTerminalWorkContractStatus,
   listWorkContracts,
   readActiveWorkCandidates,
+  recordWorkEvidenceState,
   recordWorkScopeEvidence,
   recordWorkImplementationReview,
   requestWorkImplementationReview,
@@ -2275,7 +2278,7 @@ export function verifyGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloop
     && !approvedReviewRemainsAuthoritative
     && workRequiresImplementationReview(updated.workKind, currentChangedPaths);
   if (approvedReviewRemainsAuthoritative && updated.evidenceState !== 'valid') {
-    updateWorkContract(ctx.workStore, updated.workId, { evidenceState: 'valid' });
+    recordWorkEvidenceState(ctx.workStore, updated.workId, 'valid');
   }
   if (reviewRequiredAfterPass) {
     recordWorkScopeEvidence(ctx.workStore, updated.workId, { actualChangedPaths: [...(ctx.workspaceChangedPaths ?? [])] });
@@ -2518,11 +2521,9 @@ export function finalizeGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorklo
   const history = completionEvidence.history;
 
   if (input.forceFailed || completionEvidence.status === 'failed') {
-    const updated = transitionWorkContractPhase(ctx.workStore, work.workId, {
-      status: 'failed',
-      phase: 'cleanup',
-      state: 'failed',
-      summary: `Work failed acceptance/finalization: ${history.acceptanceFailures.join(', ') || 'forced failure'}.`,
+    const updated = failWorkContract(ctx.workStore, work.workId, {
+      phase: work.phase,
+      summary: `Work failed acceptance/finalization while in ${work.phase}: ${history.acceptanceFailures.join(', ') || 'forced failure'}.`,
       evidenceRefs: work.evidenceRefs,
     });
     if (updated.planId && updated.planStepId && ctx.planStore) {
@@ -2761,10 +2762,7 @@ export function stopGoalWorkloop(ctx: GoalWorkloopContext, input: GoalWorkloopSt
   }
 
   const destructiveCleanup = input.authorizeDestructiveCleanup === true;
-  transitionWorkContractPhase(ctx.workStore, work.workId, {
-    status: 'cancelled',
-    phase: 'cleanup',
-    state: 'skipped',
+  cancelWorkContract(ctx.workStore, work.workId, {
     summary: input.reason ? `Stopped: ${input.reason}` : 'Work stopped without destructive cleanup.',
     evidenceRefs: work.evidenceRefs,
   });

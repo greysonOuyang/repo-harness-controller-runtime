@@ -10,6 +10,7 @@ import {
   createWorkContract,
   getWorkContract,
   recordContentEquivalentCommitAuthorityTransfer,
+  recordWorkEvidenceState,
   recordWorkImplementationReview,
   requestWorkImplementationReview,
   transitionWorkContractPhase,
@@ -128,7 +129,7 @@ describe('content-equivalent commit authority transfer', () => {
     transitionWorkContractPhase({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, {
       phase: 'verification', status: 'running', state: 'satisfied', summary: 'Pre-commit verification passed.',
     });
-    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, { evidenceState: 'valid' });
+    recordWorkEvidenceState({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, 'valid');
     requestWorkImplementationReview({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, fx.workId, 'Review exact pre-commit candidate.');
     const parent: WorkImplementationReviewRecord = {
       schemaVersion: 1,

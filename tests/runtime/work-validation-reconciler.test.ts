@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, recordWorkEvidenceState } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { workContractStorePath } from '../../packages/kernel/work/infrastructure/work-contract-store';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
@@ -399,7 +399,7 @@ describe('Work validation receipt convergence', () => {
     const result = reconcileWorkValidation(fx.controllerHome, fx.handle);
     expect(result).toMatchObject({ outcome: 'failed', changed: true, handle: { state: 'failed' } });
     expect(result.handle.finalization.validation).toBe('failed');
-    expect(contractFor(fx)).toMatchObject({ status: 'failed', phase: 'cleanup', evidenceState: 'failed' });
+    expect(contractFor(fx)).toMatchObject({ status: 'failed', phase: 'implementation', dispatchState: 'terminal', evidenceState: 'failed' });
   });
 
   test('authorizes delivery only for valid evidence bound to the exact current input', () => {
@@ -417,7 +417,7 @@ describe('Work validation receipt convergence', () => {
 
   test('a changed-input revalidation marks prior valid evidence stale without rewriting receipts', () => {
     const fx = fixture('succeeded');
-    updateWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, { evidenceState: 'valid' });
+    recordWorkEvidenceState({ controllerHome: fx.controllerHome, repoId: fx.repoId }, fx.workId, 'valid');
 
     markWorkValidationPending(fx.controllerHome, fx.handle);
     expect(contractFor(fx)).toMatchObject({ evidenceState: 'stale' });
@@ -549,6 +549,7 @@ describe('workspace-bound validation identity', () => {
     const storePath = workContractStorePath({ root });
     const persisted = JSON.parse(readFileSync(storePath, 'utf8')) as { contracts: Array<Record<string, any>> };
     const legacy = persisted.contracts[0]!;
+    legacy.schemaVersion = 2;
     legacy.phase = 'delivery';
     legacy.phaseEvidence.implementation.state = 'satisfied';
     legacy.phaseEvidence.verification.state = 'satisfied';
@@ -587,6 +588,7 @@ describe('workspace-bound validation identity', () => {
     const storePath = workContractStorePath({ root });
     const persisted = JSON.parse(readFileSync(storePath, 'utf8')) as { contracts: Array<Record<string, any>> };
     const legacy = persisted.contracts[0]!;
+    legacy.schemaVersion = 2;
     legacy.phase = 'delivery';
     legacy.phaseEvidence.implementation.state = 'satisfied';
     legacy.phaseEvidence.verification.state = 'satisfied';

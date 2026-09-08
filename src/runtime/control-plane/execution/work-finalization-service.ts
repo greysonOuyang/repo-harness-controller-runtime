@@ -21,6 +21,7 @@ import { transferReviewedWorkAuthorityAcrossContentEquivalentCommit } from './co
 import {
   assertImplementationReviewPreDeliveryBoundary,
   authoritativeImplementationReviewVerificationEvidence,
+  failWorkContract,
   latestImplementationReview,
   implementationReviewChangedPathDigest,
   normalizeImplementationReviewChangedPaths,
@@ -1666,7 +1667,11 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     });
     if (current.workContractId) {
       if (stage === 'validation') {
-        updateWorkContract({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId, { status: 'failed' });
+        failWorkContract(
+          { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
+          current.workContractId,
+          { phase: 'verification', summary: `Work finalization validation failed: ${reason}` },
+        );
       } else if (stage === 'commit' || stage === 'merge' || stage === 'branchCleanup' || stage === 'worktreeCleanup') {
         transitionWorkContractPhase(
           { controllerHome: ctx.controllerHome, repoId: current.repositoryId },
@@ -1675,6 +1680,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
             phase: retryPhaseForFinalizationStage(stage),
             status: 'blocked',
             state: 'blocked',
+            dispatchState: 'blocked',
             summary: `Retryable Work finalization stage ${stage} failed: ${reason}`,
           },
         );
@@ -2278,6 +2284,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
                 phase: 'delivery',
                 status: 'blocked',
                 state: 'blocked',
+                dispatchState: 'blocked',
                 summary: `Target branch ${targetBranch} advanced to ${advance.targetHead} and conflicts with candidate ${advance.candidateHead}; canonical target was not mutated.`,
               },
             );
@@ -2341,6 +2348,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
                   phase: 'delivery',
                   status: 'blocked',
                   state: 'blocked',
+                  dispatchState: 'blocked',
                   summary: `Linear target-advance integration failed inside the isolated Work checkout; canonical ${targetBranch} was not mutated.`,
                 },
               );
