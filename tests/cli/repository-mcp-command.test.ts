@@ -174,10 +174,19 @@ describe("repository MCP command tools", () => {
     const rhContext = runtimeToolDefinitions.find((tool) => tool.name === "rh_context");
     const rhWork = runtimeToolDefinitions.find((tool) => tool.name === "rh_work");
     const command = repositoryToolDefinitions.find((tool) => tool.name === "repository_command_execute");
+    const safePatchPlan = repositoryToolDefinitions.find((tool) => tool.name === "repository_safe_patch_plan");
+    const safePatchApply = repositoryToolDefinitions.find((tool) => tool.name === "repository_safe_patch_apply");
     expect(rhContext?.description).toContain("default repository code-discovery/read path");
     expect(rhContext?.description).toContain("fallback-only");
     expect(rhWork?.description).toContain("Requirement and Plan are not universal prerequisites");
     expect(command?.description).toContain("Use rh_context for routine code discovery/reading");
+    const operationTypes = (tool: (typeof repositoryToolDefinitions)[number] | undefined): string[] | undefined => {
+      const properties = tool?.inputSchema.properties as Record<string, unknown> | undefined;
+      const operations = properties?.operations as { items?: { properties?: { type?: { enum?: string[] } } } } | undefined;
+      return operations?.items?.properties?.type?.enum;
+    };
+    expect(operationTypes(safePatchPlan)).toEqual(["create", "write", "replace", "insert_before", "insert_after", "prepend", "append", "delete"]);
+    expect(operationTypes(safePatchApply)).toEqual(operationTypes(safePatchPlan));
     for (const retired of ["repository_goal_list", "repository_goal_upsert", "repository_stuck_diagnose", "repository_goal_run", "repository_goal_runs"]) {
       expect(repositoryToolDefinitions.some((tool) => tool.name === retired)).toBe(false);
     }
@@ -469,6 +478,14 @@ describe("repository MCP command tools", () => {
       expect(allowed.status).toBe("applied");
       expect(allowed.session.workId).toBe(workId);
       expect(readFileSync(join(repoRoot, "src/allowed.txt"), "utf8")).toBe("yes\n");
+
+      const writeMissing = await json(callRepositoryTool(controllerHome, "repository_safe_patch_apply", {
+        repo_id: repository.repoId, work_id: workId, purpose: "write must not silently create",
+        operations: [{ type: "write", path: "src/missing.txt", content: "no\n" }],
+      }, caller));
+      expect(writeMissing.status).toBe("failed");
+      expect(writeMissing.failures).toContainEqual(expect.objectContaining({ type: "write", path: "src/missing.txt", code: "TARGET_MISSING" }));
+      expect(existsSync(join(repoRoot, "src/missing.txt"))).toBe(false);
     } finally {
       await cleanupWorkspace([workspace, controllerHome, repoRoot]);
       rmSync(workspace, { recursive: true, force: true });

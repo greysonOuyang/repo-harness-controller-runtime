@@ -25,6 +25,7 @@ import {
 } from '../../../src/cli/repositories/registry';
 import { buildControllerWorkbench } from '../../../src/cli/repositories/workbench';
 import { applySafePatch, buildSafePatchPlan } from '../../../src/cli/repositories/safe-patch';
+import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../src/cli/editing/edit-operation-contract';
 import { getEditSession, getEditSessionDiff, type EditSessionBinding } from '../../../src/cli/editing/edit-session';
 import { buildSyncOperationDigest, classifyUserFacingError } from '../../../src/runtime/control-plane/facade/operation-digest';
 import {
@@ -219,7 +220,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   definition('repository_safe_patch_plan', 'Plan a deterministic chunked repository patch with fresh file fingerprints before applying.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    operations: { type: 'array', items: { type: 'object' }, description: 'Edit operations using the same shape as apply_patch.' },
+    operations: { type: 'array', items: EDIT_OPERATION_INPUT_SCHEMA, description: 'Typed edit operations. Use type=create for a new path; write/replace/insert/prepend/append/delete require an existing target and preserve strict preconditions.' },
     chunk_size: { type: 'number', description: 'Maximum operations per deterministic chunk. Capped at 100.' },
   }, ['operations'], true),
   definition('repository_safe_patch_apply', 'Apply one coherent deterministic edit batch and return bounded review evidence. Checks are opt-in: pass check_ids only when the batch is stable. Long checks return managed Process handles instead of blocking the MCP call; use validation_only with the returned session/request ids to join later without replaying the patch.', {
@@ -228,7 +229,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     work_id: { type: 'string', description: 'Optional durable Work identity. Workflow controllers should pass the exact claimed Work id so attribution survives transient MCP transport sessions.' },
     session_id: { type: 'string', description: 'Existing edit session id. Required for validation_only; otherwise omit to create one.' },
     purpose: { type: 'string', description: 'Purpose for a newly created edit session.' },
-    operations: { type: 'array', items: { type: 'object' }, description: 'Edit operations using the same shape as apply_patch. Required unless validation_only=true.' },
+    operations: { type: 'array', items: EDIT_OPERATION_INPUT_SCHEMA, description: 'Typed edit operations. Use type=create for a new path; write/replace/insert/prepend/append/delete require an existing target and preserve strict preconditions. Required unless validation_only=true.' },
     chunk_size: { type: 'number', description: 'Maximum operations per deterministic chunk. Capped at 100.' },
     expected_revision: { type: 'number', description: 'Expected starting edit-session revision.' },
     allowed_paths: { type: 'array', items: { type: 'string' }, description: 'Optional allowed path globs for a newly created session.' },

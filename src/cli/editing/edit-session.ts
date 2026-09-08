@@ -13,6 +13,8 @@ import { globMatches, resolveMcpPath } from '../mcp/paths';
 import type { McpPolicy } from '../mcp/types';
 import type { ProcessCheckCompletionReceipt, ProcessCheckReceiptStatus } from '../../runtime/execution/process-runtime/check-receipt';
 import { invalidateRepositoryReadCaches } from '../repository/inspector';
+import type { EditOperation } from './edit-operation-contract';
+export type { EditOperation } from './edit-operation-contract';
 
 export type EditSessionStatus =
   | 'open'
@@ -198,14 +200,6 @@ export class EditSessionPatchError extends Error {
     this.details = details;
   }
 }
-
-export type EditOperation =
-  | { type: 'create'; path: string; content: string }
-  | { type: 'write'; path: string; expectedSha256: string; content: string }
-  | { type: 'replace'; path: string; expectedSha256: string; replacements: Array<{ oldText: string; newText: string; replaceAll?: boolean }> }
-  | { type: 'insert_before' | 'insert_after'; path: string; expectedSha256: string; anchor: string; content: string; occurrence?: number }
-  | { type: 'prepend' | 'append'; path: string; expectedSha256: string; content: string }
-  | { type: 'delete'; path: string; expectedSha256: string };
 
 const SESSION_ROOT = '.ai/harness/edit-sessions';
 const SESSION_OWNER_MARKER = '.forge-owner.json';
