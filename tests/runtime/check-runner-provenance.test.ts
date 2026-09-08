@@ -17,6 +17,7 @@ import {
   type ControllerCheckSnapshot,
 } from '../../src/cli/controller/check-runner';
 import type { RepositoryCheckStorageAuthority } from '../../src/runtime/execution/process-runtime/check-storage';
+import { registerRepository } from '../../src/cli/repositories/registry';
 import { resolvePersistedCheckCliInvocation, resolvePersistedCheckProcessInvocation } from '../../src/runtime/gateway/mcp/persisted-check-process';
 import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
 import { claimsForCheck } from '../../src/runtime/execution/process-runtime/resource-claims';
@@ -201,6 +202,58 @@ describe('controller check provenance and failure classification', () => {
     mkdirSync(join(repoRoot, '.ai', 'harness', 'checks'), { recursive: true });
     expect(() => runControllerCheckRaw(repoRoot, 'conflict', undefined, undefined, storageAuthority(repoRoot)))
       .toThrow(/CHECK_STORAGE_REPOSITORY_PATH_FORBIDDEN/);
+  });
+
+  test('retires a registered legacy check directory into Controller Home before execution', () => {
+    const repoRoot = fixture({
+      legacy_retire: { command: [process.execPath, '-e', 'process.exit(0)'] },
+    });
+    const seedAuthority = storageAuthority(repoRoot);
+    const registered = registerRepository({ path: repoRoot, controllerHome: seedAuthority.controllerHome });
+    const authority: RepositoryCheckStorageAuthority = {
+      controllerHome: seedAuthority.controllerHome,
+      repoId: registered.repoId,
+    };
+    const legacyPath = join(repoRoot, '.ai', 'harness', 'checks');
+    mkdirSync(legacyPath, { recursive: true });
+    writeFileSync(join(legacyPath, 'latest.json'), '{"legacy":true}\n');
+
+    const result = runControllerCheckRaw(repoRoot, 'legacy_retire', undefined, undefined, authority);
+
+    expect(result.ok).toBe(true);
+    expect(existsSync(legacyPath)).toBe(false);
+    const quarantineRoot = join(
+      authority.controllerHome,
+      'repositories',
+      registered.repoId,
+      'quarantine',
+      'legacy-checks',
+    );
+    const quarantined = readdirSync(quarantineRoot);
+    expect(quarantined).toHaveLength(1);
+    expect(readFileSync(join(quarantineRoot, quarantined[0]!, 'latest.json'), 'utf8')).toBe('{"legacy":true}\n');
+    expect(existsSync(join(authority.controllerHome, 'repositories', registered.repoId, 'checks', 'controller', 'latest-legacy_retire.json'))).toBe(true);
+  });
+
+  test('removes a registered canonical check compatibility link without touching its target', () => {
+    const repoRoot = fixture({
+      canonical_link: { command: [process.execPath, '-e', 'process.exit(0)'] },
+    });
+    const seedAuthority = storageAuthority(repoRoot);
+    const registered = registerRepository({ path: repoRoot, controllerHome: seedAuthority.controllerHome });
+    const authority: RepositoryCheckStorageAuthority = {
+      controllerHome: seedAuthority.controllerHome,
+      repoId: registered.repoId,
+    };
+    const physicalRoot = join(authority.controllerHome, 'repositories', registered.repoId, 'checks');
+    mkdirSync(physicalRoot, { recursive: true });
+    const legacyPath = join(repoRoot, '.ai', 'harness', 'checks');
+    mkdirSync(dirname(legacyPath), { recursive: true });
+    symlinkSync(physicalRoot, legacyPath, 'dir');
+
+    expect(runControllerCheckRaw(repoRoot, 'canonical_link', undefined, undefined, authority).ok).toBe(true);
+    expect(existsSync(legacyPath)).toBe(false);
+    expect(existsSync(physicalRoot)).toBe(true);
   });
 
   test('normalizes declared effects and binds them into check snapshots', () => {
