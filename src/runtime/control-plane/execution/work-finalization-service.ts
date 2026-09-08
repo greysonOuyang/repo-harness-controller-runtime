@@ -526,6 +526,7 @@ function assertPhysicalBranchCleanupImplementationReviewGate(input: {
   target: RepositoryRecord;
   handle: WorkHandleState;
   contract: NonNullable<ReturnType<typeof contractFor>>;
+  targetBranch?: string;
 }): void {
   const branchHead = gitRevision(input.target.canonicalRoot, input.handle.branch);
   if (!branchHead) throw new Error('WORK_IMPLEMENTATION_REVIEW_BRANCH_SOURCE_REQUIRED');
@@ -534,7 +535,12 @@ function assertPhysicalBranchCleanupImplementationReviewGate(input: {
   }
   const review = latestImplementationReview(input.contract.implementationReviews);
   const changedPaths = implementationReviewCommittedChangedPaths({
-    repository: input.target, handle: input.handle, contract: input.contract, head: branchHead, review,
+    repository: input.target,
+    handle: input.handle,
+    contract: input.contract,
+    head: branchHead,
+    explicitTargetBranch: input.targetBranch,
+    review,
   });
   if (!workRequiresImplementationReview(input.contract.workKind, changedPaths)) return;
   if (!review) throw new Error('WORK_IMPLEMENTATION_REVIEW_REQUIRED');
@@ -2519,7 +2525,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
         { allowArchived: true },
       );
       assertPhysicalImplementationReviewGate({
-        ctx, repository: deliveryRepository, handle: current, contract: deliveryContract,
+        ctx, repository: deliveryRepository, handle: current, contract: deliveryContract, targetBranch,
       });
     } catch (error) {
       return {
@@ -2684,7 +2690,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     const remoteDeliveryContract = contractFor(ctx, current);
     if (!remoteDeliveryContract) throw new Error(`WORK_IMPLEMENTATION_REVIEW_CONTRACT_REQUIRED: ${current.workId}`);
     assertPhysicalImplementationReviewGate({
-      ctx, repository: authorityRepository, handle: current, contract: remoteDeliveryContract,
+      ctx, repository: authorityRepository, handle: current, contract: remoteDeliveryContract, targetBranch,
     });
     remoteDelivery = await pushExactWorkRemoteDelivery({
       controllerHome: ctx.controllerHome,
@@ -2761,8 +2767,13 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
           current.checkoutId,
           { allowArchived: true },
         );
+        const cleanupTargetBranch = resolveWorkDeliveryTargetBranch(
+          current,
+          cleanupRepository.defaultBranch,
+          explicitTargetBranch,
+        );
         assertPhysicalImplementationReviewGate({
-          ctx, repository: cleanupRepository, handle: current, contract: cleanupContract,
+          ctx, repository: cleanupRepository, handle: current, contract: cleanupContract, targetBranch: cleanupTargetBranch,
         });
       }
       const target = selectWorkFinalizationTarget(getRepository(current.repositoryId, ctx.controllerHome), current);
@@ -2787,7 +2798,13 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     const branchCleanupContract = contractFor(ctx, current);
     if (!branchCleanupContract) throw new Error(`WORK_IMPLEMENTATION_REVIEW_CONTRACT_REQUIRED: ${current.workId}`);
     if (branchCleanupContract.status !== 'cancelled' && branchCleanupContract.status !== 'failed') {
-      assertPhysicalBranchCleanupImplementationReviewGate({ target, handle: current, contract: branchCleanupContract });
+      const targetBranch = resolveWorkDeliveryTargetBranch(current, target.defaultBranch, explicitTargetBranch);
+      assertPhysicalBranchCleanupImplementationReviewGate({
+        target,
+        handle: current,
+        contract: branchCleanupContract,
+        targetBranch,
+      });
     }
     const deleted = repositoryGitDeleteBranch(ctx.controllerHome, target, { branch: current.branch, force: false, authorizationDecision: gitAuthorization, sessionId: session.sessionId, principalId: session.principalId, workId: current.workId, goalId: current.goalId });
     if (deleted.execution.authorizationDecision?.decision === 'user_confirmation_required') return { authorization: deleted.execution.authorizationDecision, work: compactHandle(current), stages: current.finalization };
