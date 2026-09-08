@@ -110,7 +110,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       'readonly-command': 'fast',
       'managed-local-command': 'fast',
       'focused-check': 'fast',
-      'release-check': 'fast',
+      'release-check': 'durable',
       'interactive-write': 'direct',
       'external-controller': 'durable',
       'unknown-tool': 'reject',

@@ -123,7 +123,9 @@ if (process.argv.includes('--warmup')) {
     artifactPath,
     artifactBinding: { kind: 'prefix_argument', index: 0, entryPath: 'entry.cjs' },
     command: { executable: process.execPath, prefixArguments: [entryPath] },
-    warmup: { arguments: ['--warmup'], timeoutMs: 25 },
+    // Leave enough startup budget for the supervised Node child to publish its
+    // PID marker before the intentional long-lived warmup timeout.
+    warmup: { arguments: ['--warmup'], timeoutMs: 250 },
   };
 }
 

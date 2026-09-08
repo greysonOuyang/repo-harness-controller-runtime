@@ -243,6 +243,13 @@ function wantsAsyncExecution(args: Record<string, unknown>): boolean {
     || args.background === true;
 }
 
+/** Release checks cross the external Controller boundary when explicitly
+ * requested asynchronously; ordinary checks remain Process-Runtime local. */
+function isReleaseCheckId(value: unknown): boolean {
+  const id = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return id === 'check:release' || id === 'package:check:release';
+}
+
 export function runsAsInteractiveSyncWrite(
   name: string,
   args: Record<string, unknown> = {},
@@ -370,7 +377,7 @@ export function classifyGatewayExecutionPath(
     || args.mode === 'async'
     || args.async === true
     || args.background === true
-  );
+  ) && !(name === 'run_check' && isReleaseCheckId(args.check_id ?? args.checkId));
   // Async on Process-Runtime-owned tools means return the managed Process
   // handle immediately. It must not promote local work into the retired
   // ExecutionJob path. Explicit durable mode still crosses the external
@@ -389,6 +396,9 @@ export function classifyGatewayExecutionPath(
       : [];
     if (args.mode === 'durable' || args.force_durable === true) {
       return { path: 'durable', reasons: ['caller_requested_durable_check'] };
+    }
+    if (isReleaseCheckId(checkId) && batchCheckIds.length === 0) {
+      return { path: 'durable', reasons: ['release_check_requires_durable_boundary'] };
     }
     // Gateway owns transport placement, not Check lifecycle semantics. Until
     // the registered ControllerCheck is resolved by the Check owner below,
