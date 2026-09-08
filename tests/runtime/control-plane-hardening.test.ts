@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -15,7 +15,7 @@ import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { assertRepositoryCommandInputAllowed } from '../../src/cli/repositories/command-scope';
+import { assertCommandPathOperandsStayInRepository, assertRepositoryCommandInputAllowed } from '../../src/cli/repositories/command-scope';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
 import { appendWorkEvidence, createWorkContract, getWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, requestWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
@@ -82,6 +82,47 @@ function passingDiagnostics() {
 }
 
 describe('repository command managed-worktree authority', () => {
+  test('exact current-source ControllerRound argv owns one explicit controller-local effect without weakening repository scope', () => {
+    const root = temp('forge-source-round-command-scope-');
+    const repoRoot = process.cwd();
+    const controllerHome = join(root, 'controller');
+    mkdirSync(controllerHome, { recursive: true });
+    const repoId = 'repo-source-round-scope';
+    const exact = assertRepositoryCommandInputAllowed([
+      'bun', 'src/cli/index.ts', 'chatgpt', 'round-continue',
+      '--controller-home', controllerHome,
+      '--repo-id', repoId,
+      '--work-id', 'work-source-round',
+      '--controller-authority-id', 'cra_source_round',
+      '--relay-scope-id', 'goal:work-source-round',
+    ]);
+    const usages = assertCommandPathOperandsStayInRepository(exact, repoRoot, repoRoot, [], {
+      controllerHome,
+      repositoryId: repoId,
+    });
+    expect(usages).toHaveLength(1);
+    expect(usages[0]).toMatchObject({ canonicalPath: realpathSync(controllerHome), operation: 'controller_local_effect' });
+
+    const wrongRepo = assertRepositoryCommandInputAllowed([
+      'bun', 'src/cli/index.ts', 'chatgpt', 'round-continue',
+      '--controller-home', controllerHome,
+      '--repo-id', 'repo-other',
+      '--work-id', 'work-source-round',
+      '--controller-authority-id', 'cra_source_round',
+      '--relay-scope-id', 'goal:work-source-round',
+    ]);
+    expect(() => assertCommandPathOperandsStayInRepository(wrongRepo, repoRoot, repoRoot, [], {
+      controllerHome,
+      repositoryId: repoId,
+    })).toThrow('SOURCE_CONTROLLER_ROUND_COMMAND_REPOSITORY_MISMATCH');
+
+    const shell = `bun src/cli/index.ts chatgpt round-continue --controller-home ${controllerHome} --repo-id ${repoId} --work-id work-source-round --controller-authority-id cra_source_round --relay-scope-id goal:work-source-round`;
+    expect(() => assertCommandPathOperandsStayInRepository(shell, repoRoot, repoRoot, [], {
+      controllerHome,
+      repositoryId: repoId,
+    })).toThrow('COMMAND_SCOPE_DENIED: external writes are not allowed from repository commands');
+  });
+
   test('requires rh_work ownership for temporary git worktree creation while preserving read-only worktree inspection', () => {
     expect(() => assertRepositoryCommandInputAllowed(['git', 'worktree', 'add', '/tmp/forge-repair', '-b', 'fix/repair'])).toThrow(
       /MANAGED_WORKSPACE_REQUIRED:.*use rh_work.*terminal cleanup authority/,
@@ -948,13 +989,13 @@ describe('scheduled external Controller wake', () => {
     expect(dispatchedTransportConversation).toBe('fresh');
     expect(dispatchedPrompt).toContain(SOURCE_ROUND_CONTINUATION_INSTRUCTION);
     expect(dispatchedPrompt).toContain(`repository_command_execute(repo_id=${JSON.stringify(repository.repoId)}, checkout_id=${JSON.stringify(repository.activeCheckoutId)}, command=`);
-    expect(dispatchedPrompt).toContain(`command=[\"bun\",\"src/cli/index.ts\",\"chatgpt\",\"round-continue\",\"--repo-id\",${JSON.stringify(repository.repoId)},\"--work-id\",${JSON.stringify(workId)}`);
+    expect(dispatchedPrompt).toContain(`command=[\"bun\",\"src/cli/index.ts\",\"chatgpt\",\"round-continue\",\"--controller-home\",${JSON.stringify(controllerHome)},\"--repo-id\",${JSON.stringify(repository.repoId)},\"--work-id\",${JSON.stringify(workId)}`);
     expect(dispatchedPrompt).toContain(`request_id=${JSON.stringify(`source-round-continue:${dispatchedAuthority}`)}`);
     expect(dispatchedPrompt).toContain('round-close');
     expect(dispatchedPrompt).toContain(`request_id=${JSON.stringify(`source-round-close:wait:${dispatchedAuthority}`)}`);
     expect(dispatchedPrompt).toContain('sole repository_command_execute exception');
     expect(dispatchedPrompt).toContain('do not pass wrapper work_id');
-    expect(dispatchedPrompt).not.toContain(JSON.stringify(controllerHome));
+    expect(dispatchedPrompt).toContain(JSON.stringify(controllerHome));
     expect(dispatchedPrompt).not.toContain(JSON.stringify(repoRoot));
     expect(dispatchedPrompt).toContain(JSON.stringify(dispatchedAuthority));
     expect(dispatchedPrompt).toContain(JSON.stringify(opened.relayScopeId));

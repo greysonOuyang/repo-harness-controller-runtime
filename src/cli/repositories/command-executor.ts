@@ -266,7 +266,10 @@ function prepareRepositoryCommandExecution(
     allowOpaqueLocalScript: input.allowOpaqueLocalScript,
   });
   const externalGrants = loadExternalFilesystemGrants(root).grants;
-  const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants);
+  const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants, {
+    controllerHome,
+    repositoryId: repository.repoId,
+  });
   const classification = classifyRepositoryCommand(command, repository.defaultBranch);
   const before = input.reuseSnapshot ?? (input.allowNonGitWorkspace ? emptyWorkspaceSnapshot() : repositorySnapshot(root));
   return finalizePreparedExecution(
@@ -304,7 +307,10 @@ async function prepareRepositoryCommandExecutionAsync(
     allowOpaqueLocalScript: input.allowOpaqueLocalScript,
   });
   const externalGrants = loadExternalFilesystemGrants(root).grants;
-  const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants);
+  const externalPathUsages = assertCommandPathOperandsStayInRepository(command, cwd, root, externalGrants, {
+    controllerHome,
+    repositoryId: repository.repoId,
+  });
   const classification = classifyRepositoryCommand(command, repository.defaultBranch);
   if (mode === 'readonly_direct' && classification.risk !== 'readonly') {
     throw new Error(`READONLY_DIRECT_ROUTE_REQUIRED: received ${classification.risk}`);
