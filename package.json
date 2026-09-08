@@ -46,6 +46,7 @@
     "docs/images/",
     "docs/architecture/",
     "docs/operations/",
+    "!docs/operations/v2-candidate-certification.md",
     "docs/wiki/",
     "docs/public-usage-guide.md",
     "docs/public-usage-guide.zh-CN.md",
