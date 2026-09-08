@@ -49,6 +49,20 @@ Execution placement, lifecycle, retry, authorization, and acceptance decisions c
 
 Machine-visible failures have a stable code plus an explicit class and retry disposition; transport projections such as HTTP status derive from that contract. Free-form messages exist for diagnostics and user presentation. A producer-specific adapter may translate a native SDK/OS error into the failure contract once, but retry policy must not be inferred from words such as `temporary`, `worker`, or `network`, and authorization must not be inferred from arbitrary prose. Ambiguous non-idempotent outcomes use an explicit reconciliation-before-retry disposition rather than generic transient retry.
 
+### Root-cause repair workflow
+
+Repeated defects in routing, lifecycle, retry, authorization, schema compatibility, state projection, or placement are treated as architecture signals rather than isolated bug tickets. The required repair sequence is:
+
+1. Reproduce the smallest failing behavior and name the exact machine decision that was wrong. Do not start by adding a special case for the observed string, tool name, check id, error message, or status.
+2. Identify the current semantic owner and all inputs that influence that decision. Human-readable text, legacy status projections, transport session identity, and adapter-local inference are suspect whenever typed domain state already exists.
+3. Search the repository for the same semantic decision and equivalent heuristics. Same-root symptoms are consolidated under one repair Work/issue; they are not fixed as independent patches merely because they surfaced through different tools.
+4. Establish or select one typed owner for the decision. Adapters may normalize bounded legacy transport data once with provenance, but they do not own lifecycle, persistence, routing, retry, or acceptance semantics. Compatibility code must re-enter the canonical owner rather than create a parallel path.
+5. Migrate the highest-risk consumers first, preserving only bounded ingress compatibility that cannot yet be removed. Any compatibility debt must be visible and mechanically enumerable.
+6. Add focused behavioral regression for the old failure mode and an architecture guardrail when the defect class can recur mechanically. The regression must prove that the former heuristic no longer gains authority, not merely that the current example happens to pass.
+7. Run one representative end-to-end journey before closing the root issue family. Related issues close only after the canonical owner is in use, dominant consumers have migrated, the guardrail passes, and any tracked compatibility debt has shrunk or has an explicit remaining owner.
+
+The runtime architecture gate maintains an AST-derived semantic-string debt ledger for authority-critical code. New human-readable string matching in machine-decision branches must not be normalized by casually extending that ledger; ledger additions are architecture exceptions requiring explicit review and a migration rationale. Ordinary repair work may only remove entries. This guardrail intentionally does not ban parsers, regexes, or string matching globally: discovery, presentation, input validation, and bounded compatibility ingress remain valid when they do not become downstream semantic authority.
+
 ### Ephemeral Direct — default
 
 Ordinary local reads, Git inspection, edits, local scripts, builds, and short checks should execute with minimal controller overhead. No persistent Work is created merely because the task is complex or investigative.

@@ -177,6 +177,159 @@ function requireExactShrinkingDebt(label, actual, allowed) {
   }
 }
 
+function requireExactShrinkingInventory(label, actual, allowed) {
+  for (const entry of actual) {
+    if (!allowed.has(entry)) failures.push(`${label} introduced forbidden entry: ${entry}`);
+  }
+  for (const entry of allowed) {
+    if (!actual.has(entry)) failures.push(`${label} allowlist contains retired entry; remove it so the debt ledger only shrinks: ${entry}`);
+  }
+}
+
+const SEMANTIC_AUTHORITY_CRITICAL_ROOTS = [
+  'packages/kernel',
+  'src/runtime/control-plane',
+  'src/runtime/execution',
+  'adapters/mcp/runtime-gateway',
+  'src/cli/local-bridge',
+];
+const HUMAN_READABLE_SEMANTIC_FIELDS = new Set(['message', 'reason', 'description', 'checkId', 'check_id']);
+const HUMAN_READABLE_STRING_MATCH_METHODS = new Set(['includes', 'startsWith', 'endsWith', 'match', 'search']);
+
+function humanReadableSemanticExpression(ts, node) {
+  if (ts.isIdentifier(node)) return HUMAN_READABLE_SEMANTIC_FIELDS.has(node.text);
+  if (ts.isPropertyAccessExpression(node)) return HUMAN_READABLE_SEMANTIC_FIELDS.has(node.name.text);
+  if (ts.isElementAccessExpression(node)
+      && node.argumentExpression
+      && ts.isStringLiteralLike(node.argumentExpression)) {
+    return HUMAN_READABLE_SEMANTIC_FIELDS.has(node.argumentExpression.text);
+  }
+  if (ts.isParenthesizedExpression(node)
+      || ts.isAsExpression(node)
+      || ts.isTypeAssertionExpression(node)
+      || ts.isNonNullExpression(node)) {
+    return humanReadableSemanticExpression(ts, node.expression);
+  }
+  if (ts.isConditionalExpression(node)) {
+    return humanReadableSemanticExpression(ts, node.whenTrue)
+      || humanReadableSemanticExpression(ts, node.whenFalse);
+  }
+  if (ts.isCallExpression(node)
+      && ts.isPropertyAccessExpression(node.expression)
+      && ['trim', 'toLowerCase', 'toUpperCase'].includes(node.expression.name.text)) {
+    return humanReadableSemanticExpression(ts, node.expression.expression);
+  }
+  return false;
+}
+
+function isHumanReadableSemanticMatcherCall(ts, node) {
+  if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return false;
+  const method = node.expression.name.text;
+  if (HUMAN_READABLE_STRING_MATCH_METHODS.has(method)
+      && humanReadableSemanticExpression(ts, node.expression.expression)) return true;
+  return method === 'test' && node.arguments.some((argument) => humanReadableSemanticExpression(ts, argument));
+}
+
+function semanticAuthorityStringMatchRecordsFromSources(sources) {
+  const ts = loadTypeScriptCompiler();
+  if (!ts) return new Set();
+  const records = new Set();
+  for (const { path, source } of [...sources].sort((left, right) => left.path.localeCompare(right.path))) {
+    const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    function collectCondition(expression) {
+      function visitCondition(node) {
+        if (isHumanReadableSemanticMatcherCall(ts, node)) {
+          records.add(`${path}::${node.getText(sourceFile).replace(/\s+/g, ' ').trim()}`);
+        }
+        ts.forEachChild(node, visitCondition);
+      }
+      visitCondition(expression);
+    }
+    function visit(node) {
+      if (ts.isIfStatement(node) || ts.isWhileStatement(node) || ts.isDoStatement(node)) collectCondition(node.expression);
+      else if (ts.isConditionalExpression(node)) collectCondition(node.condition);
+      else if (ts.isForStatement(node) && node.condition) collectCondition(node.condition);
+      ts.forEachChild(node, visit);
+    }
+    visit(sourceFile);
+  }
+  return records;
+}
+
+function semanticAuthorityProductionStringMatchRecords() {
+  const paths = SEMANTIC_AUTHORITY_CRITICAL_ROOTS.flatMap((directory) => sourceFiles(directory));
+  return semanticAuthorityStringMatchRecordsFromSources(paths.map((path) => ({ path, source: text(path) })));
+}
+
+const semanticAuthorityGuardrailFixture = process.env.FORGE_SEMANTIC_AUTHORITY_GUARDRAIL_FIXTURE;
+if (semanticAuthorityGuardrailFixture) {
+  const fixture = JSON.parse(semanticAuthorityGuardrailFixture);
+  const actual = semanticAuthorityStringMatchRecordsFromSources(Array.isArray(fixture.sources) ? fixture.sources : []);
+  const allowed = new Set(Array.isArray(fixture.allowed) ? fixture.allowed : []);
+  requireExactShrinkingInventory('semantic authority fixture debt', actual, allowed);
+  if (failures.length) {
+    console.error('[semantic-authority-guardrail] FAILED');
+    for (const failure of failures) console.error(`- ${failure}`);
+    process.exit(1);
+  }
+  console.log(`[semantic-authority-guardrail] OK (${actual.size} debt entries)`);
+  process.exit(0);
+}
+
+const SEMANTIC_STRING_AUTHORITY_DEBT = new Set([
+  `adapters/mcp/runtime-gateway/execution-tools.ts::message.includes(':')`,
+  `adapters/mcp/runtime-gateway/process-tools.ts::message.includes(':')`,
+  `adapters/mcp/runtime-gateway/router.ts::message.includes(':')`,
+  `adapters/mcp/runtime-gateway/runtime-tools.ts::error.message.startsWith('PLUGIN_NOT_FOUND:')`,
+  `adapters/mcp/runtime-gateway/runtime-tools.ts::message.includes('CONTROL_PLANE_REVISION_CONFLICT')`,
+  `adapters/mcp/runtime-gateway/runtime-tools.ts::message.startsWith('CHECKOUT_NOT_ACTIVE:')`,
+  `adapters/mcp/runtime-gateway/runtime-tools.ts::message.startsWith('checkout not found for ')`,
+  `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('consecutive_failures:')`,
+  `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('repeated_state:')`,
+  `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('round_budget_exhausted:')`,
+  `packages/kernel/scheduler/application/continuation-service.ts::error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')`,
+  `src/cli/local-bridge/facade-api.ts::selection.reason.includes('Small')`,
+  `src/cli/local-bridge/facade-api.ts::selection.reason.includes('small')`,
+  `src/cli/local-bridge/job-store.ts::message.startsWith(\"LOCAL_JOB_ID_REQUIRED:\")`,
+  `src/cli/local-bridge/job-store.ts::message.startsWith(\"LOCAL_JOB_PATH_INVALID:\")`,
+  `src/cli/local-bridge/server.ts::message.startsWith(\"REPOSITORY_SELF_PROTECTED\")`,
+  `src/runtime/control-plane/execution/work-execution-support.ts::message.startsWith('CHECKOUT_NOT_ACTIVE:')`,
+  `src/runtime/control-plane/execution/work-execution-support.ts::message.startsWith('checkout not found for ')`,
+  `src/runtime/control-plane/execution/work-execution-support.ts::reason.includes('infrastructure')`,
+  `src/runtime/control-plane/execution/work-execution-support.ts::reason.includes('terminal')`,
+  `src/runtime/control-plane/execution/work-execution-support.ts::reason.includes('timed out')`,
+  `src/runtime/control-plane/execution/work-execution-support.ts::reason.includes('unavailable')`,
+  `src/runtime/control-plane/execution/work-head-settlement.ts::error.message.includes('CONTROL_PLANE_REVISION_CONFLICT')`,
+  `src/runtime/control-plane/execution/work-terminal-cleanup.ts::message.startsWith('CHECKOUT_NOT_ACTIVE:')`,
+  `src/runtime/control-plane/execution/work-terminal-cleanup.ts::message.startsWith('checkout not found for ')`,
+  `src/runtime/control-plane/facade/requirement-authority.ts::error.message.startsWith('REQUIREMENT_ALREADY_EXISTS:')`,
+  `src/runtime/control-plane/global-scheduler/reconciliation.ts::message.includes(':')`,
+  `src/runtime/control-plane/global-scheduler/reconciliation.ts::message.startsWith('WRITER_FENCED:')`,
+  `src/runtime/control-plane/global-scheduler/scheduler.ts::error.message.startsWith('LOCK_HELD:')`,
+  `src/runtime/control-plane/launcher/chatgpt-work-continuation.ts::error.message.includes(':')`,
+  `src/runtime/control-plane/persistence/sqlite-store.ts::(error instanceof Error ? error.message : String(error)).startsWith('CONTROL_PLANE_SQLITE_BUSY:')`,
+  `src/runtime/control-plane/persistence/sqlite-store.ts::/database is locked|SQLITE_BUSY/i.test(message)`,
+  `src/runtime/control-plane/persistence/sqlite-store.ts::message.startsWith('CONTROL_PLANE_')`,
+  `src/runtime/control-plane/persistence/sqlite-store.ts::message.startsWith('CONTROL_PLANE_SQLITE_CORRUPT:')`,
+  `src/runtime/execution/jobs/store.ts::error.message.startsWith('WRITER_FENCED:')`,
+  `src/runtime/execution/process-runtime/lightweight-managed.ts::error.message.startsWith('PROCESS_REQUEST_CONFLICT:')`,
+  `src/runtime/execution/process-runtime/process-runner-entry.ts::message.startsWith('PROCESS_RUNNER_ALREADY_STARTED:')`,
+  `src/runtime/execution/process-runtime/process-runner-entry.ts::message.startsWith('PROCESS_RUNNER_RECEIPT_CORRUPT:')`,
+  `src/runtime/execution/thin-harness/fast-executor.ts::message.includes(':')`,
+  `src/runtime/execution/thin-harness/fast-executor.ts::message.includes('\\0')`,
+  `src/runtime/execution/thin-harness/fingerprint-worker.ts::error.message.startsWith('SNAPSHOT_BUDGET')`,
+  `src/runtime/execution/thin-harness/fingerprint-worker.ts::message.startsWith('CANCELLED')`,
+  `src/runtime/execution/thin-harness/fingerprint-worker.ts::message.startsWith('SNAPSHOT_BUDGET')`,
+  `src/runtime/execution/thin-harness/fingerprint-worker.ts::message.startsWith('SNAPSHOT_TOO_DIRTY')`,
+  `src/runtime/execution/thin-harness/fingerprint-worker.ts::message.startsWith('SNAPSHOT_WORKER_TIMEOUT')`,
+  `src/runtime/execution/workers/executor.ts::message.startsWith('LEGACY_JOB_TIMEOUT:')`,
+]);
+requireExactShrinkingInventory(
+  'human-readable semantic authority debt',
+  semanticAuthorityProductionStringMatchRecords(),
+  SEMANTIC_STRING_AUTHORITY_DEBT,
+);
+
 // Kernel V2 B7 graph analysis. Legacy boundary debt below is exact and must only shrink.
 // Inventory is derived from the production graph before the gate is activated.
 function stronglyConnectedComponents(graph) {
