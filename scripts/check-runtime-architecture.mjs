@@ -255,6 +255,182 @@ function requireExactShrinkingInventory(label, actual, allowed) {
   }
 }
 
+// #197 MCP mega-adapter decomposition. These are debt ledgers, not target
+// architecture: entries may only disappear. New domain-authority imports or
+// switch cases must be implemented in the owning domain adapter/application API,
+// never added to runtime-tools/router while decomposition is in progress.
+const MCP_GATEWAY_AUTHORITY_IMPORT_PATTERN = /(?:packages\/kernel\/|src\/runtime\/|src\/cli\/(?:repositories|editing)\/)/;
+
+function gatewayAuthorityImportInventoryFromSources(sources) {
+  const ts = loadTypeScriptCompiler();
+  if (!ts) return new Set();
+  const records = new Set();
+  for (const { path, source } of sources) {
+    const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    function visit(node) {
+      if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+          && node.moduleSpecifier
+          && ts.isStringLiteralLike(node.moduleSpecifier)
+          && MCP_GATEWAY_AUTHORITY_IMPORT_PATTERN.test(node.moduleSpecifier.text)) {
+        records.add(`${path}::${node.moduleSpecifier.text}`);
+      }
+      ts.forEachChild(node, visit);
+    }
+    visit(sourceFile);
+  }
+  return records;
+}
+
+function runtimeToolSwitchCaseInventory(source) {
+  const marker = 'export async function callRuntimeTool';
+  const start = source.indexOf(marker);
+  if (start < 0) return new Set();
+  return new Set([...source.slice(start).matchAll(/case\s+['"]([^'"]+)['"]\s*:/g)].map((match) => match[1]));
+}
+
+const MCP_RUNTIME_GATEWAY_AUTHORITY_IMPORT_DEBT = new Set([
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../packages/kernel/controller/api/index',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../packages/kernel/scheduler/api/index',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../packages/kernel/work/api/index',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/cli/repositories/controller-home',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/cli/repositories/registry',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/cli/repositories/runtime-storage',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/cli/repositories/selected-path-actions',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/cli/repositories/structured-git',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/context/assistant-work-context',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/context/context-closure',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/context/semantic-navigation',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/controller-authority-recovery',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/direct-edit-work-completion',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/execution-identity',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/implementation-review-content',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/retained-work-resume',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/session-store',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/validation',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/verification-evidence',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-finalization-service',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-handle-authority',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-handle-store',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-process-evidence',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-task-receipt',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-terminal-cleanup',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-verification-context',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-verification-service',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/facade',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/facade/operation-digest',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/facade/repository-work-admission',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/facade/requirement-authority',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/global-scheduler/scheduler',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/governance/external-effects',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/launcher/chatgpt-work-continuation',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/launcher/thin-launcher',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/persistence/requirement-store',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/persistence/workflow-run-store',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/runtime-generation',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/runtime-status-client',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/diagnostics/performance',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/evidence/artifact-store',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/evidence/event-ledger',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/evidence/evidence-store',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/jobs/store',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/jobs/types',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/jobs/wait',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/managed-workspace',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime/check-result',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime/check-scheduling',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime/command-facade',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/health',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/maintenance/cleanup',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/model-clients',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/plugins/execution-origin',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/plugins/lightweight-action',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/plugins/store',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/projections/controller-context',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/projections/materialized-view',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/recovery',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/root/assistant-learning-loop',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/root/controller-round-composition',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/root/release-materialize',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/root/status',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/safe-tooling',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/shared/local-bridge-surface',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/standalone-recovery/core',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/watchdog/workflow-watchdog',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/workflow/schedules/work-continuation',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/workflows/first-party/xiaohongshu',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/workflows/runtime',
+  'adapters/mcp/runtime-gateway/router.ts::../../../src/cli/editing/edit-session',
+  'adapters/mcp/runtime-gateway/router.ts::../../../src/cli/repositories/command-classifier',
+  'adapters/mcp/runtime-gateway/router.ts::../../../src/cli/repositories/registry',
+  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/control-plane/execution/edit-validation-coordinator',
+  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/control-plane/execution/execution-identity',
+  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/diagnostics/process-facade',
+  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/execution/jobs/types',
+  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/execution/process-runtime',
+  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/execution/process-runtime/check-scheduling',
+  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/execution/thin-harness',
+]);
+
+const MCP_RUNTIME_TOOLS_SWITCH_CASE_DEBT = new Set([
+  'browser_review_packet', 'cancel_job', 'capability_recovery_apply', 'capability_recovery_plan', 'capability_recovery_probe',
+  'controller_context', 'controller_ready', 'deepseek_controller_handoff_prepare', 'deepseek_controller_manifest',
+  'deepseek_controller_request_prepare', 'deepseek_tool_call_prepare', 'deepseek_tool_manifest',
+  'external_filesystem_grant_apply', 'external_filesystem_grant_preview', 'external_filesystem_targets_list',
+  'external_filesystem_text_snapshot', 'get_artifact', 'get_job', 'get_local_job', 'get_local_job_output', 'get_plugin',
+  'git_commit_paths', 'git_diff_paths', 'git_stage_paths', 'ios_app_build', 'ios_app_install', 'ios_app_launch',
+  'ios_project_discover', 'ios_review_packet', 'ios_schemes_list', 'ios_simulator_boot', 'ios_simulator_log_tail',
+  'ios_simulator_screenshot', 'ios_simulators_list', 'ios_ui_smoke_test', 'ios_xcode_status', 'list_jobs', 'list_plugins',
+  'local_bridge_status', 'model_clients_summary', 'model_control_plane_summary', 'plugin_action_execute', 'prepare_transfer_artifacts',
+  'recovery.cleanup_apply', 'recovery.cleanup_preview', 'recovery.create_patch_handoff', 'recovery.external_filesystem_grant_preview',
+  'recovery.local_jobs_quarantine_unreadable', 'recovery.local_jobs_reconcile', 'recovery.probe_again', 'recovery.rebuild_projection',
+  'recovery.reconcile_jobs', 'recovery.refresh_repository', 'recovery.restart_primary_connector',
+  'recovery.runtime_storage_finalize_relocation', 'recovery.stage_and_activate_runtime_release', 'recovery.workspace_auth_login_prepare',
+  'repository_change_verify', 'repository_runtime_snapshot', 'request_release_gate', 'review_artifacts_index', 'review_artifacts_prepare',
+  'rh_context', 'rh_inbox', 'rh_status', 'rh_work', 'runtime_cleanup_apply', 'runtime_cleanup_preview', 'runtime_maintenance_apply',
+  'runtime_maintenance_status', 'runtime_performance_diagnostics', 'runtime_storage_repair_apply', 'runtime_storage_repair_preview',
+  'schedule_dedupe_apply', 'schedule_dedupe_report', 'toolchain_plugin_summary', 'work_cancel', 'work_get', 'work_list',
+  'work_result_summary', 'work_status_digest', 'work_wait', 'workflow_watchdog_report', 'workspace_auth_login_prepare', 'workspace_auth_status',
+]);
+
+const mcpAdapterBoundaryFixture = process.env.FORGE_MCP_RUNTIME_ADAPTER_BOUNDARY_FIXTURE;
+if (mcpAdapterBoundaryFixture) {
+  const fixture = JSON.parse(mcpAdapterBoundaryFixture);
+  const sources = Array.isArray(fixture.sources) ? fixture.sources : [];
+  requireExactShrinkingDebt(
+    'MCP runtime adapter authority-import fixture debt',
+    gatewayAuthorityImportInventoryFromSources(sources),
+    new Set(Array.isArray(fixture.allowedImports) ? fixture.allowedImports : []),
+  );
+  const runtimeSource = sources.find((entry) => entry.path === 'adapters/mcp/runtime-gateway/runtime-tools.ts')?.source ?? '';
+  requireExactShrinkingInventory(
+    'MCP runtime-tools switch-case fixture debt',
+    runtimeToolSwitchCaseInventory(runtimeSource),
+    new Set(Array.isArray(fixture.allowedCases) ? fixture.allowedCases : []),
+  );
+  if (failures.length) {
+    console.error('[mcp-runtime-adapter-boundary-guardrail] FAILED');
+    for (const failure of failures) console.error(`- ${failure}`);
+    process.exit(1);
+  }
+  console.log('[mcp-runtime-adapter-boundary-guardrail] OK');
+  process.exit(0);
+}
+
+requireExactShrinkingDebt(
+  'MCP runtime mega-adapter direct domain-authority import debt',
+  gatewayAuthorityImportInventoryFromSources([
+    { path: 'adapters/mcp/runtime-gateway/runtime-tools.ts', source: text('adapters/mcp/runtime-gateway/runtime-tools.ts') },
+    { path: 'adapters/mcp/runtime-gateway/router.ts', source: text('adapters/mcp/runtime-gateway/router.ts') },
+  ]),
+  MCP_RUNTIME_GATEWAY_AUTHORITY_IMPORT_DEBT,
+);
+requireExactShrinkingInventory(
+  'MCP runtime-tools switch-case debt',
+  runtimeToolSwitchCaseInventory(text('adapters/mcp/runtime-gateway/runtime-tools.ts')),
+  MCP_RUNTIME_TOOLS_SWITCH_CASE_DEBT,
+);
+
 const FROZEN_CAPABILITY_PREFIX_FILES = [
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   'adapters/mcp/controller-round-compatibility.ts',

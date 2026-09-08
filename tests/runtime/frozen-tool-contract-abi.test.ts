@@ -41,6 +41,21 @@ function runPrefixFixture(sources: Array<{ path: string; source: string }>, allo
   });
 }
 
+function runMcpAdapterBoundaryFixture(
+  sources: Array<{ path: string; source: string }>,
+  allowedImports: string[],
+  allowedCases: string[],
+) {
+  return spawnSync(process.execPath, [architectureScript], {
+    cwd: resolve(import.meta.dir, '../..'),
+    env: {
+      ...process.env,
+      FORGE_MCP_RUNTIME_ADAPTER_BOUNDARY_FIXTURE: JSON.stringify({ sources, allowedImports, allowedCases }),
+    },
+    encoding: 'utf8',
+  });
+}
+
 describe('Tool Contract ABI authority', () => {
   test('exported Recovery activation schema is representable from frozen caller args plus runtime_status', () => {
     const hydrated = hydrateRecoveryToolArguments({
@@ -136,6 +151,33 @@ describe('Tool Contract ABI authority', () => {
       operation: 'work_review',
       args: { decision: 'maybe' as 'approved' },
     })).toThrow('FROZEN_SEMANTIC_COMPATIBILITY_INVALID');
+  });
+
+  test('MCP mega-adapter debt guard rejects new authority imports/cases and forces the baseline to shrink', () => {
+    const runtimePath = 'adapters/mcp/runtime-gateway/runtime-tools.ts';
+    const newImport = `${runtimePath}::../../../src/runtime/control-plane/future-authority`;
+    const introducedImport = runMcpAdapterBoundaryFixture([
+      { path: runtimePath, source: `import { future } from '../../../src/runtime/control-plane/future-authority';\nexport async function callRuntimeTool() { return future; }` },
+    ], [], []);
+    expect(introducedImport.status).toBe(1);
+    expect(introducedImport.stderr).toContain(`introduced forbidden dependency: ${newImport}`);
+
+    const introducedCase = runMcpAdapterBoundaryFixture([
+      { path: runtimePath, source: `export async function callRuntimeTool(name: string) { switch (name) { case 'future_domain_tool': return; } }` },
+    ], [], []);
+    expect(introducedCase.status).toBe(1);
+    expect(introducedCase.stderr).toContain('introduced forbidden entry: future_domain_tool');
+
+    const retiredDebt = runMcpAdapterBoundaryFixture([
+      { path: runtimePath, source: `export async function callRuntimeTool() { return; }` },
+    ], [], ['rh_status']);
+    expect(retiredDebt.status).toBe(1);
+    expect(retiredDebt.stderr).toContain('allowlist contains retired entry');
+
+    const empty = runMcpAdapterBoundaryFixture([
+      { path: runtimePath, source: `export async function callRuntimeTool() { return; }` },
+    ], [], []);
+    expect(empty.status).toBe(0);
   });
 
   test('architecture guardrail rejects new ad-hoc capability prefixes and forces legacy debt to shrink', () => {

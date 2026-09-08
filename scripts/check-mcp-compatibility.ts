@@ -29,20 +29,38 @@ import {
 // caught before they become discovery latency and schema-cache churn.
 const MAX_DEFAULT_TOOL_COUNT = 24;
 
+// #197 decomposition authority: the public/frozen Tool Contract is an explicit
+// baseline, independent from whichever internal adapter currently defines a
+// tool. Adapter extraction may move implementation ownership without silently
+// changing names, descriptions, input schemas, or annotations.
+const EXPECTED_STABLE_CONTROLLER_TOOL_NAMES = [
+  'rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work',
+  'repository_list', 'repository_get', 'repository_register', 'repository_command_execute',
+  'read_repository_file', 'repository_safe_patch_apply', 'run_check', 'plugin_action_execute',
+  'process_get', 'process_wait', 'process_logs', 'process_cancel', 'result_read', 'result_search',
+] as const;
+const EXPECTED_STABLE_TOOL_NAME_FINGERPRINT = '8e6613493e480a26';
+const EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT = 'a6c8a8cb0af7f7d8';
+
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
   enableDevRunner: true,
   devRunnerAgents: 'codex,claude',
 });
 
-const sourceGroups = {
-  runtime: runtimeToolDefinitions.map((tool) => tool.name),
-  execution: executionToolDefinitions.map((tool) => tool.name),
-  process: processToolDefinitions.map((tool) => tool.name),
-  access: accessToolDefinitions.map((tool) => tool.name),
-  repository: repositoryToolDefinitions.map((tool) => tool.name),
-  legacyCompatibility: buildMcpToolDefinitions(policy).map((tool) => tool.name),
+const sourceDefinitionGroups = {
+  runtime: runtimeToolDefinitions,
+  execution: executionToolDefinitions,
+  process: processToolDefinitions,
+  access: accessToolDefinitions,
+  repository: repositoryToolDefinitions,
+  legacyCompatibility: buildMcpToolDefinitions(policy),
 };
+const sourceGroups = Object.fromEntries(
+  Object.entries(sourceDefinitionGroups).map(([group, definitions]) => [group, definitions.map((tool) => tool.name)]),
+) as Record<keyof typeof sourceDefinitionGroups, string[]>;
+const allDefinitions = Object.values(sourceDefinitionGroups).flat();
+const definitionByName = new Map(allDefinitions.map((tool) => [tool.name, tool]));
 const fullNames = [...new Set(Object.values(sourceGroups).flat())];
 const defaultNames: string[] = [...DEFAULT_CONTROLLER_TOOL_NAMES];
 const coreNames: string[] = [...CORE_CONTROLLER_TOOL_NAMES];
@@ -50,6 +68,8 @@ const advancedNames: string[] = [...ADVANCED_CONTROLLER_TOOL_NAMES];
 const catalogNames: string[] = [...STABLE_CONTROLLER_TOOL_NAMES];
 const preferredNames: string[] = [...PREFERRED_FACADE_TOOL_NAMES];
 const defaultFingerprint = forgeToolSurfaceFingerprint(defaultNames);
+const stableDefinitions = defaultNames.map((name) => definitionByName.get(name)).filter((tool) => tool !== undefined);
+const stableSchemaFingerprint = forgeToolSurfaceFingerprint(stableDefinitions);
 const catalogFingerprint = forgeToolSurfaceFingerprint(catalogNames);
 const fullFingerprint = forgeToolSurfaceFingerprint(fullNames);
 const duplicateDefault = defaultNames.filter((name, index) => defaultNames.indexOf(name) !== index);
@@ -70,6 +90,17 @@ const legacyHandlerNames = [...legacyHandlerSource.matchAll(/case\s+["']([^"']+)
 const legacyHandlerCollisions = [...new Set(legacyHandlerNames.filter((name) => currentToolNames.has(name)))].sort();
 
 const failures: string[] = [];
+if (defaultNames.join('\n') !== EXPECTED_STABLE_CONTROLLER_TOOL_NAMES.join('\n')) {
+  failures.push(`stable ChatGPT Tool Contract names changed: ${defaultNames.join(', ')}`);
+}
+if (defaultFingerprint !== EXPECTED_STABLE_TOOL_NAME_FINGERPRINT) {
+  failures.push(`stable ChatGPT tool-name fingerprint changed: ${defaultFingerprint} != ${EXPECTED_STABLE_TOOL_NAME_FINGERPRINT}`);
+}
+if (stableDefinitions.length !== defaultNames.length) {
+  failures.push(`stable ChatGPT Tool Contract definitions are incomplete: ${stableDefinitions.length}/${defaultNames.length}`);
+} else if (stableSchemaFingerprint !== EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT) {
+  failures.push(`stable ChatGPT Tool Contract schema fingerprint changed: ${stableSchemaFingerprint} != ${EXPECTED_STABLE_TOOL_SCHEMA_FINGERPRINT}`);
+}
 if (defaultNames.length > MAX_DEFAULT_TOOL_COUNT) {
   failures.push(`default ChatGPT tools/list exceeds the schema budget: ${defaultNames.length} > ${MAX_DEFAULT_TOOL_COUNT}`);
 }
@@ -229,6 +260,7 @@ console.log(JSON.stringify({
   version: FORGE_VERSION,
   stableToolCount: defaultNames.length,
   stableFingerprint: defaultFingerprint,
+  stableSchemaFingerprint,
   defaultToolBudget: MAX_DEFAULT_TOOL_COUNT,
   compatibilityCatalogToolCount: catalogNames.length,
   compatibilityCatalogFingerprint: catalogFingerprint,

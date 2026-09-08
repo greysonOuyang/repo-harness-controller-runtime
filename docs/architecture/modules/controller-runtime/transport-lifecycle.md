@@ -25,3 +25,9 @@
 ```text
 bun test tests/unit/fix-mcp-session-lifecycle.test.ts tests/cli/mcp-http.test.ts
 ```
+
+## MCP Runtime adapter decomposition boundary
+
+The public MCP Tool Contract is frozen independently from implementation placement. `check:mcp-compatibility` records both the stable tool-name fingerprint and the canonical schema fingerprint, so moving a handler between adapters cannot silently change the connector ABI.
+
+`runtime-tools.ts` and `router.ts` are currently migration debt, not architecture authorities. Runtime Architecture keeps shrinking inventories for their direct imports into Kernel/Context/Control Plane/Execution/Recovery/Plugin/Workflow/Repository domains and for the `callRuntimeTool` switch cases. A stage may remove an inventory entry only when ownership moves behind the correct domain adapter/application API; adding a new entry fails the architecture gate. This deliberately avoids source-line-count rules while making mega-adapter regrowth mechanically impossible.
