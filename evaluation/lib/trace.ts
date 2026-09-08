@@ -11,6 +11,10 @@ interface SupervisedCommandResult {
   timedOut: boolean;
   stdout: string;
   stderr: string;
+  pid?: number;
+  residualPids: number[];
+  remainingPids: number[];
+  pidReuseFenced: boolean;
   failureCode?: string;
   error?: string;
 }
@@ -107,6 +111,7 @@ export function captureCommand(input: {
   let stdout: string;
   let stderr: string;
   let timedOut: boolean;
+  let supervision: CommandRecord['supervision'];
   let error = '';
   if (input.timeoutMs !== undefined) {
     const request = Buffer.from(JSON.stringify({
@@ -130,6 +135,13 @@ export function captureCommand(input: {
       stdout = result.stdout;
       stderr = result.stderr;
       timedOut = result.timedOut;
+      supervision = {
+        ...(result.pid ? { pid: result.pid } : {}),
+        residualPids: [...result.residualPids],
+        remainingPids: [...result.remainingPids],
+        pidReuseFenced: result.pidReuseFenced,
+        ...(result.failureCode ? { failureCode: result.failureCode } : {}),
+      };
       error = [result.failureCode, result.error].filter(Boolean).join(':');
     } catch {
       exitCode = typeof supervised.status === 'number' ? supervised.status : null;
@@ -165,6 +177,7 @@ export function captureCommand(input: {
     stdout: bounded(stdout),
     stderr: bounded([parsed.stderr, error].filter(Boolean).join('\n')),
     timedOut,
+    ...(supervision ? { supervision } : {}),
     ...(parsed.resourceUsage ? { resourceUsage: parsed.resourceUsage } : {}),
   };
 }

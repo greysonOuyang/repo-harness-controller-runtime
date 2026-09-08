@@ -759,12 +759,13 @@ describe('candidate-neutral paired evaluation runner', () => {
       expect(timedOut.every((trial) => trial.failure?.code === 'candidate_timeout')).toBe(true);
       expect(timedOut.every((trial) => trial.report.trace.finalResult.status === 'failed')).toBe(true);
       expect(timedOut.every((trial) => trial.report.trace.commands.some((command) => command.timedOut))).toBe(true);
-      const warmupPids = timedOut.map((trial) => {
-        const match = /WARMUP_PID=(\d+)/.exec(trial.warmupCommands[0]?.stdout ?? '');
-        expect(match).not.toBeNull();
-        return Number(match![1]);
-      });
-      expect(warmupPids.every((pid) => !isProcessAlive(pid))).toBe(true);
+      for (const trial of timedOut) {
+        const supervision = trial.warmupCommands[0]?.supervision;
+        expect(supervision).toBeDefined();
+        expect(supervision?.pid).toBeGreaterThan(0);
+        expect(supervision?.remainingPids).toEqual([]);
+        expect(supervision?.pidReuseFenced).toBe(false);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

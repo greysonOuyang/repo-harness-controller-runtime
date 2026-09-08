@@ -79,9 +79,13 @@ The final V2 vs 1.7.2 comparison follows three hard rules:
 future formal v1.7.2-vs-V2 comparison. `lib/calibration.ts` recomputes and
 fail-closes that manifest against the candidate-neutral evaluator implementation
 (and its MCP SDK dependency), the 24-scenario shared corpus, the formal metric
-and failure taxonomy, trial policy, exact v1.7.2 baseline artifact, A/A
-calibration evidence, and the environment policy. The calibration authority code
-itself is part of the evaluator implementation digest.
+and failure taxonomy, trial policy, the reproducible v1.7.2 reconstruction and
+output authorities, A/A calibration evidence, and the environment policy.
+`baselines/v1.7.2/reconstruction.json` binds the exact release tarball, normalized
+release lock, installer, and builder implementation; `authority.json` binds the
+independently reproduced runnable artifact and production dependency graph. The
+older pre-reconstruction artifact digest is historical evidence only. The
+calibration authority code itself is part of the evaluator implementation digest.
 
 The current v1.7.2 A/A summary in `aa-calibration.json` is evidence for arm
 symmetry and harness noise on the exact frozen shared-corpus digest only. It used the same immutable artifact on both
