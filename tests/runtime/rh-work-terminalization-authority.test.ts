@@ -34,6 +34,7 @@ import { executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess
 import { executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
 import { bindControllerSessionBinding, getControllerSessionBinding, getControllerWorkBinding, getRetainedControllerSession } from '../../packages/kernel/controller/api/index';
 import { resumeScheduledControllerContinuation } from '../../packages/kernel/scheduler/api/index';
+import { updateScheduledContinuationDispatch } from '../../packages/kernel/scheduler/infrastructure/continuation-dispatch-store';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -1434,6 +1435,155 @@ describe('rh_work terminalization authority', () => {
     expect(getControllerRoundRelay(store, workId)).toMatchObject({
       lifecycleStage: 'dispatch_confirmed',
       providerDispatchReceiptId: 'provider-dispatch-after-session-rollover',
+    });
+  }, 15_000);
+
+  test('scheduled continuation adopts the exact reserved occurrence across legacy binding projection migration without duplicate dispatch', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-scheduled-legacy-binding-adoption';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'principal-legacy-binding-adoption',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-legacy-binding-adoption',
+      principalId: 'principal-legacy-binding-adoption',
+      controllerInstanceId: 'runtime-legacy-binding-adoption',
+      leaseMs: 60_000,
+    });
+    const currentBinding = upsertChatgptControllerBinding(store, {
+      workId,
+      sessionId: owner.sessionId,
+      title: 'current work-scoped provider target',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+      tabPolicy: 'auto',
+    });
+    bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: currentBinding.binding });
+    const { schedule } = createWorkContinuationSchedule(fx.controllerHome, fx.repository.repoId, {
+      workId, scheduleMode: 'continuation', controllerType: 'chatgpt', triggerType: 'manual', shadowMode: false,
+    });
+    const occurrenceId = 'occ-legacy-binding-adoption';
+    const relayScopeId = `goal:${workId}`;
+    const legacyBindingId = `chatgpt:legacy:${fx.repository.repoId}:${workId}`;
+    const relay = beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      bindingId: legacyBindingId,
+      occurrenceId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+    });
+    expect(relay).toMatchObject({ status: 'dispatching', occurrenceId, bindingId: legacyBindingId });
+    updateScheduledContinuationDispatch(store, occurrenceId, 'test-legacy-binding-prepare', (_current, at) => ({
+      schemaVersion: 1,
+      repoId: fx.repository.repoId,
+      scheduleId: schedule.scheduleId,
+      occurrenceId,
+      workId,
+      controllerSessionId: owner.sessionId,
+      controllerBindingId: currentBinding.binding.bindingId,
+      relayScopeId,
+      status: 'prepared',
+      createdAt: at,
+      updatedAt: at,
+    }));
+
+    let resumeCalls = 0;
+    const input = { scheduleId: schedule.scheduleId, occurrenceId, workId, controllerBindingId: currentBinding.binding.bindingId };
+    const host = {
+      resume: async (binding: typeof currentBinding.binding, context: { authorityId: string }) => {
+        resumeCalls += 1;
+        expect(binding.bindingId).toBe(currentBinding.binding.bindingId);
+        expect(context.authorityId).toBe(relay.authorityId!);
+        return { accepted: true, dispatchId: 'provider-dispatch-after-binding-migration' };
+      },
+    };
+    const first = await resumeScheduledControllerContinuation(store, input, host);
+    expect(first.reused).toBe(false);
+    expect(first.dispatch).toMatchObject({
+      status: 'dispatched', occurrenceId, controllerBindingId: currentBinding.binding.bindingId,
+      hostDispatchId: 'provider-dispatch-after-binding-migration',
+    });
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'dispatched', occurrenceId, bindingId: currentBinding.binding.bindingId,
+      providerDispatchReceiptId: 'provider-dispatch-after-binding-migration',
+    });
+
+    const replay = await resumeScheduledControllerContinuation(store, input, host);
+    expect(replay.reused).toBe(true);
+    expect(replay.dispatch.status).toBe('dispatched');
+    expect(resumeCalls).toBe(1);
+  }, 15_000);
+
+  test('scheduled continuation rejects a dispatching round from another occurrence even when the provider binding projection matches', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const workId = 'work-scheduled-occurrence-mismatch';
+    createReadyWork(fx.controllerHome, fx.repository.repoId, workId);
+    const owner = claimControllerSession(store, {
+      workId,
+      controllerId: 'principal-occurrence-mismatch',
+      controllerType: 'chatgpt',
+      sessionId: 'transport-occurrence-mismatch',
+      principalId: 'principal-occurrence-mismatch',
+      controllerInstanceId: 'runtime-occurrence-mismatch',
+      leaseMs: 60_000,
+    });
+    const binding = upsertChatgptControllerBinding(store, {
+      workId, sessionId: owner.sessionId, title: 'matching provider projection', model: 'gpt-5.6', reasoning: 'high', tabPolicy: 'auto',
+    });
+    bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: binding.binding });
+    const { schedule } = createWorkContinuationSchedule(fx.controllerHome, fx.repository.repoId, {
+      workId, scheduleMode: 'continuation', controllerType: 'chatgpt', triggerType: 'manual', shadowMode: false,
+    });
+    const reservedOccurrenceId = 'occ-reserved-after-crash';
+    const otherOccurrenceId = 'occ-other-open-round';
+    const relayScopeId = `goal:${workId}`;
+    beginInitialControllerRoundDispatch(store, {
+      workId,
+      relayScopeId,
+      bindingId: binding.binding.bindingId,
+      occurrenceId: otherOccurrenceId,
+      identity: {
+        controllerId: owner.controllerId,
+        controllerType: owner.controllerType,
+        principalId: owner.principalId!,
+        controllerInstanceId: owner.controllerInstanceId!,
+        sessionId: owner.sessionId,
+      },
+    });
+    updateScheduledContinuationDispatch(store, reservedOccurrenceId, 'test-occurrence-mismatch-prepare', (_current, at) => ({
+      schemaVersion: 1,
+      repoId: fx.repository.repoId,
+      scheduleId: schedule.scheduleId,
+      occurrenceId: reservedOccurrenceId,
+      workId,
+      controllerSessionId: owner.sessionId,
+      controllerBindingId: binding.binding.bindingId,
+      relayScopeId,
+      status: 'prepared',
+      createdAt: at,
+      updatedAt: at,
+    }));
+    let resumeCalls = 0;
+    await expect(resumeScheduledControllerContinuation(store, {
+      scheduleId: schedule.scheduleId, occurrenceId: reservedOccurrenceId, workId, controllerBindingId: binding.binding.bindingId,
+    }, {
+      resume: async () => {
+        resumeCalls += 1;
+        return { accepted: true, dispatchId: 'must-not-dispatch' };
+      },
+    })).rejects.toThrow(`SCHEDULE_CONTINUATION_ROUND_ALREADY_OPEN: ${reservedOccurrenceId}:${relayScopeId}`);
+    expect(resumeCalls).toBe(0);
+    expect(getControllerRoundRelay(store, workId)).toMatchObject({
+      status: 'dispatching', occurrenceId: otherOccurrenceId, bindingId: binding.binding.bindingId,
     });
   }, 15_000);
 

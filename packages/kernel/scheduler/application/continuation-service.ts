@@ -97,9 +97,9 @@ export async function resumeScheduledControllerContinuation(
     candidate
     && candidate.status === 'dispatching'
     && candidate.relayScopeId === prepared.relayScopeId
+    && candidate.occurrenceId === prepared.occurrenceId
     && candidate.controllerId === session.controllerId
     && candidate.controllerType === session.controllerType
-    && candidate.bindingId === bindingRecord.binding.bindingId
     && candidate.authorityId,
   );
 
