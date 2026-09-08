@@ -15,7 +15,6 @@ import {
   loadRecoveryConfig,
   observeOpenAiTunnelLocalHealthFallback,
   recoveryMachineIdentity,
-  RECOVERY_MUTATION_IDENTITY_FIELDS,
   recoveryConfigPath,
   recoveryCommandPath,
   resolveRecoveryPackageConnectorExecutable,
@@ -52,6 +51,7 @@ import {
   RECOVERY_VERIFIER_OAUTH_REDIRECT_URI,
   resetWatchdogStateForRecoveryRelease,
 } from '../../src/runtime/standalone-recovery/entry';
+import { RECOVERY_MUTATION_IDENTITY_CONTRACT, RECOVERY_MUTATION_IDENTITY_FIELDS } from '../../src/runtime/standalone-recovery/mutation-identity-contract';
 import {
   evaluateRecoveryWatchdogHealth,
   RECOVERY_WATCHDOG_MAX_TICK_AGE_MS,
@@ -1544,9 +1544,13 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(migrateTool?.inputSchema.properties).not.toHaveProperty('destination_home');
     const activateTool = RECOVERY_TOOLS.find((tool) => tool.name === 'activate_runtime_release');
     const activateSchema = activateTool?.inputSchema as { required?: readonly string[]; properties?: Record<string, unknown> } | undefined;
+    expect(Object.keys(RECOVERY_MUTATION_IDENTITY_CONTRACT)).toEqual([...RECOVERY_MUTATION_IDENTITY_FIELDS]);
+    for (const field of RECOVERY_MUTATION_IDENTITY_FIELDS) {
+      expect(activateSchema?.properties?.[field]).toEqual(RECOVERY_MUTATION_IDENTITY_CONTRACT[field]);
+    }
     expect(activateSchema?.required).toEqual(expect.arrayContaining([
       'request_id',
-      ...RECOVERY_MUTATION_IDENTITY_FIELDS,
+      ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS),
       'release_path',
       'expected_active_release_id',
       'expected_authority_revision',
@@ -1567,7 +1571,7 @@ describe('standalone recovery on canonical Runtime', () => {
     ]) {
       const tool = RECOVERY_TOOLS.find((candidate) => candidate.name === toolName);
       const schema = tool?.inputSchema as { required?: readonly string[] } | undefined;
-      expect(schema?.required).toEqual(expect.arrayContaining(['request_id', ...RECOVERY_MUTATION_IDENTITY_FIELDS]));
+      expect(schema?.required).toEqual(expect.arrayContaining(['request_id', ...Array.from(RECOVERY_MUTATION_IDENTITY_FIELDS)]));
     }
     expect(RECOVERY_TOOLS.map((tool) => tool.name)).not.toContain('supervisor_status');
     expect(RECOVERY_CLI_COMMANDS).toContain('list-releases');

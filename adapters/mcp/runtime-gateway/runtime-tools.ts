@@ -160,7 +160,8 @@ import {
   previewRuntimeStorageRepair,
   applyRuntimeStorageRepair,
 } from '../../../src/runtime/recovery';
-import { gatewayToken, loadRecoveryConfig, RECOVERY_MUTATION_IDENTITY_FIELDS } from '../../../src/runtime/standalone-recovery/core';
+import { gatewayToken, loadRecoveryConfig, recoveryMutationIdentityExpectations } from '../../../src/runtime/standalone-recovery/core';
+import { RECOVERY_MUTATION_IDENTITY_FIELDS } from '../../../src/runtime/standalone-recovery/mutation-identity-contract';
 import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource } from '../../../src/runtime/root/release-materialize';
 import {
   getLocalBridgeJobEventsSnapshot,
@@ -669,13 +670,17 @@ function recoveryMutationIdentityCarrier(status: Record<string, unknown>): Recor
   if (!targetRuntime || typeof targetRuntime !== 'object' || Array.isArray(targetRuntime)) throw new Error('RECOVERY_TARGET_IDENTITY_STATUS_INVALID:targetRuntime');
   const recoveryRecord = recovery as Record<string, unknown>;
   const targetRecord = targetRuntime as Record<string, unknown>;
-  const carrier = {
-    expected_host: typeof record.host === 'string' ? record.host : '',
-    expected_platform: typeof record.platform === 'string' ? record.platform : '',
-    expected_controller_home: typeof record.controllerHome === 'string' ? record.controllerHome : '',
-    expected_recovery_release: typeof recoveryRecord.releaseRevision === 'string' ? recoveryRecord.releaseRevision : 'none',
-    expected_target_runtime: typeof targetRecord.id === 'string' ? targetRecord.id : '',
-  };
+  if (typeof record.host !== 'string' || typeof record.platform !== 'string' || typeof record.controllerHome !== 'string') {
+    throw new Error('RECOVERY_TARGET_IDENTITY_STATUS_INVALID:machine');
+  }
+  if (typeof targetRecord.id !== 'string') throw new Error('RECOVERY_TARGET_IDENTITY_STATUS_INVALID:targetRuntime');
+  const carrier = recoveryMutationIdentityExpectations({
+    host: record.host,
+    platform: record.platform as NodeJS.Platform,
+    controllerHome: record.controllerHome,
+    recovery: { ...(typeof recoveryRecord.releaseRevision === 'string' ? { releaseRevision: recoveryRecord.releaseRevision } : {}) },
+    targetRuntime: { id: targetRecord.id } as Parameters<typeof recoveryMutationIdentityExpectations>[0]['targetRuntime'],
+  });
   for (const field of RECOVERY_MUTATION_IDENTITY_FIELDS) {
     if (!carrier[field]) throw new Error(`RECOVERY_TARGET_IDENTITY_STATUS_INVALID:${field}`);
   }

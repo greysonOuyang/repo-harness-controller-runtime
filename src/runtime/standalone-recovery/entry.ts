@@ -27,7 +27,6 @@ import {
   runtimeStatus,
   verifyStableRuntime,
   watchdogTick,
-  RECOVERY_MUTATION_IDENTITY_FIELDS,
   type WatchdogState,
   type RecoveryConfig,
 } from './core';
@@ -43,6 +42,7 @@ import {
   type RecoveryRuntimeIdentity,
   type RecoveryRuntimeRole,
 } from './release';
+import { RECOVERY_MUTATION_IDENTITY_CONTRACT, RECOVERY_MUTATION_IDENTITY_FIELDS } from './mutation-identity-contract';
 
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
@@ -265,14 +265,6 @@ function matchesAnyPath(url: string | undefined, paths: string[]): boolean {
   return paths.some((path) => matchesPath(url, path));
 }
 
-const RECOVERY_MUTATION_IDENTITY_PROPERTIES = {
-  expected_host: { type: 'string', minLength: 1, maxLength: 255 },
-  expected_platform: { type: 'string', minLength: 1, maxLength: 64 },
-  expected_controller_home: { type: 'string', minLength: 1, maxLength: 2048 },
-  expected_recovery_release: { type: 'string', minLength: 1, maxLength: 256 },
-  expected_target_runtime: { type: 'string', minLength: 1, maxLength: 1024 },
-} as const;
-
 function mutationInputSchema(
   extraProperties: Record<string, unknown> = {},
   extraRequired: string[] = [],
@@ -281,7 +273,7 @@ function mutationInputSchema(
     type: 'object',
     properties: {
       request_id: { type: 'string', minLength: 8, maxLength: 120 },
-      ...RECOVERY_MUTATION_IDENTITY_PROPERTIES,
+      ...RECOVERY_MUTATION_IDENTITY_CONTRACT,
       ...extraProperties,
     },
     required: ['request_id', ...RECOVERY_MUTATION_IDENTITY_FIELDS, ...extraRequired],

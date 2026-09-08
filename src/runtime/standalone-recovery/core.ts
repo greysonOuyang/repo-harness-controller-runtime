@@ -47,6 +47,7 @@ import {
 } from '../../cli/repositories/controller-home';
 import { readCurrentRecoveryRelease } from './release';
 import { recoveryOperationLockPath } from './operation-lock';
+import { RECOVERY_MUTATION_IDENTITY_FIELDS, type RecoveryMutationIdentityArguments } from './mutation-identity-contract';
 
 /** Standalone recovery reads only canonical Runtime observation and whole-release authority. */
 interface PublicTunnelRecoveryPolicy {
@@ -158,14 +159,6 @@ export interface RecoveryMachineIdentity {
   };
 }
 
-export const RECOVERY_MUTATION_IDENTITY_FIELDS = [
-  'expected_host',
-  'expected_platform',
-  'expected_controller_home',
-  'expected_recovery_release',
-  'expected_target_runtime',
-] as const;
-
 export function recoveryMachineIdentity(
   config: RecoveryConfig,
   dependencies: { host?: string; platform?: NodeJS.Platform } = {},
@@ -196,15 +189,19 @@ export function recoveryMachineIdentity(
   };
 }
 
-export function assertRecoveryMutationIdentity(config: RecoveryConfig, args: Record<string, unknown>): RecoveryMachineIdentity {
-  const identity = recoveryMachineIdentity(config);
-  const expected: Record<(typeof RECOVERY_MUTATION_IDENTITY_FIELDS)[number], string> = {
+export function recoveryMutationIdentityExpectations(identity: Pick<RecoveryMachineIdentity, 'host' | 'platform' | 'controllerHome' | 'recovery' | 'targetRuntime'>): RecoveryMutationIdentityArguments {
+  return {
     expected_host: identity.host,
     expected_platform: identity.platform,
     expected_controller_home: identity.controllerHome,
     expected_recovery_release: identity.recovery.releaseRevision ?? 'none',
     expected_target_runtime: identity.targetRuntime.id,
   };
+}
+
+export function assertRecoveryMutationIdentity(config: RecoveryConfig, args: Record<string, unknown>): RecoveryMachineIdentity {
+  const identity = recoveryMachineIdentity(config);
+  const expected = recoveryMutationIdentityExpectations(identity);
   for (const field of RECOVERY_MUTATION_IDENTITY_FIELDS) {
     const supplied = typeof args[field] === 'string' ? args[field].trim() : '';
     if (!supplied) throw new Error(`RECOVERY_TARGET_IDENTITY_REQUIRED:${field}`);
