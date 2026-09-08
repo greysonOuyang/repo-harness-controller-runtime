@@ -19,9 +19,9 @@ the integrated lifecycle/failure evidence.
 
 ## Candidate and baseline identity
 
-- Candidate source revision: `5258c0b0803707b6390971cc1adc2c0358c10493`
-- Candidate release artifact digest: `sha256:9fde679f536c49a639db68243e5609d2b9555785579073f961c182ec3aaa5972`
-- Candidate package tarball SHA-256: `c308aeaded3f8b89cc041bbaba9773fe4785938122456cf20d3386017acacc59`
+- Candidate source revision: `83d643944e3b987c9346f2826e43a3b68cc17c48`
+- Candidate release artifact digest: `sha256:ca6102ea0b425278ab61f818cde91529a80ceb306bc4b97b67993fe8b82c7fd1`
+- Candidate package tarball SHA-256: `8beadf2d995dda1c7d2e3a084071f17fac4659f97493510a6b66a337ec478ef3`
 - Frozen v1.7.2 source revision: `c873cfeb11a223ced342e7101c016261b4a93b38`
 - Published v1.7.2 tarball SHA-256: `2073bf8a6ab377e63ebe109c197039647bcf0626fb357954156c9f83f429fb10`
 - Reconstructed v1.7.2 artifact digest: `sha256:1a0bb50ad97c414f4c553ef790b29c8786a76d0f6ca29e04bbd9fed3bb46d43e`
@@ -42,12 +42,12 @@ digest and 100 production top-level packages. The receipts were generated at:
 The final raw external bundle for this candidate is:
 
 ```text
-/tmp/forge-v2-ab-final-package-5258c0b0
+/tmp/forge-v2-ab-final-package-83d64394-run
 ```
 
-Its manifest is `sha256:fad79abbbef471b17541f376bf777d5485f1f876ceafb398a9314998696c87a9`;
+Its manifest is `sha256:4b9d2d19ff7ad2501651b26ffb9f0540826efe3a0687a0c8bfcc1d99964d3c45`;
 the `statistics.json` SHA-256 is
-`a138fd760a51ddcfa65c3d5df191bc124a290c90f74080730f0c8d58cc5a9758`.
+`6e05180bb5ec57d181285782547e91c60285046a4ebb696df9d89806d3fdea1a`.
 The run used protocol digest
 `sha256:14473ca08b47d2a1e4f0905e7e37d580b64e1159e7d8a085f52debc88ea52bd3`,
 evaluator implementation digest
@@ -61,19 +61,19 @@ Observed metrics:
 - `task_correctness`: 100% on both arms; no newly introduced failures or
   timeouts.
 - `tool_interaction_count`: measured and passed.
-- `latency_ms`: baseline mean `485.076 ms`, candidate mean `518.768 ms`; the
-  runner's paired relative mean is `+14.09%`, with a scenario-blocked 95%
-  relative interval `[+8.40%, +19.79%]`. The paired aggregate is slower and
+- `latency_ms`: baseline mean `305.170 ms`, candidate mean `324.297 ms`; the
+  runner's paired relative mean is `+11.62%`, with a scenario-blocked 95%
+  relative interval `[+5.97%, +17.28%]`. The paired aggregate is slower and
   does not establish the required 15% improvement subset.
-- `peak_rss_bytes`: baseline mean `47,607,808`, candidate mean `47,620,324`
-  (`+0.027%` relative; scenario-blocked 95% interval `[-0.034%, +0.088%]`).
+- `peak_rss_bytes`: baseline mean `47,545,685`, candidate mean `47,555,698`
+  (`+0.021%` relative; scenario-blocked 95% interval `[-0.026%, +0.068%]`).
 - `cpu_ms`: resource accounting is present, but only two scenario blocks have
   non-zero CPU deltas because the host reports short-lived calls at zero CPU
   resolution; this remains insufficient precision for a CPU conclusion.
 - `behavioral_invariant_success`, `regression_reintroduction_rate`,
   `impact_coverage`, and `change_precision` were not measured by the shared
   corpus. The runner therefore correctly returned
-    `inconclusive_missing_metrics`, rather than treating absent measurements as
+  `inconclusive_missing_metrics`, rather than treating absent measurements as
   passing zeros.
 
 ## Go / No-Go
