@@ -121,11 +121,12 @@ describe('autonomous continuation lifecycle', () => {
     });
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
+      occurrenceId: 'occurrence-test',
       identity: {
-        controllerId: 'schedule:test', controllerType: 'chatgpt',
-        principalId: 'forge-scheduler',
+        controllerId: 'chatgpt-principal', controllerType: 'chatgpt',
+        principalId: 'chatgpt-principal',
         controllerInstanceId: 'runtime-test',
-        sessionId: 'occurrence-test',
+        sessionId: 'chatgpt-session',
       },
     });
     const staleOwnerBinding = bindChatgptWorkConversation(store, {
@@ -370,12 +371,13 @@ describe('autonomous continuation lifecycle', () => {
 
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
+      occurrenceId: 'occurrence-abandoned',
       maxRepeatedState: 3,
       identity: {
-        controllerId: 'schedule:test', controllerType: 'chatgpt',
-        principalId: 'forge-scheduler',
+        controllerId: 'chatgpt-principal', controllerType: 'chatgpt',
+        principalId: 'chatgpt-principal',
         controllerInstanceId: 'runtime-test',
-        sessionId: 'occurrence-abandoned',
+        sessionId: 'mcp-undisposed',
       },
     });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
@@ -721,7 +723,8 @@ describe('autonomous continuation lifecycle', () => {
     });
     const initial = beginInitialControllerRoundDispatch(store, {
       workId: predecessorWorkId, requirementId,
-      identity: { controllerId: 'schedule:terminal-successor', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'scheduler-runtime', sessionId: 'occ-terminal-successor' },
+      occurrenceId: 'occ-terminal-successor',
+      identity: { controllerId: 'chatgpt-terminal-successor', controllerType: 'chatgpt', principalId: 'chatgpt-terminal-successor', controllerInstanceId: 'provider-runtime-terminal-successor', sessionId: 'provider-session-terminal-successor' },
     });
     finishControllerRoundRelayDispatch(store, { workId: predecessorWorkId, ok: true });
     const owner = claimControllerSession(store, {

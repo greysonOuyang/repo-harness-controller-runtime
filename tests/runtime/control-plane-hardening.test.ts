@@ -1408,7 +1408,8 @@ describe('scheduled external Controller wake', () => {
     const store = { controllerHome, repoId: repository.repoId };
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+      occurrenceId: 'occurrence-test',
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-test', sessionId: 'chatgpt-session' },
     });
     expect(opened).toMatchObject({ status: 'dispatching', lifecycleStage: 'dispatching' });
     const scheduledPrompt = buildChatgptControllerRoundPrompt(store, opened, { exactOriginWork: true });
@@ -1826,7 +1827,8 @@ describe('scheduled external Controller wake', () => {
     const store = { controllerHome, repoId: repository.repoId };
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+      occurrenceId: 'occurrence-test',
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-test', sessionId: 'chatgpt-session' },
     });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
     startExecutionSession(controllerHome, {
@@ -2001,7 +2003,8 @@ describe('scheduled external Controller wake', () => {
     });
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+      occurrenceId: 'occurrence-test',
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-controller', controllerInstanceId: 'runtime-test', sessionId: 'mcp-claim-before-dispatch-finish' },
     });
     expect(opened.status).toBe('dispatching');
     const session = claimControllerSession(store, {
@@ -2060,7 +2063,8 @@ describe('scheduled external Controller wake', () => {
     const store = { controllerHome, repoId: repository.repoId };
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-a', sessionId: 'occurrence-test' },
+      occurrenceId: 'occurrence-test',
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-a', sessionId: 'chatgpt-session-a' },
     });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
     const original = claimControllerSession(store, {
@@ -2194,7 +2198,8 @@ describe('scheduled external Controller wake', () => {
     const store = { controllerHome, repoId: repository.repoId };
     const opened = beginInitialControllerRoundDispatch(store, {
       workId,
-      identity: { controllerId: 'schedule:test', controllerType: 'chatgpt', principalId: 'forge-scheduler', controllerInstanceId: 'runtime-test', sessionId: 'occurrence-test' },
+      occurrenceId: 'occurrence-test',
+      identity: { controllerId: 'chatgpt-controller', controllerType: 'chatgpt', principalId: 'chatgpt-principal', controllerInstanceId: 'runtime-test', sessionId: 'chatgpt-session-original' },
     });
     finishControllerRoundRelayDispatch(store, { workId, ok: true });
     const session = claimControllerSession(store, {
@@ -2324,8 +2329,10 @@ describe('scheduled external Controller wake', () => {
       controllerId: rotated.controllerId,
       controllerType: rotated.controllerType,
       principalId: rotated.principalId ?? rotated.controllerId,
-      controllerInstanceId: 'runtime-after-finalize',
-      sessionId: 'chatgpt-session-after-finalize',
+      // The rotated transport authenticates terminal closure but does not rewrite
+      // the already-acknowledged durable ControllerRound claim epoch.
+      controllerInstanceId: 'runtime-test',
+      sessionId: 'chatgpt-session-original',
       claimGeneration: rotated.claimGeneration,
     });
     expect(() => submitControllerRoundDisposition(store, {
