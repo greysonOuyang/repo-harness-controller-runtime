@@ -13,6 +13,7 @@ import {
 } from '../../../packages/protocols/computer/index';
 import { executeRuntimeComputer } from '../root/computer-composition';
 import { runtimeComputerInteractionTargetAuthority } from '../root/computer-target-composition';
+import { currentComputerPlatform } from '../platform/computer-platform';
 import {
   buildBrowserPluginManifest,
   executeBrowserPluginAction,
@@ -131,7 +132,8 @@ function buildComputerManifest(
 ): AssistantPluginManifest {
   const browser = buildBrowserPluginManifest(previousRevision, previousUpdatedAt, repoRoot, context);
   const desktop = desktopProviderManifest(context);
-  const desktopSupported = process.platform === 'darwin';
+  const platform = currentComputerPlatform();
+  const desktopSupported = platform === 'darwin';
   const browserReady = browser.enabled && browser.health.ready;
   const desktopReady = desktopSupported && desktop?.enabled === true && desktop.health.ready;
   const ready = browserReady && desktopReady;
@@ -159,7 +161,7 @@ function buildComputerManifest(
         ? 'Computer Browser and native Desktop semantic capabilities are ready.'
         : desktopSupported
           ? 'Computer is only partially ready; inspect Browser and native Desktop capability health.'
-          : `Computer has partial Browser-only support on ${process.platform}; native Desktop capabilities are unsupported on this platform.`,
+          : `Computer has partial Browser-only support on ${platform}; native Desktop capabilities are unsupported on this platform.`,
     },
     health: {
       state: ready ? 'ready' : partial ? 'degraded' : 'error',
@@ -169,7 +171,7 @@ function buildComputerManifest(
       errors: ready ? [] : [...browser.health.errors, ...(desktopSupported ? (desktop?.health.errors ?? (desktop ? [] : ['Native Computer provider is not installed.'])) : [])],
       warnings: [
         ...browser.health.warnings,
-        ...(desktopSupported ? (desktop?.health.warnings ?? []) : [`Native Desktop Computer capabilities are unsupported on ${process.platform}.`]),
+        ...(desktopSupported ? (desktop?.health.warnings ?? []) : [`Native Desktop Computer capabilities are unsupported on ${platform}.`]),
       ],
       details: {
         partial: !ready && partial,
@@ -193,6 +195,14 @@ function optionalDesktopProvider(input: AssistantPluginActionExecutionInput): As
 }
 
 function desktopProvider(input: AssistantPluginActionExecutionInput): AssistantPluginAdapter {
+  const platform = currentComputerPlatform();
+  if (platform !== 'darwin') {
+    throw new AssistantPluginError(
+      'PLUGIN_COMPUTER_DESKTOP_PLATFORM_UNSUPPORTED',
+      `Computer native Desktop capabilities are unavailable on ${platform} until a platform provider is installed.`,
+      { retryable: false, details: { platform, actionId: input.actionId } },
+    );
+  }
   const provider = optionalDesktopProvider(input);
   if (!provider) {
     throw new AssistantPluginError(

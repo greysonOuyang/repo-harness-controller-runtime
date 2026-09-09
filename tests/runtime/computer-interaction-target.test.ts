@@ -1,10 +1,12 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { randomUUID } from 'crypto';
 import { mkdtempSync, rmSync } from 'fs';
 import { createServer, type Server } from 'net';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanupRuntimeComputerInteractionTargets, runtimeComputerInteractionTargetAuthority } from '../../src/runtime/root/computer-target-composition';
 import { disposeRuntimeComputerComposition } from '../../src/runtime/root/computer-composition';
+import { setComputerPlatformForTest } from '../../src/runtime/platform/computer-platform';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
 import { installExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
@@ -36,8 +38,13 @@ async function closeServer(server: Server): Promise<void> {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 }
 
+beforeEach(() => {
+  setComputerPlatformForTest('darwin');
+});
+
 afterEach(async () => {
   disposeRuntimeComputerComposition();
+  setComputerPlatformForTest(undefined);
   for (const fixture of fixtures.splice(0)) {
     await closeServer(fixture.server);
     rmSync(fixture.controllerHome, { recursive: true, force: true });
@@ -46,7 +53,9 @@ afterEach(async () => {
 
 async function providerFixture(): Promise<ProviderFixture> {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-target-'));
-  const socketPath = join(controllerHome, 'desktop.sock');
+  const socketPath = process.platform === 'win32'
+    ? `\\\\.\\pipe\\forge-computer-target-${randomUUID()}`
+    : join(controllerHome, 'desktop.sock');
   const registrationInput = createDesktopOperatorRegistrationInput({
     socketPath,
     pluginVersion: '0.3.2',
@@ -196,6 +205,21 @@ async function openTarget(fixture: ProviderFixture): Promise<string> {
 }
 
 describe('Computer durable InteractionTarget authority', () => {
+  test('rejects a native Desktop action on an unsupported platform before provider discovery', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-target-unsupported-'));
+    setComputerPlatformForTest('win32');
+    try {
+      await expect(computerPluginAdapter.executeAction(actionInput(
+        controllerHome,
+        'desktop_target_open',
+        { bundle_id: 'com.example.Editor', launch: false, activate: false },
+        'target-unsupported-platform',
+      ))).rejects.toThrow('PLUGIN_COMPUTER_DESKTOP_PLATFORM_UNSUPPORTED');
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('rebinds a lost provider session once and serializes concurrent use of the same target', async () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture);

@@ -7,6 +7,7 @@ import { COMPUTER_BROWSER_AUTOMATION_CAPABILITY, type ComputerBrowserAutomationR
 import { DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID } from '../../../adapters/computer/desktop-operator-contract';
 import { createDesktopOperatorComputerProvider } from '../../../adapters/computer/index';
 import { resolveControllerHome } from '../../cli/repositories/controller-home';
+import { currentComputerPlatform } from '../platform/computer-platform';
 import { getExternalPluginAdapter } from '../plugins/external-adapter';
 import { getExternalPluginRegistration } from '../plugins/external-registration';
 import { AssistantPluginError } from '../plugins/errors';
@@ -27,7 +28,7 @@ function computerCompositionKey(controllerHome: string): string {
   const fingerprint = registration
     ? `${registration.revision}:${registration.registrationFingerprint}:${registration.enabled ? 'enabled' : 'disabled'}`
     : 'desktop_operator:unregistered_v0_2';
-  return `${controllerHome}:${fingerprint}`;
+  return `${controllerHome}:${currentComputerPlatform()}:${fingerprint}`;
 }
 
 function ensureComputerComposition(controllerHome: string = resolveControllerHome()): ComputerProviderRegistry {
@@ -35,17 +36,19 @@ function ensureComputerComposition(controllerHome: string = resolveControllerHom
   if (computerProviders && computerProviderCompositionKey === compositionKey) return computerProviders;
 
   computerProviders?.dispose();
-  const registration = currentDesktopOperatorRegistration(controllerHome);
   const next = new ComputerProviderRegistry();
-  next.register(createDesktopOperatorComputerProvider({
-    lookupRegistration: (providerPluginId) => {
-      if (providerPluginId !== DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID || !registration) return undefined;
-      return computerProviderRegistrationSnapshot(registration);
-    },
-    // Compatibility is an explicit Runtime composition decision, never an adapter fallback.
-    // Remove this switch once Desktop Operator 0.2.x support is retired.
-    legacyFallback: 'unregistered_v0_2',
-  }));
+  if (currentComputerPlatform() === 'darwin') {
+    const registration = currentDesktopOperatorRegistration(controllerHome);
+    next.register(createDesktopOperatorComputerProvider({
+      lookupRegistration: (providerPluginId) => {
+        if (providerPluginId !== DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID || !registration) return undefined;
+        return computerProviderRegistrationSnapshot(registration);
+      },
+      // Compatibility is an explicit Runtime composition decision, never an adapter fallback.
+      // Remove this switch once Desktop Operator 0.2.x support is retired.
+      legacyFallback: 'unregistered_v0_2',
+    }));
+  }
   computerProviders = next;
   computerProviderCompositionKey = compositionKey;
   return next;
@@ -82,6 +85,14 @@ export async function activateRuntimeComputerBrowserApplication(
   input: AssistantPluginActionExecutionInput,
   product: ComputerBrowserProduct,
 ): Promise<void> {
+  const platform = currentComputerPlatform();
+  if (platform !== 'darwin') {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_NATIVE_FOREGROUND_ACTIVATOR_UNSUPPORTED_PLATFORM',
+      `Native browser foreground activation is unavailable on ${platform} until a platform Computer provider is registered.`,
+      { retryable: false, details: { browserProduct: product, platform } },
+    );
+  }
   const desktopOperator = getExternalPluginAdapter(input.controllerHome, DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID);
   if (!desktopOperator) {
     throw new AssistantPluginError(

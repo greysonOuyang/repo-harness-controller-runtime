@@ -15,6 +15,8 @@ interface SqliteStatement {
   get(...parameters: unknown[]): unknown;
   all(...parameters: unknown[]): unknown[];
   run(...parameters: unknown[]): unknown;
+  /** Bun statements retain native resources until finalized; Node's StatementSync does not expose this method. */
+  finalize?(): void;
 }
 
 export interface SqliteDatabase {
@@ -129,9 +131,28 @@ function scalar(row: unknown): unknown {
   return Object.values(row as Record<string, unknown>)[0];
 }
 
+/**
+ * Keep native statement lifetime inside the SQLite adapter. Bun retains a
+ * Windows file handle for each unfinalized statement even after db.close(),
+ * while Node's StatementSync has no explicit finalizer. The optional call
+ * gives both runtimes identical Controller Home release semantics.
+ */
+function withSqliteStatement<T>(
+  database: SqliteDatabase,
+  sql: string,
+  operation: (statement: SqliteStatement) => T,
+): T {
+  const statement = database.prepare(sql);
+  try {
+    return operation(statement);
+  } finally {
+    statement.finalize?.();
+  }
+}
+
 function assertDatabaseIntegrity(database: SqliteDatabase, path: string): void {
   try {
-    const result = scalar(database.prepare('PRAGMA quick_check').get());
+    const result = withSqliteStatement(database, 'PRAGMA quick_check', (statement) => scalar(statement.get()));
     if (result !== 'ok') throw new Error(String(result ?? 'missing quick_check result'));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -141,13 +162,21 @@ function assertDatabaseIntegrity(database: SqliteDatabase, path: string): void {
 }
 
 function tableExists(database: SqliteDatabase, table: string): boolean {
-  const row = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { name?: string } | undefined;
+  const row = withSqliteStatement(
+    database,
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    (statement) => statement.get(table) as { name?: string } | undefined,
+  );
   return row?.name === table;
 }
 
 function currentSchemaVersion(database: SqliteDatabase): number | undefined {
   if (!tableExists(database, 'control_plane_schema')) return undefined;
-  const value = scalar(database.prepare('SELECT MAX(version) AS version FROM control_plane_schema').get());
+  const value = withSqliteStatement(
+    database,
+    'SELECT MAX(version) AS version FROM control_plane_schema',
+    (statement) => scalar(statement.get()),
+  );
   return typeof value === 'number' && Number.isInteger(value) ? value : undefined;
 }
 
@@ -194,7 +223,11 @@ function initializeSchema(database: SqliteDatabase): void {
     CREATE INDEX IF NOT EXISTS control_plane_audit_lookup
       ON control_plane_audit (namespace, scope, record_key, revision);
   `);
-  database.prepare('INSERT OR IGNORE INTO control_plane_schema (version, applied_at) VALUES (?, ?)').run(CONTROL_PLANE_SCHEMA_VERSION, now());
+  withSqliteStatement(
+    database,
+    'INSERT OR IGNORE INTO control_plane_schema (version, applied_at) VALUES (?, ?)',
+    (statement) => statement.run(CONTROL_PLANE_SCHEMA_VERSION, now()),
+  );
 }
 
 export function controlPlaneDatabasePath(controllerHome: string): string {
@@ -289,11 +322,11 @@ function rowToRecord<T>(row: StoredRecordRow): ControlPlaneRecord<T> {
 }
 
 function selectRecord<T>(database: SqliteDatabase, namespace: string, scope: string, key: string): ControlPlaneRecord<T> | undefined {
-  const row = database.prepare(`
-    SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
-    FROM control_plane_records
-    WHERE namespace = ? AND scope = ? AND record_key = ?
-  `).get(namespace, scope, key) as StoredRecordRow | undefined;
+  const row = withSqliteStatement(database, `
+      SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
+      FROM control_plane_records
+      WHERE namespace = ? AND scope = ? AND record_key = ?
+    `, (statement) => statement.get(namespace, scope, key) as StoredRecordRow | undefined);
   return row ? rowToRecord<T>(row) : undefined;
 }
 
@@ -303,28 +336,30 @@ function writeRecord<T>(
   existing?: ControlPlaneRecord<T>,
 ): ControlPlaneRecord<T> {
   const at = now();
-  const previousAuditRevision = Number(scalar(database.prepare(`
-    SELECT MAX(revision) AS revision FROM control_plane_audit
-    WHERE namespace = ? AND scope = ? AND record_key = ?
-  `).get(input.namespace, input.scope, input.key)) ?? 0);
+  const previousAuditRevision = Number(withSqliteStatement(database, `
+      SELECT MAX(revision) AS revision FROM control_plane_audit
+      WHERE namespace = ? AND scope = ? AND record_key = ?
+    `, (statement) => scalar(statement.get(input.namespace, input.scope, input.key))) ?? 0);
   const revision = existing
     ? existing.revision + 1
     : Math.max(0, Number.isSafeInteger(previousAuditRevision) ? previousAuditRevision : 0) + 1;
   const createdAt = existing?.createdAt ?? at;
-  database.prepare(`
-    INSERT INTO control_plane_records (
-      namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(namespace, scope, record_key) DO UPDATE SET
-      schema_version = excluded.schema_version,
-      revision = excluded.revision,
-      payload = excluded.payload,
-      updated_at = excluded.updated_at
-  `).run(input.namespace, input.scope, input.key, input.schemaVersion, revision, JSON.stringify(input.value), createdAt, at);
-  database.prepare(`
-    INSERT INTO control_plane_audit (namespace, scope, record_key, action, revision, occurred_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(input.namespace, input.scope, input.key, input.action, revision, at);
+  withSqliteStatement(database, `
+      INSERT INTO control_plane_records (
+        namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(namespace, scope, record_key) DO UPDATE SET
+        schema_version = excluded.schema_version,
+        revision = excluded.revision,
+        payload = excluded.payload,
+        updated_at = excluded.updated_at
+    `, (statement) => statement.run(
+    input.namespace, input.scope, input.key, input.schemaVersion, revision, JSON.stringify(input.value), createdAt, at,
+  ));
+  withSqliteStatement(database, `
+      INSERT INTO control_plane_audit (namespace, scope, record_key, action, revision, occurred_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, (statement) => statement.run(input.namespace, input.scope, input.key, input.action, revision, at));
   return {
     namespace: input.namespace,
     scope: input.scope,
@@ -424,14 +459,14 @@ export function deleteControlPlaneRecordWithinTransaction(
   if (!existing) return false;
   const revision = existing.revision + 1;
   const at = now();
-  database.prepare(`
-    DELETE FROM control_plane_records
-    WHERE namespace = ? AND scope = ? AND record_key = ?
-  `).run(input.namespace, input.scope, input.key);
-  database.prepare(`
-    INSERT INTO control_plane_audit (namespace, scope, record_key, action, revision, occurred_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(input.namespace, input.scope, input.key, input.action ?? 'delete', revision, at);
+  withSqliteStatement(database, `
+      DELETE FROM control_plane_records
+      WHERE namespace = ? AND scope = ? AND record_key = ?
+    `, (statement) => statement.run(input.namespace, input.scope, input.key));
+  withSqliteStatement(database, `
+      INSERT INTO control_plane_audit (namespace, scope, record_key, action, revision, occurred_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, (statement) => statement.run(input.namespace, input.scope, input.key, input.action ?? 'delete', revision, at));
   return true;
 }
 
@@ -447,27 +482,27 @@ export function deleteControlPlaneRecordsWithinTransaction(
   database: SqliteDatabase,
   input: { namespace: string; scope: string; action?: string },
 ): number {
-  const rows = database.prepare(`
-    SELECT record_key, revision
-    FROM control_plane_records
-    WHERE namespace = ? AND scope = ?
-    ORDER BY record_key ASC
-  `).all(input.namespace, input.scope) as Array<{ record_key: string; revision: number }>;
+  const rows = withSqliteStatement(database, `
+      SELECT record_key, revision
+      FROM control_plane_records
+      WHERE namespace = ? AND scope = ?
+      ORDER BY record_key ASC
+    `, (statement) => statement.all(input.namespace, input.scope) as Array<{ record_key: string; revision: number }>);
   if (rows.length === 0) return 0;
 
   const at = now();
-  const remove = database.prepare(`
-    DELETE FROM control_plane_records
-    WHERE namespace = ? AND scope = ? AND record_key = ?
-  `);
-  const audit = database.prepare(`
-    INSERT INTO control_plane_audit (namespace, scope, record_key, action, revision, occurred_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  for (const row of rows) {
-    remove.run(input.namespace, input.scope, row.record_key);
-    audit.run(input.namespace, input.scope, row.record_key, input.action ?? 'delete_scope', row.revision + 1, at);
-  }
+  withSqliteStatement(database, `
+      DELETE FROM control_plane_records
+      WHERE namespace = ? AND scope = ? AND record_key = ?
+    `, (remove) => withSqliteStatement(database, `
+      INSERT INTO control_plane_audit (namespace, scope, record_key, action, revision, occurred_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `, (audit) => {
+      for (const row of rows) {
+        remove.run(input.namespace, input.scope, row.record_key);
+        audit.run(input.namespace, input.scope, row.record_key, input.action ?? 'delete_scope', row.revision + 1, at);
+      }
+    }));
   return rows.length;
 }
 
@@ -497,20 +532,20 @@ export function listControlPlaneRecordsWithinTransaction<T>(
 ): ControlPlaneRecord<T>[] {
   const limit = Math.max(1, Math.min(Math.trunc(input.limit ?? 1000), 5000));
   const rows = input.scope === undefined
-    ? database.prepare(`
+    ? withSqliteStatement(database, `
         SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
         FROM control_plane_records
         WHERE namespace = ?
         ORDER BY updated_at ASC, record_key ASC
         LIMIT ?
-      `).all(input.namespace, limit)
-    : database.prepare(`
+      `, (statement) => statement.all(input.namespace, limit))
+    : withSqliteStatement(database, `
         SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
         FROM control_plane_records
         WHERE namespace = ? AND scope = ?
         ORDER BY updated_at ASC, record_key ASC
         LIMIT ?
-      `).all(input.namespace, input.scope, limit);
+      `, (statement) => statement.all(input.namespace, input.scope, limit));
   return (rows as StoredRecordRow[]).map((row) => rowToRecord<T>(row));
 }
 
@@ -536,18 +571,18 @@ export function listAllControlPlaneRecordsWithinTransaction<T>(
   input: { namespace: string; scope?: string },
 ): ControlPlaneRecord<T>[] {
   const rows = input.scope === undefined
-    ? database.prepare(`
+    ? withSqliteStatement(database, `
         SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
         FROM control_plane_records
         WHERE namespace = ?
         ORDER BY updated_at ASC, record_key ASC
-      `).all(input.namespace)
-    : database.prepare(`
+      `, (statement) => statement.all(input.namespace))
+    : withSqliteStatement(database, `
         SELECT namespace, scope, record_key, schema_version, revision, payload, created_at, updated_at
         FROM control_plane_records
         WHERE namespace = ? AND scope = ?
         ORDER BY updated_at ASC, record_key ASC
-      `).all(input.namespace, input.scope);
+      `, (statement) => statement.all(input.namespace, input.scope));
   return (rows as StoredRecordRow[]).map((row) => rowToRecord<T>(row));
 }
 
@@ -569,34 +604,42 @@ function inspectOpenDatabase(database: SqliteDatabase, path: string): ControlPla
   if (!tableExists(database, 'control_plane_records') || !tableExists(database, 'control_plane_audit')) {
     throw new Error(`CONTROL_PLANE_BACKUP_INVALID: ${path}: required tables are missing`);
   }
-  const recordCount = Number(scalar(database.prepare('SELECT COUNT(*) AS count FROM control_plane_records').get()) ?? 0);
-  const auditEventCount = Number(scalar(database.prepare('SELECT COUNT(*) AS count FROM control_plane_audit').get()) ?? 0);
-  const orphanRecordCount = Number(scalar(database.prepare(`
-    SELECT COUNT(*) AS count
-    FROM control_plane_records record
-    WHERE (
-      SELECT COUNT(DISTINCT audit.revision)
-      FROM control_plane_audit audit
-      WHERE audit.namespace = record.namespace
-        AND audit.scope = record.scope
-        AND audit.record_key = record.record_key
-        AND audit.revision BETWEEN 1 AND record.revision
-    ) != record.revision
-      OR COALESCE((
-        SELECT MIN(audit.revision)
+  const recordCount = Number(withSqliteStatement(
+    database,
+    'SELECT COUNT(*) AS count FROM control_plane_records',
+    (statement) => scalar(statement.get()),
+  ) ?? 0);
+  const auditEventCount = Number(withSqliteStatement(
+    database,
+    'SELECT COUNT(*) AS count FROM control_plane_audit',
+    (statement) => scalar(statement.get()),
+  ) ?? 0);
+  const orphanRecordCount = Number(withSqliteStatement(database, `
+      SELECT COUNT(*) AS count
+      FROM control_plane_records record
+      WHERE (
+        SELECT COUNT(DISTINCT audit.revision)
         FROM control_plane_audit audit
         WHERE audit.namespace = record.namespace
           AND audit.scope = record.scope
           AND audit.record_key = record.record_key
-      ), 0) != 1
-      OR COALESCE((
-        SELECT MAX(audit.revision)
-        FROM control_plane_audit audit
-        WHERE audit.namespace = record.namespace
-          AND audit.scope = record.scope
-          AND audit.record_key = record.record_key
-      ), 0) != record.revision
-  `).get()) ?? 0);
+          AND audit.revision BETWEEN 1 AND record.revision
+      ) != record.revision
+        OR COALESCE((
+          SELECT MIN(audit.revision)
+          FROM control_plane_audit audit
+          WHERE audit.namespace = record.namespace
+            AND audit.scope = record.scope
+            AND audit.record_key = record.record_key
+        ), 0) != 1
+        OR COALESCE((
+          SELECT MAX(audit.revision)
+          FROM control_plane_audit audit
+          WHERE audit.namespace = record.namespace
+            AND audit.scope = record.scope
+            AND audit.record_key = record.record_key
+        ), 0) != record.revision
+    `, (statement) => scalar(statement.get())) ?? 0);
   if (orphanRecordCount > 0) {
     throw new Error(`CONTROL_PLANE_AUDIT_CONTINUITY_INVALID: ${path}: discontinuous_records=${orphanRecordCount}`);
   }
@@ -632,7 +675,7 @@ interface ControlPlaneDatabasePageSnapshot {
 }
 
 function integerPragma(database: SqliteDatabase, sql: string, label: string): number {
-  const value = Number(scalar(database.prepare(sql).get()));
+  const value = Number(withSqliteStatement(database, sql, (statement) => scalar(statement.get())));
   if (!Number.isFinite(value) || value < 0) throw new Error(`CONTROL_PLANE_SQLITE_PRAGMA_INVALID: ${label}`);
   return Math.floor(value);
 }
