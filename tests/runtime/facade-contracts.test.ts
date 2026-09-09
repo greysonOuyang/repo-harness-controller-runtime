@@ -36,6 +36,26 @@ describe('handoff and facade contracts', () => {
     expect(allowedFacadeOperations('rh_work')).toContain('controller_disposition');
   });
 
+  test('derives stable rh_work schema and suggested-action admission from one operation ABI', () => {
+    const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
+    const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
+    expect(properties?.operation?.enum).toEqual([...allowedFacadeOperations('rh_work')]);
+    expect(properties?.operation?.enum).toContain('review');
+    expect(properties?.operation?.enum).toContain('outcome_record');
+    expect(properties?.operation?.enum).toContain('experience_record');
+
+    const review = validateSuggestedNextActions([
+      { label: 'Review implementation', tool: 'rh_work', operation: 'review', risk: 'workspace_write' },
+    ]);
+    expect(review.actions).toHaveLength(1);
+
+    const invalid = validateSuggestedNextActions([
+      { label: 'Impossible transition', tool: 'rh_work', operation: 'not_in_stable_schema', risk: 'workspace_write' },
+    ]);
+    expect(invalid.actions).toHaveLength(0);
+    expect(invalid.warnings[0]).toContain('unsupported rh_work.not_in_stable_schema');
+  });
+
   test('keeps direct Work authority recovery discoverable on the frozen rh_work schema', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { description?: string; enum?: string[] }> | undefined;

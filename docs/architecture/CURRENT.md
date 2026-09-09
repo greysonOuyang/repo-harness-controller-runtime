@@ -51,7 +51,7 @@ Machine-visible failures have a stable code plus an explicit class and retry dis
 
 ### Tool Contract ABI authority
 
-The published tool contract is a transport ABI, not a second semantic authority. Current and frozen clients must enter the same canonical typed handlers. New frozen `rh_work` compatibility travels through the versioned `semantic.v1` envelope; older ad-hoc `capability_id` prefixes are shrinking migration debt and new prefixes are rejected by the runtime architecture gate.
+The published tool contract is a transport ABI, not a second semantic authority. Current and frozen clients must enter the same canonical typed handlers. The stable `rh_work` operation registry is one ABI authority shared by MCP schema generation and server-side `SuggestedNextAction` admission, so lifecycle projection cannot invent an operation the published contract does not expose or reject an operation the schema already owns. New frozen `rh_work` compatibility travels through the versioned `semantic.v1` envelope; older ad-hoc `capability_id` prefixes are shrinking migration debt and new prefixes are rejected by the runtime architecture gate.
 
 A bridge may derive only required machine identity or CAS expectations that the target authority itself exposes through a typed status contract. Explicit caller expectations are never overwritten, partial caller-owned machine identity is rejected rather than mixed with server-derived identity, and an upgraded tool whose required fields cannot be represented fails before mutation with `RECOVERY_TOOL_SCHEMA_UNREPRESENTABLE`. Tool-surface or installed-runtime skew must remain an explicit stale/coherence condition; it must not masquerade as a missing plugin, missing user input, or authorization decision.
 
