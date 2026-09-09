@@ -84,6 +84,7 @@
     "check:controller-ui": "bun scripts/build-controller-ui.ts --check",
     "check:design": "npx -y @google/design.md@0.4.0 lint DESIGN.md",
     "benchmark:controller-hotpath": "bun scripts/benchmark-controller-hotpath.ts",
+    "benchmark:computer-hotpath": "bun scripts/benchmark-computer-hotpath.ts",
     "benchmark:thin-harness-mcp-e2e": "bun scripts/benchmark-thin-harness-mcp-e2e.ts --json",
     "benchmark:mcp-transport": "bun scripts/benchmark-mcp-transport.ts",
     "benchmark:mcp-host": "bash scripts/benchmark-mcp-host.sh",

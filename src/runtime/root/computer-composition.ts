@@ -13,28 +13,29 @@ import { AssistantPluginError } from '../plugins/errors';
 import type { AssistantPluginActionExecutionInput } from '../plugins/types';
 
 let computerProviders: ComputerProviderRegistry | undefined;
-let computerProviderCompositionFingerprint: string | undefined;
+let computerProviderCompositionKey: string | undefined;
 const NATIVE_BROWSER_BUNDLE_IDS: Record<ComputerBrowserProduct, string> = {
   chrome: 'com.google.Chrome',
   vivaldi: 'com.vivaldi.Vivaldi',
 };
-function currentDesktopOperatorRegistration() {
-  return getExternalPluginRegistration(resolveControllerHome(), DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID);
+function currentDesktopOperatorRegistration(controllerHome: string) {
+  return getExternalPluginRegistration(controllerHome, DESKTOP_OPERATOR_PROVIDER_PLUGIN_ID);
 }
 
-function computerCompositionFingerprint(): string {
-  const registration = currentDesktopOperatorRegistration();
-  return registration
+function computerCompositionKey(controllerHome: string): string {
+  const registration = currentDesktopOperatorRegistration(controllerHome);
+  const fingerprint = registration
     ? `${registration.revision}:${registration.registrationFingerprint}:${registration.enabled ? 'enabled' : 'disabled'}`
     : 'desktop_operator:unregistered_v0_2';
+  return `${controllerHome}:${fingerprint}`;
 }
 
-function ensureComputerComposition(): ComputerProviderRegistry {
-  const fingerprint = computerCompositionFingerprint();
-  if (computerProviders && computerProviderCompositionFingerprint === fingerprint) return computerProviders;
+function ensureComputerComposition(controllerHome: string = resolveControllerHome()): ComputerProviderRegistry {
+  const compositionKey = computerCompositionKey(controllerHome);
+  if (computerProviders && computerProviderCompositionKey === compositionKey) return computerProviders;
 
   computerProviders?.dispose();
-  const registration = currentDesktopOperatorRegistration();
+  const registration = currentDesktopOperatorRegistration(controllerHome);
   const next = new ComputerProviderRegistry();
   next.register(createDesktopOperatorComputerProvider({
     lookupRegistration: (providerPluginId) => {
@@ -46,21 +47,23 @@ function ensureComputerComposition(): ComputerProviderRegistry {
     legacyFallback: 'unregistered_v0_2',
   }));
   computerProviders = next;
-  computerProviderCompositionFingerprint = fingerprint;
+  computerProviderCompositionKey = compositionKey;
   return next;
 }
 
 export async function executeRuntimeComputer(
   request: ComputerExecutionRequest,
   timeoutMs: number,
+  controllerHome: string = resolveControllerHome(),
 ): Promise<Record<string, unknown>> {
-  const providers = ensureComputerComposition();
+  const providers = ensureComputerComposition(controllerHome);
   try {
     return await providers.execute(request, timeoutMs);
   } catch (error) {
     if (error instanceof ComputerProviderError) {
       throw new AssistantPluginError(error.code, error.detailMessage, {
         retryable: error.retryable,
+        effectOutcome: error.effectOutcome,
         details: error.details,
       });
     }
@@ -103,6 +106,12 @@ export async function activateRuntimeComputerBrowserApplication(
   });
 }
 
-export function runtimeComputerProviderSnapshot(): Array<{ providerId: string; capabilities: string[] }> {
-  return ensureComputerComposition().snapshot();
+export function runtimeComputerProviderSnapshot(controllerHome: string = resolveControllerHome()): Array<{ providerId: string; capabilities: string[] }> {
+  return ensureComputerComposition(controllerHome).snapshot();
+}
+
+export function disposeRuntimeComputerComposition(): void {
+  computerProviders?.dispose();
+  computerProviders = undefined;
+  computerProviderCompositionKey = undefined;
 }

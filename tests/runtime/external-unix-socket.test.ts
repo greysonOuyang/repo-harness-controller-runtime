@@ -10,6 +10,7 @@ import {
   resolveExternalPluginProbeRuntime,
   resolveExternalPluginProbeSidecarPath,
 } from '../../src/runtime/plugins/external-unix-socket';
+import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -36,6 +37,10 @@ function startServer(socketPath: string): Promise<void> {
       const request = JSON.parse(buffer.slice(0, newline)) as { id: string; method: string; params: Record<string, unknown> };
       if (request.method === 'execute' && request.params.action === 'fail') {
         socket.end(`${JSON.stringify({ id: request.id, ok: false, error: { code: 'ELEMENT_NOT_FOUND', message: 'missing', retryable: true, domain: 'accessibility' } })}\n`);
+        return;
+      }
+      if (request.method === 'execute' && request.params.action === 'drop_after_dispatch') {
+        socket.destroy();
         return;
       }
       socket.end(`${JSON.stringify({ id: request.id, ok: true, result: { method: request.method, echoed: request.params } })}\n`);
@@ -97,17 +102,43 @@ describe('external Unix socket provider transport', () => {
     expect(result).toMatchObject({ method: 'execute', echoed: { action: 'desktop_status' } });
   });
 
-  test('preserves structured provider errors', async () => {
+  test('preserves structured provider errors as failed outcomes', async () => {
     if (process.platform === 'win32') return;
     const { socketPath } = socketFixture();
     await startServer(socketPath);
-    await expect(callExternalUnixSocket({
-      socketPath,
-      requestId: 'req-2',
-      method: 'execute',
-      params: { action: 'fail', arguments: {} },
-      timeoutMs: 2_000,
-    })).rejects.toThrow('ELEMENT_NOT_FOUND');
+    try {
+      await callExternalUnixSocket({
+        socketPath,
+        requestId: 'req-2',
+        method: 'execute',
+        params: { action: 'fail', arguments: {} },
+        timeoutMs: 2_000,
+      });
+      throw new Error('expected provider error');
+    } catch (error) {
+      expect(error).toBeInstanceOf(AssistantPluginError);
+      expect((error as AssistantPluginError).code).toBe('ELEMENT_NOT_FOUND');
+      expect((error as AssistantPluginError).effectOutcome).toBe('failed');
+    }
+  });
+
+  test('marks transport loss after effect dispatch as outcome_unknown', async () => {
+    if (process.platform === 'win32') return;
+    const { socketPath } = socketFixture();
+    await startServer(socketPath);
+    try {
+      await callExternalUnixSocket({
+        socketPath,
+        requestId: 'req-outcome-unknown',
+        method: 'execute',
+        params: { action: 'drop_after_dispatch', arguments: {} },
+        timeoutMs: 2_000,
+      });
+      throw new Error('expected transport failure');
+    } catch (error) {
+      expect(error).toBeInstanceOf(AssistantPluginError);
+      expect((error as AssistantPluginError).effectOutcome).toBe('outcome_unknown');
+    }
   });
 
   test('accepts bounded provider-specific RPC methods without transport allowlisting', async () => {

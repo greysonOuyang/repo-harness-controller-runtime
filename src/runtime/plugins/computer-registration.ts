@@ -4,6 +4,14 @@ import type {
   ComputerApplicationStableIdentity,
   ComputerApplicationTargetLease,
 } from '../../../packages/plugin-runtime/computer/target-authority';
+import {
+  COMPUTER_CAPTURE_CAPABILITY,
+  COMPUTER_INPUT_CAPABILITY,
+  COMPUTER_OBSERVE_CAPABILITY,
+  type ComputerExecutionRequest,
+  type ComputerSemanticSelector,
+} from '../../../packages/protocols/computer/index';
+import { executeRuntimeComputer } from '../root/computer-composition';
 import { runtimeComputerInteractionTargetAuthority } from '../root/computer-target-composition';
 import {
   buildBrowserPluginManifest,
@@ -206,12 +214,6 @@ function firstString(value: unknown, ...keys: string[]): string | undefined {
   return undefined;
 }
 
-function providerSessions(status: Record<string, unknown>): Record<string, unknown>[] {
-  return Array.isArray(status.sessions)
-    ? status.sessions.filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object')
-    : [];
-}
-
 function stableIdentityFromArgs(args: Record<string, unknown>): ComputerApplicationStableIdentity {
   const bundleId = typeof args.bundle_id === 'string' ? args.bundle_id.trim() : '';
   const appName = typeof args.app_name === 'string' ? args.app_name.trim() : '';
@@ -241,20 +243,96 @@ function providerSessionId(result: Record<string, unknown>): string {
   return interactionId;
 }
 
-async function ensureProviderBinding(
+function desktopComputerRequest(
+  actionId: string,
+  args: Record<string, unknown>,
+  interactionId?: string,
+): ComputerExecutionRequest {
+  const requireInteractionId = (): string => {
+    if (interactionId) return interactionId;
+    throw new AssistantPluginError('PLUGIN_COMPUTER_PROVIDER_BINDING_MISSING', `${actionId} requires a live provider interaction binding.`, { retryable: true });
+  };
+  if (actionId === 'desktop_observe') {
+    return {
+      capability: COMPUTER_OBSERVE_CAPABILITY,
+      action: 'observe',
+      interactionId: requireInteractionId(),
+      ...(typeof args.max_depth === 'number' ? { maxDepth: args.max_depth } : {}),
+      ...(typeof args.max_nodes === 'number' ? { maxNodes: args.max_nodes } : {}),
+      ...(typeof args.include_values === 'boolean' ? { includeValues: args.include_values } : {}),
+      ...(typeof args.include_actions === 'boolean' ? { includeActions: args.include_actions } : {}),
+      ...(typeof args.include_windows === 'boolean' ? { includeWindows: args.include_windows } : {}),
+      ...(args.root_selector && typeof args.root_selector === 'object' ? { rootSelector: args.root_selector as ComputerSemanticSelector } : {}),
+    };
+  }
+  if (actionId === 'desktop_press') {
+    return {
+      capability: COMPUTER_INPUT_CAPABILITY,
+      action: 'press',
+      interactionId: requireInteractionId(),
+      selector: args.selector as ComputerSemanticSelector,
+      ...(typeof args.semantic_action === 'string' ? { semanticAction: args.semantic_action } : {}),
+    } as ComputerExecutionRequest;
+  }
+  if (actionId === 'desktop_type_text') {
+    return {
+      capability: COMPUTER_INPUT_CAPABILITY,
+      action: 'type_text',
+      interactionId: requireInteractionId(),
+      selector: args.selector as ComputerSemanticSelector,
+      text: String(args.text ?? ''),
+      ...(typeof args.replace === 'boolean' ? { replace: args.replace } : {}),
+    };
+  }
+  if (actionId === 'desktop_key') {
+    return {
+      capability: COMPUTER_INPUT_CAPABILITY,
+      action: 'key',
+      interactionId: requireInteractionId(),
+      keys: Array.isArray(args.keys) ? args.keys.filter((value): value is string => typeof value === 'string') : [],
+    };
+  }
+  if (actionId === 'desktop_open_url') {
+    return { capability: COMPUTER_INPUT_CAPABILITY, action: 'open_url', url: String(args.url ?? '') };
+  }
+  if (actionId === 'desktop_screenshot') {
+    return {
+      capability: COMPUTER_CAPTURE_CAPABILITY,
+      action: 'screenshot',
+      ...(args.scope === 'display' || args.scope === 'window' ? { scope: args.scope } : {}),
+      ...(interactionId ? { interactionId } : {}),
+      ...(typeof args.window_id === 'number' ? { windowId: args.window_id } : {}),
+      ...(typeof args.label === 'string' ? { label: args.label } : {}),
+    };
+  }
+  throw new AssistantPluginError('PLUGIN_COMPUTER_DESKTOP_ACTION_UNSUPPORTED', `Unsupported retained Desktop Computer action ${actionId}.`, { retryable: false });
+}
+
+async function executeRetainedDesktopAction(
+  input: AssistantPluginActionExecutionInput,
+  args: Record<string, unknown>,
+  interactionId?: string,
+): Promise<Record<string, unknown>> {
+  const descriptor = providerActionDescriptor(input.actionId);
+  return await executeRuntimeComputer(
+    desktopComputerRequest(input.actionId, args, interactionId),
+    input.timeoutMs ?? descriptor.defaultTimeoutMs ?? 30_000,
+    input.controllerHome,
+  );
+}
+
+function isMissingProviderSessionFailure(error: unknown): error is AssistantPluginError {
+  return error instanceof AssistantPluginError
+    && error.code === 'SESSION_NOT_FOUND'
+    && error.effectOutcome === 'failed';
+}
+
+async function rebindProviderSession(
   input: AssistantPluginActionExecutionInput,
   lease: ComputerApplicationTargetLease,
   provider: AssistantPluginAdapter,
 ): Promise<string> {
   const target = lease.current();
-  if (target.providerBinding?.providerId === DESKTOP_PROVIDER_ID) {
-    const status = await provider.executeAction(providerInput(input, 'desktop_status', { limit: 500 }, 'binding-status'));
-    const current = providerSessions(status).find((session) =>
-      firstString(session, 'interactionId', 'interaction_id') === target.providerBinding?.providerSessionId
-      && targetMatchesProviderSession(target, session));
-    if (current) return target.providerBinding.providerSessionId;
-  }
-
   const rebound = await provider.executeAction(providerInput(input, 'desktop_session_open', {
     ...(target.stableIdentity.bundleId ? { bundle_id: target.stableIdentity.bundleId } : { app_name: target.stableIdentity.appName }),
     launch: false,
@@ -283,6 +361,18 @@ async function ensureProviderBinding(
     observedAt: new Date().toISOString(),
   });
   return interactionId;
+}
+
+async function ensureProviderBinding(
+  input: AssistantPluginActionExecutionInput,
+  lease: ComputerApplicationTargetLease,
+  provider: AssistantPluginAdapter,
+): Promise<string> {
+  const target = lease.current();
+  if (target.providerBinding?.providerId === DESKTOP_PROVIDER_ID) {
+    return target.providerBinding.providerSessionId;
+  }
+  return rebindProviderSession(input, lease, provider);
 }
 
 function stableIdentityFromProviderResult(
@@ -377,13 +467,7 @@ async function closeDesktopTarget(
         );
       }
       if (provider) {
-        const status = await provider.executeAction(providerInput(input, 'desktop_status', { limit: 500 }, 'target-close-status'));
-        const stillBound = providerSessions(status).some((session) =>
-          firstString(session, 'interactionId', 'interaction_id') === target.providerBinding?.providerSessionId
-          && targetMatchesProviderSession(target, session));
-        if (stillBound) {
-          await provider.executeAction(providerInput(input, 'desktop_session_close', { interaction_id: target.providerBinding.providerSessionId }, 'target-close-provider'));
-        }
+        await provider.executeAction(providerInput(input, 'desktop_session_close', { interaction_id: target.providerBinding.providerSessionId }, 'target-close-provider'));
       }
       // A missing registration is authoritative absence only because provider uninstall
       // must stop/remove its native lifecycle before the registration is deleted.
@@ -398,21 +482,29 @@ async function executeDesktopSemanticAction(
   provider: AssistantPluginAdapter,
 ): Promise<Record<string, unknown>> {
   if (input.actionId === 'desktop_open_url') {
-    return provider.executeAction(providerInput(input, input.actionId, input.args));
+    return executeRetainedDesktopAction(input, input.args);
   }
   const targetId = typeof input.args.target_id === 'string' ? input.args.target_id.trim() : '';
   if (!targetId) {
     if (input.actionId === 'desktop_screenshot') {
-      return provider.executeAction(providerInput(input, input.actionId, input.args));
+      return executeRetainedDesktopAction(input, input.args);
     }
     throw new AssistantPluginError('PLUGIN_COMPUTER_TARGET_REQUIRED', `${input.actionId} requires target_id.`, { retryable: false });
   }
   return computerTargetAuthority.withLease(input.controllerHome, targetId, async (lease) => {
-    const interactionId = await ensureProviderBinding(input, lease, provider);
+    let interactionId = await ensureProviderBinding(input, lease, provider);
     const { target_id: _targetId, ...rest } = input.args;
-    // Binding verification/rebuild completes before the semantic dispatch. Once this
-    // provider call starts, failures are returned unchanged and are never replayed here.
-    return provider.executeAction(providerInput(input, input.actionId, { ...rest, interaction_id: interactionId }));
+    const dispatch = () => executeRetainedDesktopAction(input, rest, interactionId);
+    try {
+      return await dispatch();
+    } catch (error) {
+      // SESSION_NOT_FOUND is emitted by Desktop Operator before UI/input dispatch.
+      // It is the only provider failure that permits one binding rebuild + retry.
+      // Transport/timeout/outcome-unknown failures remain fenced and are never replayed.
+      if (!isMissingProviderSessionFailure(error)) throw error;
+      interactionId = await rebindProviderSession(input, lease, provider);
+      return await dispatch();
+    }
   });
 }
 

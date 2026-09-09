@@ -36,6 +36,7 @@ export {
 function toComputerProviderError(error: ExternalUnixJsonlTransportError): ComputerProviderError {
   return new ComputerProviderError(error.code, error.detailMessage, {
     retryable: error.retryable,
+    effectOutcome: error.effectOutcome,
     details: error.details,
   });
 }
@@ -47,6 +48,7 @@ function unavailable(error: ComputerProviderError, endpoint: DesktopOperatorComp
     `Stable Forge Computer provider is unavailable at ${endpoint.socketPath}. Install or restore Forge Desktop Operator instead of granting macOS permissions to Runtime or release-specific helpers.`,
     {
       retryable: true,
+      effectOutcome: error.effectOutcome,
       details: {
         socketPath: endpoint.socketPath,
         endpointSource: endpoint.source,
@@ -143,7 +145,7 @@ class DesktopOperatorComputerBinding {
       return await this.call('execute', { action: mapped.actionId, arguments: mapped.args }, timeoutMs, negotiated.generation);
     } catch (error) {
       if (error instanceof ExternalUnixJsonlTransportError) {
-        this.invalidateNegotiation();
+        if (error.source === 'transport') this.invalidateNegotiation();
         throw unavailable(toComputerProviderError(error), this.endpoint);
       }
       if (error instanceof ComputerProviderError) throw unavailable(error, this.endpoint);
