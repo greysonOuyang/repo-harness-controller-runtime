@@ -4,13 +4,13 @@ This runbook is an audit index for the S5 cross-version freeze. Machine authorit
 
 ## Frozen S5 authority
 
-- Evaluator implementation: `sha256:17141479c81c22a26c1a81a61260a93c7afdf43592aac495cea113b2d69f4a0d`
+- Evaluator implementation: `sha256:7c3b8c1417dbd71705bd53649289a525217cc218392a65b45067a2845bfb367a`
 - Shared corpus: `sha256:cd45a4ff9b3a5a7b84aed736f72fd7d920115225c2b35fcb74fd0e80337233ee`
-- Formal protocol: `sha256:015f2a5c16e135341d6e531e3e6bca7d902d1c361f933c0d1be15981c3e8236d`
+- Formal protocol: `sha256:b383b97aacc5995ba69525d1aac5f031046c8708db3c32011e484444818d2700`
 - Baseline identity: `sha256:1a496185beb3776588884b4cac513a23b65a44a66f54e506eab0d3fe1ef6f727`
 - Baseline reconstruction: `sha256:d9a0a99a5bf7eeccdbaf2f186bceeaf8a29b33400e8ac6d9c21edfb1d0d0fc3b`
 - Baseline output authority: `sha256:46f99c71b4ae68d2e2dc9741f51a8bfa5cac06155011e997d00b982ffd44438d`
-- A/A calibration: `sha256:ddc9e18f592403af88e0f4ed1e3c7ac835253661a5416fdc3e1767a3dd2fd8c1`
+- A/A calibration: `sha256:ef8a99ff549481779a35158abe7a8b2e1c86d67f04771665f7623f20dcb3f2ea`
 - Environment policy: `sha256:5f740890588e533517eb8878e2326867e911d5b6a9240c7dcdba2272883c5904`
 
 The evaluator identity includes the `01616fdbc55da77a9bad34ac94bc382c9fdd811a` process-isolation supervision repair and the candidate-neutral execution, validation, statistics, baseline-validation, and process-tree dependencies listed by `CROSS_VERSION_EVALUATOR_FILES`. Any change to those inputs creates a new evaluator authority and requires a new S5 A/A calibration before S6 evidence is valid.
@@ -25,11 +25,11 @@ The output authority also binds the production dependency graph: 100 package ent
 
 ## v1.7.2 A/A calibration
 
-Fresh A/A Process `proc_v2_aa_resource_final2_1788960000` used the same current baseline artifact on both arms across the 24-scenario shared corpus. All 48 trials passed with zero candidate failures or timeouts. The evaluator implementation digest is `sha256:0d8fc21209caf142d5545eb3b99c3c17674dc1e6f2de91af5443bf2de08c51ad`.
+Fresh A/A Process `proc_v2_aa_evaluator7c3b_20260909` used the same current baseline artifact on both arms across the 24-scenario shared corpus. All 48 trials passed with zero candidate failures or timeouts. The evaluator implementation digest is `sha256:7c3b8c1417dbd71705bd53649289a525217cc218392a65b45067a2845bfb367a`.
 
-For latency, the signed delta is arm B minus arm A, one paired sample per scenario. Mean delta was `-1.133 ms`, p50 `4.300 ms`, p95 `92.107 ms`, with 13 positive and 11 negative samples. The scenario-blocked 95% confidence interval was `[-45.294 ms, 43.027 ms]`; because it crosses zero, the run does not establish a systematic harness arm advantage. This is symmetry/noise calibration only, never V2 superiority evidence or a regression tolerance.
+For latency, the signed delta is arm B minus arm A, one paired sample per scenario. Mean delta was `10.462 ms`, p50 `2.156 ms`, p95 `103.154 ms`, with 16 positive and 8 negative samples. The scenario-blocked 95% confidence interval was `[-9.992 ms, 30.915 ms]`; because it crosses zero, the run does not establish a systematic harness arm advantage. This is symmetry/noise calibration only, never V2 superiority evidence or a regression tolerance.
 
-The raw evidence bundle is `/tmp/forge-v2-aa-resource-final2-1788960000`; its `rawBundleDigest` is `sha256:a44c5c064c0c7ca9b8994a20eb1a591951cb04dc61849d5b0344e193aa827885`. It is reproducible as `sha256(JSON.stringify(manifest))`, where `manifest` has schema `forge-aa-raw-bundle-manifest/v1` and lists every raw JSON file sorted by relative path with its SHA-256 and byte length. Earlier S5 commits stored raw bundle digests without preserving their construction algorithm, so this documented convention starts with this freeze rather than pretending that missing provenance existed.
+The raw evidence bundle is `/tmp/forge-v2-aa-evaluator7c3b-run`; its `rawBundleDigest` is `sha256:05247c1e36e2917aefec2f972a5ade7be8ae493313abb6c38c2de130a4756fbc`. It is reproducible as `sha256(JSON.stringify(manifest))`, where `manifest` has schema `forge-aa-raw-bundle-manifest/v1` and lists every raw JSON file sorted by relative path with its SHA-256 and byte length. Earlier S5 commits stored raw bundle digests without preserving their construction algorithm, so this documented convention starts with this freeze rather than pretending that missing provenance existed.
 
 ## Process-isolation and S6 gate
 
