@@ -37,6 +37,8 @@ import { cancelWorkContract, createWorkContract, getWorkContract, listWorkContra
 import { implementationReviewChangedPathDigest } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { claimControllerSession } from '../../src/runtime/control-plane/facade/controller-session-store';
 import { listWorkContinuationSchedules } from '../../src/runtime/workflow/schedules/work-continuation';
+import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
+import { runHandoffInboxApplication } from '../../src/runtime/control-plane/facade/handoff-inbox-application';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { DEFAULT_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../src/cli/mcp/toolset-names';
 import { FORGE_VERSION } from '../../src/cli/controller/runtime-config';
@@ -985,6 +987,56 @@ describe('runtime observability', () => {
     } finally {
       await client.close();
       await server.close();
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('handoff resolve delegates continuation through the application port without importing workflow authority', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-handoff-application-port-'));
+    const store = { controllerHome, repoId: 'repo-handoff-port' };
+    try {
+      createHandoffItem(store, {
+        id: 'HND-APPLICATION-PORT',
+        repoId: store.repoId,
+        workId: 'WORK-APPLICATION-PORT',
+        title: 'Resolve through application port',
+        severity: 'needs_review',
+        creationReason: 'ambiguous_outcome',
+        reason: 'Fixture decision is pending.',
+        summary: 'Fixture handoff for dependency inversion.',
+        currentState: { repoId: store.repoId, workId: 'WORK-APPLICATION-PORT', statusSummary: 'waiting' },
+        attemptedActions: [],
+        evidenceRefs: [],
+        recommendedDecision: 'Resolve fixture.',
+        recommendedPrompt: 'Resolve fixture.',
+        suggestedNextActions: [],
+      });
+      const triggered: Array<{ id: string; workId?: string; status: string; decision?: string }> = [];
+      const result = await runHandoffInboxApplication({
+        operation: 'resolve',
+        store,
+        handoffId: 'HND-APPLICATION-PORT',
+        decision: 'continue exact work',
+        resolver: 'test-controller',
+      }, {
+        triggerResolvedContinuation: async (item) => {
+          triggered.push({ id: item.id, workId: item.workId, status: item.status, decision: item.decision });
+          return [{ scheduleId: 'SCH-APPLICATION-PORT', occurrenceId: 'OCC-APPLICATION-PORT', status: 'shadowed' }];
+        },
+      });
+
+      expect(triggered).toEqual([{
+        id: 'HND-APPLICATION-PORT',
+        workId: 'WORK-APPLICATION-PORT',
+        status: 'resolved',
+        decision: 'continue exact work',
+      }]);
+      expect(result).toMatchObject({
+        operation: 'resolve',
+        item: { id: 'HND-APPLICATION-PORT', workId: 'WORK-APPLICATION-PORT', status: 'resolved' },
+        continuationOccurrences: [{ scheduleId: 'SCH-APPLICATION-PORT', occurrenceId: 'OCC-APPLICATION-PORT', status: 'shadowed' }],
+      });
+    } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }
   });
