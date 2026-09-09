@@ -3,12 +3,13 @@ import { existsSync } from "fs";
 import { join } from "path";
 import { defaultSemanticProviderRegistry, type SemanticNavigationKind, type SemanticNavigationRequest } from "../../../src/runtime/context/semantic-navigation";
 import { buildContextClosureReceipt } from "../../../src/runtime/context/context-closure";
+import { codegraphRepositoryCacheRoot } from "../../../src/runtime/context/codegraph-cache-boundary";
 import type { MultiRepositoryMcpToolContext } from "../multi-repository";
 import { result } from "./result-adapter";
 import { selected } from "./shared-adapter";
 import { resolveMcpPath } from "../paths";
 import { freshGitIdentity } from "../../../src/cli/repository/inspector";
-import { repositorySummary, resolveRepositorySelection } from "../../../src/cli/repositories/registry";
+import { repositoryCheckoutLifecycle, repositorySummary, resolveRepositorySelection } from "../../../src/cli/repositories/registry";
 import { getExecutionJob, listExecutionJobs } from "../../../src/runtime/execution/jobs/store";
 import { isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
 import { buildControllerContextPackAsync, CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from "../../../src/cli/controller/context-pack";
@@ -267,12 +268,29 @@ async function rhContextSemanticNavigation(
   };
 }
 
-function structuralIndexRoot(repository: ReturnType<typeof resolveRepositorySelection>): string | undefined {
-  if (existsSync(join(repository.canonicalRoot, '.codegraph', 'codegraph.db'))) return repository.canonicalRoot;
-  return repository.checkouts
-    .filter((checkout) => checkout.checkoutId !== repository.activeCheckoutId && checkout.worktree !== true)
-    .map((checkout) => checkout.canonicalRoot)
-    .find((root) => existsSync(join(root, '.codegraph', 'codegraph.db')));
+function codegraphIndexExists(controllerHome: string, root: string): boolean {
+  return existsSync(join(codegraphRepositoryCacheRoot(controllerHome, root), 'codegraph.db'))
+    || existsSync(join(root, '.codegraph', 'codegraph.db'));
+}
+
+/**
+ * Managed worktrees borrow one repository baseline CodeGraph from a non-worktree
+ * checkout. Dirty worktree bytes remain a raw/lexical overlay; they never create
+ * a second structural-index authority merely because execution is isolated.
+ * Repo-local `.codegraph` is retained only as a legacy-readable fallback.
+ */
+export function resolveStructuralIndexRoot(
+  controllerHome: string,
+  repository: ReturnType<typeof resolveRepositorySelection>,
+): string | undefined {
+  const active = repository.checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
+  const nonWorktreeRoots = repository.checkouts
+    .filter((checkout) => checkout.checkoutId !== repository.activeCheckoutId && checkout.worktree !== true && repositoryCheckoutLifecycle(checkout) === 'active')
+    .map((checkout) => checkout.canonicalRoot);
+  const candidates = active?.worktree === true
+    ? [...nonWorktreeRoots, repository.canonicalRoot]
+    : [repository.canonicalRoot, ...nonWorktreeRoots];
+  return [...new Set(candidates)].find((root) => codegraphIndexExists(controllerHome, root));
 }
 
 export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
@@ -335,7 +353,7 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         maxFiles: typeof args.max_files === 'number' ? args.max_files : undefined,
         maxSnippets: typeof args.max_snippets === 'number' ? args.max_snippets : undefined,
         structuralContext,
-        structuralIndexRoot: structuralContext === 'off' ? undefined : structuralIndexRoot(repository),
+        structuralIndexRoot: structuralContext === 'off' ? undefined : resolveStructuralIndexRoot(ctx.controllerHome, repository),
         retrievalMode,
         impactDomains,
         session: rhContextReadSessionId(ctx)

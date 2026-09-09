@@ -9,6 +9,7 @@ import {
   handoffInboxPath,
   resolveHandoffItem,
 } from "../../src/runtime/control-plane/facade/handoff-inbox-store";
+import { handoffRequiresAttention } from "../../src/runtime/control-plane/facade/handoff-inbox-application";
 
 describe("HandoffItem persistence authority", () => {
   test("controller-home inbox remains authoritative across session-cache changes and fresh reads", () => {
@@ -75,6 +76,66 @@ describe("HandoffItem persistence authority", () => {
         });
       }
       expect(countHandoffItems({ ...location, status: "pending" })).toBe(37);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("attention projection hides only canonically terminal or inactive owners", () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-handoff-attention-"));
+    const location = { root };
+    try {
+      const workItem = createHandoffItem(location, {
+        id: "work-decision",
+        repoId: "repo_attention",
+        workId: "work-terminal",
+        title: "Historical work decision",
+        severity: "needs_review",
+        reason: "Review work.",
+        creationReason: "ambiguous_outcome",
+        summary: "Review work.",
+        currentState: { repoId: "repo_attention", workId: "work-terminal", statusSummary: "pending" },
+        evidenceRefs: [],
+        recommendedDecision: "Review.",
+        recommendedPrompt: "Review.",
+        suggestedNextActions: [],
+      });
+      const scheduleItem = createHandoffItem(location, {
+        id: "schedule-failure-deadbeef",
+        repoId: "repo_attention",
+        title: "Historical schedule failure",
+        severity: "blocked",
+        reason: "Schedule failed.",
+        creationReason: "repeated_infrastructure_failure",
+        summary: "Schedule failed.",
+        currentState: { repoId: "repo_attention", taskId: "schedule-old", statusSummary: "blocked" },
+        evidenceRefs: [],
+        recommendedDecision: "Repair schedule.",
+        recommendedPrompt: "Repair schedule.",
+        suggestedNextActions: [],
+      });
+      const unresolvedItem = createHandoffItem(location, {
+        id: "decision-current",
+        repoId: "repo_attention",
+        title: "Current decision",
+        severity: "needs_review",
+        reason: "Human decision required.",
+        creationReason: "ambiguous_outcome",
+        summary: "Human decision required.",
+        currentState: { repoId: "repo_attention", statusSummary: "pending" },
+        evidenceRefs: [],
+        recommendedDecision: "Decide.",
+        recommendedPrompt: "Decide.",
+        suggestedNextActions: [],
+      });
+      const terminalResolver = {
+        workIsTerminal: (workId: string) => workId === "work-terminal" ? true : undefined,
+        scheduleIsEnabled: (scheduleId: string) => scheduleId === "schedule-old" ? false : undefined,
+      };
+      expect(handoffRequiresAttention(workItem, terminalResolver)).toBe(false);
+      expect(handoffRequiresAttention(scheduleItem, terminalResolver)).toBe(false);
+      expect(handoffRequiresAttention(unresolvedItem, terminalResolver)).toBe(true);
+      expect(handoffRequiresAttention(workItem, { workIsTerminal: () => undefined, scheduleIsEnabled: () => undefined })).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

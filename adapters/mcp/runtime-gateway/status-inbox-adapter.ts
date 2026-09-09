@@ -23,7 +23,7 @@ import { resolveLocalBridgeSurface } from "../../../src/runtime/shared/local-bri
 import { listAssistantPluginManifests } from "../../../src/runtime/plugins/store";
 import { cachedGitIdentity, gitSnapshot } from "../../../src/cli/repository/inspector";
 import { buildRuntimeMaintenanceStatus } from "../../../src/runtime/recovery";
-import { allowedFacadeOperations, buildFacadeResult, countHandoffItems, listCapabilityDescriptors, summarizeCapabilityGroups, listHandoffItems, normalizeCheckIds, buildWorkContinuationSnapshot, listPlanContracts, summarizePlanContract, runHandoffInboxApplication, type FacadeTool } from "../../../src/runtime/control-plane/facade";
+import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, buildWorkContinuationSnapshot, listPlanContracts, summarizePlanContract, runHandoffInboxApplication, type FacadeTool } from "../../../src/runtime/control-plane/facade";
 import { buildJobOperationDigest } from '../../../src/runtime/control-plane/facade/operation-digest';
 import { readActiveWorkCandidates, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
 import { observeRuntimeStatus } from "../../../src/runtime/root/status";
@@ -467,8 +467,9 @@ export async function callStatusInboxAdapter(
           nextSafeAction: buildWorkContinuationSnapshot(entry).nextSafeAction,
         }));
         const activePlanSnapshot = listPlanContracts({ ...store, status: 'active', limit: 3 }).map(summarizePlanContract);
-        const pendingHandoffSnapshot = listHandoffItems({ ...store, status: 'pending', limit: 4 });
-        const pendingHandoffCount = countHandoffItems({ ...store, status: 'pending' });
+        const pendingHandoffAttention = listHandoffAttentionItems(store, 100);
+        const pendingHandoffSnapshot = pendingHandoffAttention.slice(0, 4);
+        const pendingHandoffCount = pendingHandoffAttention.length;
         markSummaryPhase('controller_state');
         const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work'] as const;
         const facade = buildFacadeResult({
@@ -696,8 +697,9 @@ export async function callStatusInboxAdapter(
       });
       const capabilities = listCapabilityDescriptors(manifests);
       markDetailPhase('plugins');
-      const pendingHandoffs = listHandoffItems({ ...store, status: 'pending', limit: 20 });
-      const pendingHandoffCount = countHandoffItems({ ...store, status: 'pending' });
+      const pendingHandoffAttention = listHandoffAttentionItems(store, 100);
+      const pendingHandoffs = pendingHandoffAttention.slice(0, 20);
+      const pendingHandoffCount = pendingHandoffAttention.length;
       const activeWorkProjection = readActiveWorkCandidates({ ...store, limit: 200 });
       const activeContracts = activeWorkProjection.contracts;
       markDetailPhase('work_state');

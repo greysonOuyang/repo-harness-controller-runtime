@@ -1,4 +1,7 @@
 import { getControllerSession, releaseObservedControllerSession } from '../../../../packages/kernel/controller/api/index';
+import { getWorkContract, isTerminalWorkContractStatus } from '../../../../packages/kernel/work/api/index';
+import { listSchedules } from '../../../../packages/kernel/scheduler/api/index';
+import type { HandoffItem } from './types';
 import {
   acknowledgeHandoffItem,
   createHandoffItem,
@@ -40,6 +43,55 @@ export type HandoffInboxApplicationRunner = (
   input: HandoffInboxApplicationInput,
 ) => ReturnType<typeof runHandoffInboxApplication>;
 
+export interface HandoffAttentionResolver {
+  workIsTerminal(workId: string): boolean | undefined;
+  scheduleIsEnabled(scheduleId: string): boolean | undefined;
+}
+
+/**
+ * Project durable Inbox history into current attention. Unknown lifecycle state
+ * remains visible; only canonical terminal/disabled authority can suppress an
+ * old pending record. Persistence is never mutated by this projection.
+ */
+export function handoffRequiresAttention(item: HandoffItem, resolver: HandoffAttentionResolver): boolean {
+  if (item.status !== 'pending') return false;
+  const workId = item.workId?.trim();
+  if (workId && resolver.workIsTerminal(workId) === true) return false;
+
+  const scheduleId = item.currentState.taskId?.trim();
+  const scheduleFailure = item.creationReason === 'repeated_infrastructure_failure'
+    && Boolean(scheduleId)
+    && (item.id.startsWith('schedule-failure-') || item.id.startsWith('schedule-'));
+  if (scheduleFailure && scheduleId && resolver.scheduleIsEnabled(scheduleId) === false) return false;
+  return true;
+}
+
+export function listHandoffAttentionItems(
+  store: HandoffInboxStoreOptions & { controllerHome: string; repoId: string },
+  limit = 50,
+): HandoffItem[] {
+  const candidates = listHandoffItems({ ...store, status: 'pending', limit: 100 });
+  const scheduleIds = new Set(candidates
+    .filter((item) => item.creationReason === 'repeated_infrastructure_failure'
+      && (item.id.startsWith('schedule-failure-') || item.id.startsWith('schedule-')))
+    .map((item) => item.currentState.taskId?.trim())
+    .filter((value): value is string => Boolean(value)));
+  const schedules = scheduleIds.size > 0
+    ? new Map(listSchedules(store.controllerHome, store.repoId).map((schedule) => [schedule.scheduleId, schedule.enabled] as const))
+    : new Map<string, boolean>();
+  const resolver: HandoffAttentionResolver = {
+    workIsTerminal: (workId) => {
+      const work = getWorkContract(store, workId);
+      return work ? isTerminalWorkContractStatus(work.status) : undefined;
+    },
+    scheduleIsEnabled: (scheduleId) => scheduleIds.has(scheduleId)
+      ? schedules.get(scheduleId) ?? false
+      : undefined,
+  };
+  const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
+  return candidates.filter((item) => handoffRequiresAttention(item, resolver)).slice(0, boundedLimit);
+}
+
 /**
  * Canonical application boundary for Inbox behavior. MCP adapters translate
  * arguments/results only; Handoff persistence, continuation wake-up and exact
@@ -49,7 +101,7 @@ export async function runHandoffInboxApplication(input: HandoffInboxApplicationI
   const { store, operation } = input;
   if (operation === 'get') return { operation, item: getHandoffItem(store, input.handoffId ?? '') };
   if (operation === 'list') {
-    return { operation, items: listHandoffItems({ ...store, status: 'pending', limit: input.limit ?? 50 }) };
+    return { operation, items: listHandoffAttentionItems(store, input.limit ?? 50) };
   }
   if (operation === 'ack' || operation === 'accept') {
     return { operation, item: acknowledgeHandoffItem(store, (input.handoffId ?? '').trim()) };

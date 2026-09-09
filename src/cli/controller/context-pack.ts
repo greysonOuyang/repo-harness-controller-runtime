@@ -237,6 +237,7 @@ export function buildControllerContextPack(
         limit: Math.min(Math.max(maxFiles, 4), 12),
         maxNodes: Math.min(Math.max(maxFiles * 5, 20), 60),
         maxDepth: 2,
+        ...(structuralMode === 'required' ? { refresh: 'if_stale' as const } : {}),
       });
       const graph = structuralResult(structural);
       const metadata = structural.metadata
@@ -1122,6 +1123,7 @@ export async function buildControllerContextPackAsync(
     limit: Math.min(Math.max(maxFiles, 4), 12),
     maxNodes: Math.min(Math.max(maxFiles * 5, 20), 60),
     maxDepth: 2,
+    ...(structuralMode === 'required' ? { refresh: 'if_stale' as const } : {}),
   };
   const structuralCacheKey = JSON.stringify({ queryRoot: structuralIndexRoot, request: structuralRequest });
   const sessionCache = getRepositoryReadSessionCache(repoRoot, options.session);
