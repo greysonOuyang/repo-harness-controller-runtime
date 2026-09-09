@@ -641,6 +641,79 @@ describe('rh_work terminalization authority', () => {
     expect(existsSync(join(fx.repoRoot, 'src', 'contender.ts'))).toBe(true);
   }, 20_000);
 
+  test('terminal WorkContract releases stale failed canonical WorkHandle ownership but nonterminal failure remains fenced', async () => {
+    const runCase = async (terminal: boolean) => {
+      const fx = fixture();
+      const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+      const baseRevision = repositoryGitStatus(fx.repository).head!;
+      const makeWork = (suffix: string, terminalize: boolean) => {
+        const workId = `work-canonical-terminal-owner-${terminalize ? 'terminal' : 'running'}-${suffix}`;
+        const caller = {
+          principalId: `principal-${workId}`,
+          sessionId: `transport-${workId}`,
+          controllerInstanceId: `runtime-${workId}`,
+        };
+        createWorkContract(store, {
+          workId,
+          repoId: fx.repository.repoId,
+          checkoutId: fx.repository.activeCheckoutId,
+          principalId: caller.principalId,
+          controllerInstanceId: caller.controllerInstanceId,
+          baseRevision,
+          mode: 'goal_workloop',
+          objective: `Exercise ${terminalize ? 'terminal' : 'nonterminal'} failed canonical ownership.`,
+          acceptanceCriteria: [],
+          constraints: { requireHandoffOnAmbiguity: true },
+          allowedPaths: ['src/**'],
+          forbiddenPaths: [],
+          checks: [],
+          requestedBy: 'chatgpt',
+          workKind: 'repository_change',
+          status: 'running',
+          phase: 'implementation',
+        });
+        claimControllerSession(store, {
+          workId,
+          controllerId: caller.principalId,
+          controllerType: 'chatgpt',
+          sessionId: caller.sessionId,
+          principalId: caller.principalId,
+          controllerInstanceId: caller.controllerInstanceId,
+          leaseMs: 60_000,
+        });
+        const prepared = ensureRepositoryWorkHandle({ controllerHome: fx.controllerHome, repository: fx.repository, workId, identity: caller })!;
+        transitionWorkHandle(fx.controllerHome, prepared, 'failed', { failureReason: 'synthetic durable owner failure' });
+        if (terminalize) {
+          transitionWorkContractPhase(store, workId, {
+            status: 'cancelled',
+            phase: 'cleanup',
+            state: 'skipped',
+            summary: 'terminal Work lifecycle released durable canonical mutation ownership',
+          });
+        }
+        return { workId, caller };
+      };
+      const owner = makeWork('owner', terminal);
+      const contender = makeWork('contender', false);
+      const result = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+        repo_id: fx.repository.repoId,
+        work_id: contender.workId,
+        purpose: 'probe canonical ownership after failed owner lifecycle transition',
+        operations: [{ type: 'create', path: 'src/contender-terminal-owner.ts', content: 'export const contenderTerminalOwner = true;\n' }],
+      }, contender.caller));
+      if (terminal) {
+        expect(result.error).toBeUndefined();
+        expect(existsSync(join(fx.repoRoot, 'src', 'contender-terminal-owner.ts'))).toBe(true);
+      } else {
+        expect(JSON.stringify(result)).toContain(`WORK_CANONICAL_MUTATION_OWNED: checkout=${fx.repository.activeCheckoutId}; owner=${owner.workId}`);
+        expect(existsSync(join(fx.repoRoot, 'src', 'contender-terminal-owner.ts'))).toBe(false);
+      }
+    };
+
+    await runCase(false);
+    await runCase(true);
+  }, 20_000);
+
   test('Direct canonical pre-mutation reconciliation fails closed on dirty or rewritten target history', async () => {
     const makeWork = (suffix: string) => {
       const fx = fixture();

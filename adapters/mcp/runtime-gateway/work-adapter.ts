@@ -420,7 +420,8 @@ export async function finalizeFacadeWorkHandle(
     });
   }
 
-  const registeredCheckout = repository.checkouts.find((candidate) => candidate.checkoutId === handle.checkoutId);
+  const handleCheckoutId = handle.checkoutId;
+  const registeredCheckout = repository.checkouts.find((candidate) => candidate.checkoutId === handleCheckoutId);
   const registeredLifecycle = registeredCheckout ? repositoryCheckoutLifecycle(registeredCheckout) : undefined;
   const checkoutUnavailable = !registeredCheckout || (registeredLifecycle !== 'active' && registeredLifecycle !== 'archived');
   if (checkoutUnavailable) {

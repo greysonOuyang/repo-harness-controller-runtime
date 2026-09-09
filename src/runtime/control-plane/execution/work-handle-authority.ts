@@ -34,10 +34,23 @@ export function assertCanonicalRepositoryMutationWorkHandleAvailable(input: {
   workId?: string;
 }): void {
   const owners = listWorkHandles(input.controllerHome, input.repositoryId, 5_000)
-    .filter((handle) => handle.workId !== input.workId
-      && handle.checkoutId === input.checkoutId
-      && handle.managedWorktree !== true
-      && DURABLE_CANONICAL_MUTATION_OWNER_STATES.has(handle.state))
+    .filter((handle) => {
+      if (handle.workId === input.workId
+        || handle.checkoutId !== input.checkoutId
+        || handle.managedWorktree === true
+        || !DURABLE_CANONICAL_MUTATION_OWNER_STATES.has(handle.state)) {
+        return false;
+      }
+      const contract = getWorkContract(
+        { controllerHome: input.controllerHome, repoId: input.repositoryId },
+        handle.workId,
+      );
+      // A stale physical handle cannot outlive canonical Work lifecycle authority.
+      // Missing WorkContract evidence remains fail-closed for legacy/unreconciled
+      // handles; only an explicit terminal status or completion receipt releases
+      // durable canonical writer ownership.
+      return !contract || (!isTerminalWorkContractStatus(contract.status) && !contract.completionReceipt);
+    })
     .sort((left, right) => left.workId.localeCompare(right.workId));
   if (owners.length === 0) return;
   if (owners.length > 1) {
