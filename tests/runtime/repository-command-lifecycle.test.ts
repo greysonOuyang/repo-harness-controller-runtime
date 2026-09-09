@@ -313,10 +313,12 @@ describe('repository command execution lifecycle', () => {
     expect(readWorkHandle(controllerHome, repository.repoId, drift.workId)?.expectedHead).toBe(drift.expectedHead);
   });
 
-  test('raw git commits require explicit path scope and selected-path commits keep unrelated staged work isolated', () => {
+  test('raw git commits derive staged-index scope while widening forms stay blocked and selected-path commits isolate unrelated staged work', async () => {
     const route = (command: string[] | string) => classifyRepositoryCommandRoute(command);
-    expect(route(['git', 'commit', '-m', 'unsafe'])).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
-    expect(route('git commit -m unsafe')).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
+    expect(route(['git', 'commit', '-m', 'staged index'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
+    expect(route("git commit -m 'staged index shell'")).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
+    expect(route(['bash', '-lc', "git commit -m 'wrapped staged index'"])).toEqual({ route: 'process_direct', reason: 'lightweight_local_shell_wrapper' });
+    expect(route("git add . && git commit -m 'compound unsafe'")).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
     expect(route(['git', 'commit', '--only', '-m', 'safe', '--', 'README.md'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
     expect(route(['git', 'commit', '-m', 'safe argv pathspec', '--', 'README.md', 'docs/forge-plugin-management.md'])).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
     expect(route("git commit -m 'safe shell pathspec' -- README.md docs/forge-plugin-management.md")).toEqual({ route: 'process_direct', reason: 'ephemeral_local_workspace_mutation' });
@@ -329,6 +331,26 @@ describe('repository command execution lifecycle', () => {
     const repoRoot = tempRoot('forge-selected-commit-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
     persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+
+    writeFileSync(join(repoRoot, 'staged-only.txt'), 'staged\n');
+    writeFileSync(join(repoRoot, 'unstaged-only.txt'), 'unstaged\n');
+    git(repoRoot, ['add', 'staged-only.txt']);
+    const stagedCommit = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome,
+      repository,
+      command: ['git', 'commit', '-m', 'commit staged index only'],
+      timeoutMs: 10_000,
+      executionIdentity: executionIdentityForRepository(repository),
+    });
+    const stagedCommitTerminal = stagedCommit.process?.completed
+      ? stagedCommit.process
+      : stagedCommit.process
+        ? await waitRepositoryCommandProcess(controllerHome, repository.repoId, stagedCommit.process.processId, { timeoutMs: 10_000 })
+        : undefined;
+    expect(stagedCommitTerminal?.ok ?? stagedCommit.ok).toBe(true);
+    expect(gitOutput(repoRoot, ['show', '--pretty=format:', '--name-only', 'HEAD']).split(/\r?\n/).filter(Boolean)).toEqual(['staged-only.txt']);
+    expect(gitOutput(repoRoot, ['status', '--short'])).toContain('?? unstaged-only.txt');
+
     writeFileSync(join(repoRoot, 'README.md'), 'selected change\n');
     writeFileSync(join(repoRoot, 'other.txt'), 'other staged change\n');
     git(repoRoot, ['add', 'other.txt']);

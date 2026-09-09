@@ -367,6 +367,70 @@ describe("repository MCP command tools", () => {
     }
   });
 
+  test("Work-bound raw commit derives staged scope and rejects staged paths outside durable Work authority", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "forge-work-commit-scope-"));
+    const controllerHome = join(workspace, "controller");
+    const repoRoot = join(workspace, "repo");
+    mkdirSync(repoRoot, { recursive: true });
+    try {
+      git(repoRoot, ["init", "-b", "main"]);
+      git(repoRoot, ["config", "user.name", "Forge Test"]);
+      git(repoRoot, ["config", "user.email", "forge-test@example.com"]);
+      writeFileSync(join(repoRoot, "tracked.txt"), "base\n");
+      git(repoRoot, ["add", "tracked.txt"]);
+      git(repoRoot, ["commit", "-m", "init"]);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: "main" });
+      const workId = "WORK-RAW-COMMIT-SCOPE";
+      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+        workId,
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        mode: "goal_workloop",
+        objective: "Commit only Work-owned staged source.",
+        acceptanceCriteria: [],
+        allowedPaths: ["tracked.txt"],
+        forbiddenPaths: [],
+        checks: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        requestedBy: "chatgpt",
+        status: "running",
+      });
+      const caller = { sessionId: "session-raw-commit-scope", principalId: "principal-raw-commit-scope", controllerInstanceId: "runtime-raw-commit-scope" };
+      claimControllerSession({ controllerHome, repoId: repository.repoId }, {
+        workId,
+        controllerId: caller.principalId,
+        controllerType: "chatgpt",
+        sessionId: caller.sessionId,
+        principalId: caller.principalId,
+        controllerInstanceId: caller.controllerInstanceId,
+        leaseMs: 60_000,
+      });
+
+      const established = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        work_id: workId,
+        command: ["sh", "-c", "printf 'work change\\n' > tracked.txt"],
+        request_id: "work-raw-commit-scope-establish-authority",
+      }, caller));
+      expect(established.accepted).toBe(true);
+
+      writeFileSync(join(repoRoot, "outside.txt"), "outside\n");
+      git(repoRoot, ["add", "outside.txt"]);
+      const blocked = await json(callRepositoryTool(controllerHome, "repository_command_execute", {
+        repo_id: repository.repoId,
+        work_id: workId,
+        command: ["git", "commit", "-m", "must not commit outside Work scope"],
+        request_id: "work-raw-commit-scope-blocked",
+      }, caller));
+      expect(blocked.error).toMatchObject({ code: "WORK_COMMIT_STAGED_PATH_OUT_OF_SCOPE" });
+      expect(spawnSync("git", ["-C", repoRoot, "diff", "--cached", "--name-only"], { encoding: "utf8" }).stdout.trim()).toBe("outside.txt");
+      expect(spawnSync("git", ["-C", repoRoot, "log", "-1", "--pretty=%s"], { encoding: "utf8" }).stdout.trim()).toBe("init");
+    } finally {
+      await cleanupWorkspace([workspace, controllerHome, repoRoot]);
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   test("terminal-bound execution session cannot omit work_id and fall back to unbound repository mutation", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-terminal-bound-attribution-"));
     const controllerHome = join(workspace, "controller");

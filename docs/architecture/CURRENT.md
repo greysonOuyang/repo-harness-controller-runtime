@@ -130,7 +130,7 @@ Explicit **Scale** is the opt-in coordination form of this existing model, not a
 
 ## State ownership
 
-- Git/worktree owns repository source truth.
+- Git/worktree owns repository source truth. Direct commit scope is the exact staged Git index at the commit boundary; a WorkContract may further constrain that scope through its durable allowed/forbidden path authority. Caller-supplied commit pathspecs are an explicit narrowing input, not a second source of scope truth.
 - Edit Session owns one deterministic local patch transaction and reviewable diff evidence.
 - Lightweight process handles own only current-runtime attach state.
 - Validation results own check evidence for the exact inputs they verified.

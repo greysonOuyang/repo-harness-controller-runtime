@@ -37,6 +37,7 @@ import {
   repositoryGitMergeBranch,
   repositoryGitStatus,
   repositoryGitSwitchBranch,
+  resolveRepositoryGitCommitScope,
 } from '../../../src/cli/repositories/structured-git';
 import {
   readRepositoryGitStatusSample,
@@ -51,6 +52,7 @@ import {
   routeExecution,
 } from '../../../src/runtime/execution/thin-harness';
 import {
+  classifyRawGitCommitScope,
   classifyRepositoryCommandRoute,
   executeRepositoryCommandViaProcessRuntime,
 } from '../../../src/runtime/execution/process-runtime/command-facade';
@@ -1141,6 +1143,7 @@ export async function callRepositoryTool(
         const forceDurable = fromDurableWorker
           || args.mode === 'durable'
           || args.force_durable === true;
+        const rawCommitScope = classifyRawGitCommitScope(args.command as string | string[]);
         const routeClass = classifyRepositoryCommandRoute(args.command as string | string[], {
           forceDurable,
           workId: executionIdentity.workId,
@@ -1181,6 +1184,17 @@ export async function callRepositoryTool(
             target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
             ({ repository, executionIdentity, historicalWorkContext } = target);
           }
+        }
+        if (executionIdentity.workId && (rawCommitScope.kind === 'staged_index' || rawCommitScope.kind === 'explicit_paths')) {
+          const work = getWorkContract({ controllerHome, repoId: repository.repoId }, executionIdentity.workId);
+          if (!work) throw new Error(`WORK_NOT_FOUND: ${executionIdentity.workId}`);
+          const commitScope = resolveRepositoryGitCommitScope(repository, {
+            paths: rawCommitScope.kind === 'explicit_paths' ? rawCommitScope.paths : undefined,
+          });
+          assertWorkPathsWithinScope(work, commitScope.paths, {
+            forbidden: 'WORK_COMMIT_STAGED_PATH_FORBIDDEN',
+            outOfScope: 'WORK_COMMIT_STAGED_PATH_OUT_OF_SCOPE',
+          });
         }
         // repository_command_execute owns its command execution architecture.
         // Do not send ordinary command text through Thin Harness semantic risk

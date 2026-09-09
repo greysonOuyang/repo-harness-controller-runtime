@@ -51,6 +51,11 @@ export interface RepositoryGitCommitResult {
   error?: { code: string; message: string };
 }
 
+export interface RepositoryGitCommitScope {
+  source: 'explicit_paths' | 'staged_index';
+  paths: string[];
+}
+
 export interface RepositoryGitFinishResult {
   repoId: string;
   checkoutId: string;
@@ -112,6 +117,28 @@ function normalizePaths(input: unknown): string[] {
   if (!Array.isArray(input)) throw new Error('GIT_PATHS_INVALID: paths must be an array');
   if (input.length > MAX_PATHS) throw new Error(`GIT_PATHS_INVALID: at most ${MAX_PATHS} paths are allowed`);
   return [...new Set(input.map((entry) => String(entry ?? '').trim().replace(/\\/g, '/')).filter(Boolean))].sort();
+}
+
+export function repositoryGitStagedPaths(repository: RepositoryRecord): string[] {
+  const staged = runGit(repository, ['diff', '--cached', '--name-only', '-z'], 128 * 1024);
+  if (!staged.ok) {
+    throw new Error(`GIT_COMMIT_SCOPE_INSPECTION_FAILED: ${staged.stderr || 'Unable to inspect the staged Git index.'}`);
+  }
+  return staged.stdout.split('\0').map((path) => path.trim()).filter(Boolean).sort();
+}
+
+/**
+ * Commit scope has one repository authority. Explicit pathspecs narrow the
+ * transaction; otherwise the exact staged Git index is the scope. Callers do
+ * not need to restate the same staged paths merely to satisfy routing policy.
+ */
+export function resolveRepositoryGitCommitScope(
+  repository: RepositoryRecord,
+  input: { paths?: unknown },
+): RepositoryGitCommitScope {
+  const explicitPaths = normalizePaths(input.paths);
+  if (explicitPaths.length > 0) return { source: 'explicit_paths', paths: explicitPaths };
+  return { source: 'staged_index', paths: repositoryGitStagedPaths(repository) };
 }
 
 function splitStatus(porcelain: string): { staged: string[]; unstaged: string[]; untracked: string[] } {
@@ -262,9 +289,10 @@ export function repositoryGitDeleteBranch(controllerHome: string, repository: Re
 export function repositoryGitCommit(controllerHome: string, repository: RepositoryRecord, input: { message: unknown; paths?: unknown; allowEmpty?: unknown; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; workId?: string; goalId?: string }): RepositoryGitCommitResult {
   const before = repositoryGitStatus(repository);
   const message = normalizeCommitMessage(input.message);
-  const paths = normalizePaths(input.paths);
+  const scope = resolveRepositoryGitCommitScope(repository, { paths: input.paths });
+  const paths = scope.source === 'explicit_paths' ? scope.paths : [];
   let stage: RepositoryGitExecution | undefined;
-  if (paths.length > 0) {
+  if (scope.source === 'explicit_paths') {
     stage = executeRepositoryGitCommand(controllerHome, repository, { args: ['add', '--all', '--', ...paths], authorization: 'explicit_user_request', ...input });
     if (stage.status !== 'executed' || stage.ok !== true) {
       return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, before, stage, after: repositoryGitStatus(repository), committed: false, error: { code: 'GIT_STAGE_FAILED', message: stage.stderr || 'git add failed' } };
