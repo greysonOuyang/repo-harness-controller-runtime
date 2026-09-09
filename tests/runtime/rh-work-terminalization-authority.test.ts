@@ -21,7 +21,7 @@ import { implementationReviewCommittedBaseRevision, inspectCleanupOnlyMergedHead
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
 import type { VerificationRecord } from '../../src/runtime/control-plane/facade/types';
 
-import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { readWorkHandle, transitionWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { resolveExplicitClaimedRepositoryWork } from '../../src/runtime/control-plane/execution/repository-work-attribution';
 import { releasePreparedWorkOwnership } from '../../src/runtime/gateway/mcp/execution-tools';
 import { callRuntimeTool } from '../../src/runtime/gateway/mcp/runtime-tools';
@@ -542,6 +542,104 @@ describe('rh_work terminalization authority', () => {
     expect(aligned.deliveryBaseCommit).toBe(targetRevision);
     expect(aligned.expectedHead).toBe(targetRevision);
   }, 15_000);
+
+  test('durable canonical WorkHandle ownership fences later mutation calls after Process lease release', async () => {
+    const fx = fixture();
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const baseRevision = repositoryGitStatus(fx.repository).head!;
+    const makeWork = (suffix: string) => {
+      const workId = `work-canonical-writer-${suffix}`;
+      const caller = {
+        principalId: `principal-canonical-writer-${suffix}`,
+        sessionId: `transport-canonical-writer-${suffix}`,
+        controllerInstanceId: `runtime-canonical-writer-${suffix}`,
+      };
+      createWorkContract(store, {
+        workId,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        principalId: caller.principalId,
+        controllerInstanceId: caller.controllerInstanceId,
+        baseRevision,
+        mode: 'goal_workloop',
+        objective: `Exercise durable canonical writer ownership for ${suffix}.`,
+        acceptanceCriteria: [],
+        constraints: { requireHandoffOnAmbiguity: true },
+        allowedPaths: ['src/**'],
+        forbiddenPaths: [],
+        checks: [],
+        requestedBy: 'chatgpt',
+        workKind: 'repository_change',
+        status: 'running',
+        phase: 'implementation',
+      });
+      claimControllerSession(store, {
+        workId,
+        controllerId: caller.principalId,
+        controllerType: 'chatgpt',
+        sessionId: caller.sessionId,
+        principalId: caller.principalId,
+        controllerInstanceId: caller.controllerInstanceId,
+        leaseMs: 60_000,
+      });
+      expect(ensureRepositoryWorkHandle({ controllerHome: fx.controllerHome, repository: fx.repository, workId, identity: caller })?.state).toBe('prepared');
+      return { workId, caller };
+    };
+    const owner = makeWork('owner');
+    const contender = makeWork('contender');
+
+    const first = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      work_id: owner.workId,
+      purpose: 'owner establishes durable canonical mutation authority',
+      operations: [{
+        type: 'replace', path: 'src/index.ts',
+        replacements: [{ old_text: 'export const ready = true;', new_text: 'export const ready = false;' }],
+      }],
+    }, owner.caller));
+    expect(first.error).toBeUndefined();
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, owner.workId)?.state).toBe('editing');
+
+    const ownerAgain = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      work_id: owner.workId,
+      purpose: 'same owner may continue after the prior mutation call ended',
+      operations: [{ type: 'create', path: 'src/owner-second.ts', content: 'export const second = true;\n' }],
+    }, owner.caller));
+    expect(ownerAgain.error).toBeUndefined();
+
+    const contenderResult = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      work_id: contender.workId,
+      purpose: 'different pre-admitted Work must not take over the dirty canonical checkout',
+      operations: [{ type: 'create', path: 'src/contender.ts', content: 'export const contender = true;\n' }],
+    }, contender.caller));
+    expect(JSON.stringify(contenderResult)).toContain(`WORK_CANONICAL_MUTATION_OWNED: checkout=${fx.repository.activeCheckoutId}; owner=${owner.workId}`);
+    expect(existsSync(join(fx.repoRoot, 'src', 'contender.ts'))).toBe(false);
+
+    const unattributed = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repository.repoId,
+      command: ['touch', 'src/unattributed.ts'],
+      request_id: 'canonical-writer-unattributed-command',
+    }, { principalId: 'principal-unattributed', sessionId: 'transport-unattributed', controllerInstanceId: 'runtime-unattributed' }));
+    expect(JSON.stringify(unattributed)).toContain(`WORK_CANONICAL_MUTATION_OWNED: checkout=${fx.repository.activeCheckoutId}; owner=${owner.workId}`);
+    expect(existsSync(join(fx.repoRoot, 'src', 'unattributed.ts'))).toBe(false);
+
+    execFileSync('git', ['add', 'src/index.ts', 'src/owner-second.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-m', 'owner canonical mutation'], { cwd: fx.repoRoot });
+    let ownerHandle = readWorkHandle(fx.controllerHome, fx.repository.repoId, owner.workId)!;
+    ownerHandle = transitionWorkHandle(fx.controllerHome, ownerHandle, 'validating');
+    transitionWorkHandle(fx.controllerHome, ownerHandle, 'committed');
+
+    const afterRelease = await repositoryStructured(callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      work_id: contender.workId,
+      purpose: 'later Work may acquire the clean canonical checkout after prior mutable ownership is committed',
+      operations: [{ type: 'create', path: 'src/contender.ts', content: 'export const contender = true;\n' }],
+    }, contender.caller));
+    expect(afterRelease.error).toBeUndefined();
+    expect(existsSync(join(fx.repoRoot, 'src', 'contender.ts'))).toBe(true);
+  }, 20_000);
 
   test('Direct canonical pre-mutation reconciliation fails closed on dirty or rewritten target history', async () => {
     const makeWork = (suffix: string) => {

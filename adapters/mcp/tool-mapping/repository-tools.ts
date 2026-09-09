@@ -5,7 +5,7 @@ import type { ResolvedExecutionIdentity } from '../../../src/runtime/control-pla
 import { assertNoBoundExecutionSessionMutation, resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../../src/runtime/control-plane/execution/repository-work-attribution';
 import { getWorkContract } from '../../../packages/kernel/work/api';
 import { assertWorkPathsWithinScope } from '../../../src/runtime/control-plane/execution/work-path-scope';
-import { ensureRepositoryMutationWorkHandle, markRepositoryMutationStarted } from '../../../src/runtime/control-plane/execution/work-handle-authority';
+import { assertCanonicalRepositoryMutationWorkHandleAvailable, ensureRepositoryMutationWorkHandle, markRepositoryMutationStarted } from '../../../src/runtime/control-plane/execution/work-handle-authority';
 import { isTerminalWorkContractStatus } from '../../../src/runtime/control-plane/facade/types';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../../src/cli/repositories/command-executor';
 import { withControllerLock } from '../../../src/cli/repositories/locks';
@@ -995,6 +995,14 @@ export async function callRepositoryTool(
           { scope: 'repository', repoId: repository.repoId },
           'mcp:repository_safe_patch_apply',
           () => {
+            if (args.validation_only !== true) {
+              assertCanonicalRepositoryMutationWorkHandleAvailable({
+                controllerHome,
+                repositoryId: repository.repoId,
+                checkoutId: repository.activeCheckoutId,
+                workId: binding?.workId,
+              });
+            }
             const mutationAuthority = binding?.workId
               ? ensureRepositoryMutationWorkHandle({
                   controllerHome,
@@ -1160,12 +1168,12 @@ export async function callRepositoryTool(
           );
         }
         let mutationAuthority: ReturnType<typeof ensureRepositoryMutationWorkHandle> | undefined;
-        if (executionIdentity.workId) {
-          const mutationClassification = classifyRepositoryCommand(args.command as string | string[], repository.defaultBranch);
-          if (
-            (mutationClassification.risk === 'workspace_write' || mutationClassification.risk === 'destructive')
-            && (routeClass.route === 'process_direct' || routeClass.route === 'process_managed')
-          ) {
+        const mutationClassification = classifyRepositoryCommand(args.command as string | string[], repository.defaultBranch);
+        if (
+          (mutationClassification.risk === 'workspace_write' || mutationClassification.risk === 'destructive')
+          && (routeClass.route === 'process_direct' || routeClass.route === 'process_managed')
+        ) {
+          if (executionIdentity.workId) {
             mutationAuthority = withControllerLock(
               controllerHome,
               { scope: 'repository', repoId: repository.repoId },
@@ -1183,6 +1191,18 @@ export async function callRepositoryTool(
             // immutable execution identity after that durable CAS and before spawn.
             target = resolveRepositoryCommandTarget(controllerHome, args, repoIdValue, caller);
             ({ repository, executionIdentity, historicalWorkContext } = target);
+          } else {
+            withControllerLock(
+              controllerHome,
+              { scope: 'repository', repoId: repository.repoId },
+              'mcp:repository_command_execute:unattributed-mutation-authority',
+              () => assertCanonicalRepositoryMutationWorkHandleAvailable({
+                controllerHome,
+                repositoryId: repository.repoId,
+                checkoutId: repository.activeCheckoutId,
+              }),
+              60_000,
+            );
           }
         }
         if (executionIdentity.workId && (rawCommitScope.kind === 'staged_index' || rawCommitScope.kind === 'explicit_paths')) {
