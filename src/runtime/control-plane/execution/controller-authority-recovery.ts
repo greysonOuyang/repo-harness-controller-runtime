@@ -1,5 +1,7 @@
 import {
+  assertControllerOwnershipAuthority,
   bindControllerSessionToCurrentRuntime,
+  controllerSessionAuthorityMatches,
   controllerSessionPrincipalId,
   getControllerRoundRelay,
   getControllerSession,
@@ -7,6 +9,7 @@ import {
   recoverControllerRoundRelayAuthority,
   type ControllerRoundRelayRecord,
   type ControllerSession,
+  type ControllerTerminalizationAuthority,
   type ControllerType,
 } from '../../../../packages/kernel/controller/api/index';
 import { getWorkContract } from '../../../../packages/kernel/work/api/index';
@@ -156,4 +159,177 @@ export function recoverControllerAuthority(input: {
     controllerAuthorityCarrier: 'controller_authority_id_or_session_id_compat',
     authorityRecovered: true,
   };
+}
+
+export interface ControllerInvocationIdentity extends DirectControllerAuthorityRecoveryIdentity {
+  /** Present only when the transport itself supplied a protocol session. */
+  transportSessionId?: string;
+  /** Exact durable Work/ControllerRound capability after MCP-edge normalization. */
+  controllerAuthorityId?: string;
+  /** True only for the frozen-client session_id compatibility carrier. */
+  authorityViaSessionCompatibility?: boolean;
+}
+
+export interface ControllerInvocationAuthorityContext {
+  controllerHome: string;
+  repoId: string;
+  workId: string;
+  identity: ControllerInvocationIdentity;
+  /** Explicit relay grouping metadata from the current MCP request. */
+  relayScopeId?: string;
+}
+
+/**
+ * Durable Controller ownership matching. Transport presence is deliberately not
+ * authority: modern sessionless MCP must present the exact Work-bound capability.
+ */
+export function controllerInvocationAuthorityMatches(
+  owner: ControllerSession | undefined,
+  identity: Pick<ControllerInvocationIdentity, 'transportSessionId' | 'controllerAuthorityId'>,
+): boolean {
+  if (!owner || identity.transportSessionId) return true;
+  return controllerSessionAuthorityMatches(owner, identity.controllerAuthorityId);
+}
+
+export function assertControllerInvocationAuthority(
+  owner: ControllerSession | undefined,
+  identity: Pick<ControllerInvocationIdentity, 'transportSessionId' | 'controllerAuthorityId'>,
+  workId: string,
+): void {
+  if (controllerInvocationAuthorityMatches(owner, identity)) return;
+  throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; sessionless MCP requests must present the exact Work-bound controller authority.`);
+}
+
+/** Canonical authority check for one exact ControllerRound invocation. */
+export function assertControllerRoundInvocationAuthority(
+  input: ControllerInvocationAuthorityContext,
+): ControllerRoundRelayRecord | undefined {
+  const store = { controllerHome: input.controllerHome, repoId: input.repoId };
+  const workId = input.workId.trim();
+  const relay = getControllerRoundRelay(store, workId);
+  if (!relay) return undefined;
+
+  const expectedAuthorityId = relay.authorityId?.trim() || '';
+  if (expectedAuthorityId) {
+    const requestedAuthorityId = input.identity.controllerAuthorityId?.trim() || '';
+    // relay_scope_id is grouping metadata, not the secret authority. Only the
+    // frozen session_id compatibility carrier may inherit the scope from the
+    // exact Work-selected relay. Explicit modern capability calls remain scoped.
+    const requestedScopeId = input.relayScopeId?.trim()
+      || (input.identity.authorityViaSessionCompatibility ? relay.relayScopeId : '');
+    if (!requestedScopeId || requestedScopeId !== relay.relayScopeId) {
+      throw new Error(`WORK_CONTROLLER_RELAY_SCOPE_MISMATCH: ${workId}:expected=${relay.relayScopeId}`);
+    }
+    if (!requestedAuthorityId) throw new Error(`WORK_CONTROLLER_ROUND_AUTHORITY_REQUIRED: ${workId}`);
+    if (requestedAuthorityId !== expectedAuthorityId) {
+      throw new Error(`WORK_CONTROLLER_ROUND_AUTHORITY_MISMATCH: ${workId}`);
+    }
+    return relay;
+  }
+
+  // Pre-capability relay records preserve only their already-claimed durable
+  // epoch. They may not be rebound by shared principal identity.
+  const owner = getControllerSession(store, workId);
+  if (
+    owner
+    && owner.sessionId === input.identity.sessionId
+    && controllerSessionPrincipalId(owner) === input.identity.principalId
+    && (owner.controllerInstanceId?.trim() || '') === input.identity.controllerInstanceId
+  ) return relay;
+  throw new Error(`WORK_CONTROLLER_ROUND_AUTHORITY_UPGRADE_REQUIRED: ${workId}`);
+}
+
+/** Bind one exact Work owner to the current transport/runtime without changing semantic ownership. */
+export function bindControllerOwnershipForInvocation(input: ControllerInvocationAuthorityContext & {
+  runtime: { running?: boolean; runtimeInstanceId?: string };
+  allowClaimIfMissing?: boolean;
+  leaseMs?: number;
+}): ControllerSession {
+  const store = { controllerHome: input.controllerHome, repoId: input.repoId };
+  const workId = input.workId.trim();
+  const existingOwner = getControllerSession(store, workId);
+  assertControllerInvocationAuthority(existingOwner, input.identity, workId);
+  return bindControllerSessionToCurrentRuntime(store, {
+    workId,
+    controllerId: input.identity.controllerId,
+    controllerType: input.identity.controllerType,
+    sessionId: input.identity.sessionId,
+    principalId: input.identity.principalId,
+    controllerInstanceId: input.identity.controllerInstanceId,
+    currentRuntimeInstanceId: input.runtime.running ? input.runtime.runtimeInstanceId : undefined,
+    allowClaimIfMissing: input.allowClaimIfMissing,
+    leaseMs: input.leaseMs ?? 3_600_000,
+  });
+}
+
+/** Resolve the sole canonical authority allowed to semantically terminalize a Work. */
+export function controllerTerminalizationAuthorityForInvocation(input: ControllerInvocationAuthorityContext & {
+  runtime: { running?: boolean; runtimeInstanceId?: string };
+}): ControllerTerminalizationAuthority {
+  const store = { controllerHome: input.controllerHome, repoId: input.repoId };
+  const workId = input.workId.trim();
+  let owner = getControllerSession(store, workId);
+  if (!owner) {
+    throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${workId}; terminalization requires an explicit controller_claim for this exact Work.`);
+  }
+  if (owner.controllerId !== input.identity.controllerId) {
+    throw new Error(`WORK_CONTROLLER_OWNER_MISMATCH: ${workId} is owned by ${owner.controllerId}`);
+  }
+  if (owner.controllerType !== input.identity.controllerType) {
+    throw new Error(`WORK_CONTROLLER_TYPE_MISMATCH: ${workId} is owned by ${owner.controllerType}`);
+  }
+  if (controllerSessionPrincipalId(owner) !== input.identity.principalId) {
+    throw new Error(`WORK_CONTROLLER_PRINCIPAL_MISMATCH: ${workId}`);
+  }
+  const ownerInstanceId = owner.controllerInstanceId?.trim() || '';
+  if (!ownerInstanceId) throw new Error(`WORK_CONTROLLER_INSTANCE_MISMATCH: ${workId}`);
+
+  if (ownerInstanceId !== input.identity.controllerInstanceId || owner.sessionId !== input.identity.sessionId) {
+    if (getControllerRoundRelay(store, workId)) {
+      assertControllerRoundInvocationAuthority(input);
+    } else if (
+      input.identity.controllerAuthorityId
+      && !controllerSessionAuthorityMatches(owner, input.identity.controllerAuthorityId)
+    ) {
+      throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; explicit Work-bound controller authority does not match.`);
+    }
+    owner = bindControllerOwnershipForInvocation({ ...input, runtime: input.runtime });
+  }
+  if (typeof owner.claimGeneration !== 'number' || owner.claimGeneration < 1) {
+    throw new Error(`WORK_CONTROLLER_CLAIM_GENERATION_REQUIRED: ${workId}`);
+  }
+  return {
+    controllerId: owner.controllerId,
+    controllerType: owner.controllerType,
+    principalId: controllerSessionPrincipalId(owner),
+    controllerInstanceId: owner.controllerInstanceId?.trim() || '',
+    claimGeneration: owner.claimGeneration,
+  };
+}
+
+/** Resolve authority for physical cleanup of an already-terminal Work. */
+export function terminalCleanupAuthorityForInvocation(
+  input: ControllerInvocationAuthorityContext,
+): ControllerTerminalizationAuthority {
+  const store = { controllerHome: input.controllerHome, repoId: input.repoId };
+  const workId = input.workId.trim();
+  const owner = getControllerSession(store, workId);
+  if (!owner) throw new Error(`WORK_CONTROLLER_OWNER_REQUIRED: ${workId}`);
+  assertControllerInvocationAuthority(owner, input.identity, workId);
+  const authority = assertControllerOwnershipAuthority(owner, {
+    workId,
+    controllerId: input.identity.controllerId,
+    controllerType: input.identity.controllerType,
+    principalId: input.identity.principalId,
+    controllerInstanceId: input.identity.controllerInstanceId,
+  });
+  if (getControllerRoundRelay(store, workId)) {
+    assertControllerRoundInvocationAuthority(input);
+  } else if (
+    input.identity.controllerAuthorityId
+    && !controllerSessionAuthorityMatches(owner, input.identity.controllerAuthorityId)
+  ) {
+    throw new Error(`WORK_CONTROLLER_SCOPE_MISMATCH: ${workId}; explicit Work-bound controller authority does not match.`);
+  }
+  return authority;
 }

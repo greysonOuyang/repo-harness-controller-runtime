@@ -255,6 +255,19 @@ function requireExactShrinkingInventory(label, actual, allowed) {
   }
 }
 
+// Stage 4 boundary: rh_work is an ABI/translation adapter. Durable lifecycle
+// ownership stays in Kernel/application services and physical WorkHandle state
+// may not be persisted from the MCP adapter.
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "case 'rh_work': return await callWorkAdapter(ctx, args);");
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'controllerTerminalizationAuthorityForInvocation');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'assertControllerRoundInvocationAuthority');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:transitionWorkHandle|writeWorkHandle|markWorkHandleFailed)\s*\(/, 'rh_work adapter must not persist WorkHandle lifecycle state; use the canonical completion/finalization authority');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /control-plane\/facade\/work-contract-store|kernel\/work\/infrastructure/, 'rh_work adapter must consume canonical Work application/API authority, not persistence infrastructure');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:appendWorkEvidence|recordWorkCompletionReceipt|updateWorkContract)\s*\(/, 'rh_work adapter must not write Work lifecycle/evidence records directly');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:createRequirement|resumeRetainedCancelledWorkContract|acceptRequirementOutcome)\s*\(/, 'rh_work adapter must delegate Requirement and retained-Work lifecycle transitions to canonical application authorities');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /function\s+(?:assert|evaluate|derive)[A-Za-z0-9_]*ImplementationReview/, 'rh_work adapter must not implement implementation-review policy authority');
+forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/, 'rh_work adapter must delegate physical Git delivery to canonical Work finalization authority');
+
 // #197 MCP mega-adapter decomposition. These are debt ledgers, not target
 // architecture: entries may only disappear. New domain-authority imports or
 // switch cases must be implemented in the owning domain adapter/application API,
@@ -296,36 +309,15 @@ const MCP_RUNTIME_GATEWAY_AUTHORITY_IMPORT_DEBT = new Set([
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/cli/repositories/registry',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/cli/repositories/runtime-storage',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/cli/repositories/selected-path-actions',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/cli/repositories/structured-git',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/context/assistant-work-context',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/context/context-closure',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/context/semantic-navigation',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/controller-authority-recovery',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/direct-edit-work-completion',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/execution-identity',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/implementation-review-content',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/retained-work-resume',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/session-store',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/validation',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/verification-evidence',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-finalization-service',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-handle-authority',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-handle-store',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-process-evidence',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-task-receipt',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-terminal-cleanup',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-verification-context',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-verification-service',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/facade',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/facade/operation-digest',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/facade/repository-work-admission',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/facade/requirement-authority',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/global-scheduler/scheduler',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/governance/external-effects',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/launcher/chatgpt-work-continuation',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/launcher/thin-launcher',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/persistence/requirement-store',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/persistence/workflow-run-store',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/runtime-generation',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/runtime-status-client',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/diagnostics/performance',
@@ -335,7 +327,6 @@ const MCP_RUNTIME_GATEWAY_AUTHORITY_IMPORT_DEBT = new Set([
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/jobs/store',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/jobs/types',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/jobs/wait',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/managed-workspace',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime/check-result',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime/check-scheduling',
@@ -349,17 +340,11 @@ const MCP_RUNTIME_GATEWAY_AUTHORITY_IMPORT_DEBT = new Set([
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/projections/controller-context',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/projections/materialized-view',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/recovery',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/root/assistant-learning-loop',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/root/controller-round-composition',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/root/release-materialize',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/root/status',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/safe-tooling',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/shared/local-bridge-surface',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/standalone-recovery/core',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/watchdog/workflow-watchdog',
   'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/workflow/schedules/work-continuation',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/workflows/first-party/xiaohongshu',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/workflows/runtime',
   'adapters/mcp/runtime-gateway/router.ts::../../../src/cli/editing/edit-session',
   'adapters/mcp/runtime-gateway/router.ts::../../../src/cli/repositories/command-classifier',
   'adapters/mcp/runtime-gateway/router.ts::../../../src/cli/repositories/registry',
@@ -443,6 +428,7 @@ requireExactShrinkingDebt(
 
 const FROZEN_CAPABILITY_PREFIX_FILES = [
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
   'adapters/mcp/controller-round-compatibility.ts',
   'adapters/mcp/frozen-client-semantic-compatibility.ts',
 ];
@@ -477,10 +463,10 @@ if (capabilityPrefixFixture) {
 }
 
 const LEGACY_FROZEN_CAPABILITY_PREFIX_DEBT = new Set([
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::controller.authority.recover:',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::plan.step.retry:',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::schedule.delete:',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::work.review:',
+  'adapters/mcp/runtime-gateway/work-adapter.ts::controller.authority.recover:',
+  'adapters/mcp/runtime-gateway/work-adapter.ts::plan.step.retry:',
+  'adapters/mcp/runtime-gateway/work-adapter.ts::schedule.delete:',
+  'adapters/mcp/runtime-gateway/work-adapter.ts::work.review:',
   'adapters/mcp/controller-round-compatibility.ts::controller.disposition:',
   'adapters/mcp/controller-round-compatibility.ts::controller.round:',
   'adapters/mcp/controller-round-compatibility.ts::plan.obligations.v1:',
@@ -587,8 +573,6 @@ const SEMANTIC_STRING_AUTHORITY_DEBT = new Set([
   `adapters/mcp/runtime-gateway/router.ts::message.includes(':')`,
   `adapters/mcp/runtime-gateway/context-adapter.ts::error.message.startsWith('PLUGIN_NOT_FOUND:')`,
   `adapters/mcp/runtime-gateway/runtime-tools.ts::message.includes('CONTROL_PLANE_REVISION_CONFLICT')`,
-  `adapters/mcp/runtime-gateway/runtime-tools.ts::message.startsWith('CHECKOUT_NOT_ACTIVE:')`,
-  `adapters/mcp/runtime-gateway/runtime-tools.ts::message.startsWith('checkout not found for ')`,
   `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('consecutive_failures:')`,
   `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('repeated_state:')`,
   `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('round_budget_exhausted:')`,
@@ -866,7 +850,7 @@ requireText('src/runtime/control-plane/execution/work-verification-service.ts', 
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'interactiveWaitMs: input.interactiveWaitMs ?? 0');
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'checkContentRevision');
 requireText('src/runtime/control-plane/execution/work-verification-service.ts', 'observedGitHead');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'executeWorkVerification({');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'executeWorkVerification({');
 requireText('src/cli/local-bridge/facade-api.ts', 'executeWorkVerification({');
 forbid(
   'src/cli/local-bridge/facade-api.ts',
@@ -929,8 +913,8 @@ requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'transferReviewedWorkAuthorityAcrossContentEquivalentCommit');
 requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'review_decision');
 requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'implementation_review_findings');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "operation === 'review'");
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'implementationReviewContentFingerprint');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "operation === 'review'");
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'implementationReviewContentFingerprint');
 requireText('adapters/mcp/controller-round-compatibility.ts', "'review'");
 requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', 'readControllerRoundContextSnapshot');
 const controllerRoundTransitionPolicyPath = 'packages/kernel/controller/domain/controller-round-transition-policy.ts';
@@ -1011,7 +995,7 @@ forbid(
   /\b(?:appendWorkEvidence|recordWorkCompletionReceipt)\s*\(/,
   'MCP Gateway must submit Work application commands instead of writing lifecycle/evidence records directly',
 );
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'completeRemoteEffectWorkFromProcessReceipt');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'completeRemoteEffectWorkFromProcessReceipt');
 requireText('src/runtime/control-plane/execution/work-finalization-service.ts', 'packages/kernel/work/api/index');
 requireText('src/runtime/control-plane/facade/goal-workloop.ts', 'packages/kernel/work/api/index');
 requireText('packages/kernel/work/domain/types.ts', 'predecessorWorkId?: string');
@@ -1038,9 +1022,9 @@ requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'REQUIR
 requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'completeRequirementGoal');
 requireText('src/runtime/control-plane/facade/requirement-authority.ts', 'withPlanAdmissionLock');
 requireText('src/runtime/control-plane/facade/plan-contract-store.ts', 'PLAN_REQUIREMENT_TERMINAL');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'completeRequirementGoal');
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'completeRequirementGoal');
 forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /\bacceptRequirementOutcome\s*\(/, 'MCP transport must delegate Requirement-bound goal completion to the canonical Goal application boundary');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "disposition === 'goal_complete' && work.requirementId");
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "disposition === 'goal_complete' && work.requirementId");
 // B3 ControllerSession authority and provider-neutral host boundary.
 requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerBinding');
 requireText('packages/kernel/controller/domain/types.ts', 'export interface ControllerLease');
@@ -1593,7 +1577,7 @@ requireText('adapters/mcp/runtime-gateway/execution-tools.ts', "from '../../../s
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'Compatibility exports: implementation authority lives in control-plane execution.');
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'resetFinalizationStagesForRequest,');
 requireText('adapters/mcp/runtime-gateway/execution-tools.ts', 'selectDefaultWorkValidationChecks');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "callExecutionTool(ctx, 'work_finalize'");
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "callExecutionTool(ctx, 'work_finalize'");
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /repositoryGit(?:Commit|FinishWorkflow|MergeBranch|DeleteBranch|RebaseOnto)\s*\(/,
@@ -1647,6 +1631,7 @@ requireText('src/cli/mcp/tools.ts', '@deprecated Kernel V2 compatibility shim');
 for (const path of [
   'adapters/mcp/runtime-gateway/router.ts',
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/work-adapter.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/repo-actor/actor.ts',
   'src/runtime/workflow/schedules/engine.ts',

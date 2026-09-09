@@ -9,7 +9,7 @@ import { getWorkContract, implementationReviewChangedPathDigest, updateWorkContr
 import { completeWorkWithReceipt } from './work-completion-authority';
 import { isDirectEditWorkCompletionReceipt, isTerminalWorkContractStatus, type DirectEditWorkCompletionReceipt, type WorkContract, type WorkReconciliationRecord } from '../facade/types';
 import { historicalVerificationEvidenceAtRevision, workspaceValidationFingerprint } from './verification-evidence';
-import { readWorkHandle, type WorkHandleState } from './work-handle-store';
+import { readWorkHandle, transitionWorkHandle, type WorkHandleState } from './work-handle-store';
 import { assertWorkPathsWithinScope, findWorkPathScopeViolation } from './work-path-scope';
 import { implementationReviewContentFingerprint, implementationReviewIndexFingerprint } from './implementation-review-content';
 import { transferReviewedWorkAuthorityAcrossContentEquivalentCommit } from './content-equivalent-commit-authority';
@@ -624,5 +624,32 @@ export function acceptReviewedDirectEditWorkReconciliation(input: ReviewedDirect
     'completed_changed',
     'repository_change',
   );
+
+  // WorkHandle is the physical repository-delivery projection of the same
+  // accepted reconciliation. Keep that projection inside this completion
+  // authority so MCP adapters cannot independently infer or persist lifecycle
+  // state after the semantic completion receipt is durable.
+  if (currentHandle && currentHandle.state !== 'cleaned') {
+    const finalization: WorkHandleState['finalization'] = currentHandle.managedWorktree
+      ? currentHandle.finalization
+      : { validation: 'done', commit: 'done', merge: 'skipped', branchCleanup: 'skipped', worktreeCleanup: 'skipped' };
+    const delivered = currentHandle.state === 'committed' || currentHandle.state === 'merged' || currentHandle.state === 'failed_terminal_cleanup'
+      ? currentHandle
+      : transitionWorkHandle(input.controllerHome, currentHandle, 'committed', {
+          expectedHead: receipt.targetRevision,
+          finalization,
+          failureReason: undefined,
+        });
+    // Managed reconciliation records semantic delivery first, then ordinary
+    // terminal cleanup removes the exact owned checkout. Direct/canonical Work
+    // has no separate managed cleanup resource and may close the projection now.
+    if (!currentHandle.managedWorktree) {
+      transitionWorkHandle(input.controllerHome, delivered, 'cleaned', {
+        expectedHead: receipt.targetRevision,
+        finalization,
+        failureReason: undefined,
+      });
+    }
+  }
   return { workId: input.workId, reconciliation, receipt };
 }
