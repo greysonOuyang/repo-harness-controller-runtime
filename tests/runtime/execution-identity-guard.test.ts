@@ -3,13 +3,16 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { ensureControllerHome } from '../../src/cli/repositories/controller-home';
 import { createMcpToolContext } from '../../src/cli/mcp/multi-repository';
 import { callRepositoryTool } from '../../src/cli/mcp/repository-tools';
 import {
   addRepositoryCheckout,
+  loadRepositoryRegistry,
   registerRepository,
   resolveRepositorySelection,
+  saveRepositoryRegistry,
   selectRepositoryCheckout,
   setRepositoryCheckoutLifecycle,
 } from '../../src/cli/repositories/registry';
@@ -273,6 +276,7 @@ describe('execution identity pre-spawn guard', () => {
 
   test('explicit checkout identity wins over server default path without mutating registry focus', async () => {
     const fx = dualRepoFixture();
+    const staleRegistry = loadRepositoryRegistry(fx.controllerHome);
     const worktree = join(fx.root, 'repo-a-worktree');
     const worktreeResult = spawnSync('git', ['-C', fx.repoARoot, 'worktree', 'add', '-b', 'explicit-checkout', worktree], { encoding: 'utf8' });
     expect(worktreeResult.status).toBe(0);
@@ -282,6 +286,11 @@ describe('execution identity pre-spawn guard', () => {
       path: worktree,
       activate: false,
     });
+    // Simulate the production interleaving from #196: another Runtime/Gateway
+    // loaded the Registry before this checkout was added, then tries to persist
+    // that stale snapshot afterwards. The stale writer must fail closed instead
+    // of erasing a checkout that other MCP surfaces already accepted.
+    expect(() => saveRepositoryRegistry(staleRegistry, fx.controllerHome)).toThrow(/REPOSITORY_REGISTRY_STALE/);
     const checkout = withCheckout.checkouts.find((candidate) => candidate.canonicalRoot !== fx.repoA.canonicalRoot);
     expect(checkout).toBeTruthy();
     writeFileSync(join(worktree, 'checkout-only.txt'), 'from explicit worktree\n');
@@ -312,6 +321,39 @@ describe('execution identity pre-spawn guard', () => {
     expect(read).toBeTruthy();
     expect(read?.isError).not.toBe(true);
     expect(JSON.stringify(read?.structuredContent)).toContain('from explicit worktree');
+
+    const patch = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repoA.repoId,
+      checkout_id: checkout!.checkoutId,
+      purpose: 'cross-surface checkout identity regression',
+      allowed_paths: ['checkout-only.txt'],
+      operations: [{
+        type: 'replace',
+        path: 'checkout-only.txt',
+        expected_sha256: createHash('sha256').update('from explicit worktree\n').digest('hex'),
+        old_text: 'from explicit worktree',
+        new_text: 'from safe patch',
+      }],
+    }, ctx);
+    expect(patch).toBeTruthy();
+    expect(patch?.isError).not.toBe(true);
+    expect(patch?.structuredContent).toEqual(expect.objectContaining({
+      repoId: fx.repoA.repoId,
+      checkoutId: checkout!.checkoutId,
+      status: 'applied',
+    }));
+
+    const command = await callRepositoryTool(fx.controllerHome, 'repository_command_execute', {
+      repo_id: fx.repoA.repoId,
+      checkout_id: checkout!.checkoutId,
+      command: ['git', 'status', '--short'],
+    }, ctx);
+    expect(command).toBeTruthy();
+    expect(command?.isError).not.toBe(true);
+    expect(command?.structuredContent).toEqual(expect.objectContaining({
+      repoId: fx.repoA.repoId,
+      checkoutId: checkout!.checkoutId,
+    }));
   });
 
 

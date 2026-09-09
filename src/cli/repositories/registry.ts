@@ -16,6 +16,7 @@ import {
   ensureControllerHome,
   ensureRepositoryControllerLayout,
 } from './controller-home';
+import { withControllerLock } from './locks';
 import {
   inferDisplayName,
   newLocalRepoId,
@@ -354,9 +355,27 @@ export function loadRepositoryRegistry(controllerHome?: string): RepositoryRegis
 
 export function saveRepositoryRegistry(registry: RepositoryRegistry, controllerHome?: string): RepositoryRegistry {
   const home = ensureControllerHome(registryHome(controllerHome));
-  const next = { ...registry, schemaVersion: 1 as const, updatedAt: now() };
-  atomicJson(join(home, REGISTRY_FILE), next);
-  return next;
+  return withControllerLock(
+    home,
+    { scope: 'global', resource: 'repository-registry' },
+    'repository-registry:save',
+    () => {
+      const path = join(home, REGISTRY_FILE);
+      const current = readRegistryFile(path, true);
+      if (current && current.updatedAt !== registry.updatedAt) {
+        throw new Error(
+          `REPOSITORY_REGISTRY_STALE: expected=${registry.updatedAt}; current=${current.updatedAt}; reload canonical Repository Registry and retry`,
+        );
+      }
+      const previousRevision = timestampValue(registry.updatedAt);
+      const updatedAt = new Date(Math.max(Date.now(), previousRevision + 1)).toISOString();
+      const next = { ...registry, schemaVersion: 1 as const, updatedAt };
+      atomicJson(path, next);
+      return next;
+    },
+    30_000,
+    5_000,
+  );
 }
 
 export function consolidateRepositoryRegistry(controllerHome?: string): RepositoryRegistry {
