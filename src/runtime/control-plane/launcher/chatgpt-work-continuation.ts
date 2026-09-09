@@ -22,6 +22,7 @@ import {
   withChatgptBrowserActionOrigin,
 } from '../../../../adapters/chatgpt/browser-delivery-runtime';
 import { getWorkContract } from '../../../../packages/kernel/work/api/index';
+import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
 import {
   bindChatgptWorkConversation,
   getChatgptWorkConversationBinding,
@@ -57,6 +58,19 @@ export {
 
 const LEGACY_CONTROLLER_CHATGPT_SESSION_ID = 'forge-chatgpt-supercontroller';
 export const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
+
+export class ChatgptExecutionPlacementError extends Error {
+  readonly code = 'CHATGPT_EXECUTION_PLACEMENT_MISMATCH';
+  readonly targetForgeInstanceId: string;
+  readonly currentForgeInstanceId?: string;
+
+  constructor(targetForgeInstanceId: string, currentForgeInstanceId?: string) {
+    super(`CHATGPT_EXECUTION_PLACEMENT_MISMATCH: target=${targetForgeInstanceId} current=${currentForgeInstanceId ?? 'unavailable'}`);
+    this.name = 'ChatgptExecutionPlacementError';
+    this.targetForgeInstanceId = targetForgeInstanceId;
+    this.currentForgeInstanceId = currentForgeInstanceId;
+  }
+}
 
 
 export interface WorkChatgptContinuationInput {
@@ -350,6 +364,13 @@ export async function runWorkChatgptContinuation(
     if (!work || work.repoId !== input.repoId) {
       throw new Error(`CHATGPT_WORK_CONTRACT_NOT_FOUND: ${input.repoId}:${input.workId}`);
     }
+    const targetForgeInstanceId = work.executionPlacement?.forgeInstanceId?.trim();
+    if (targetForgeInstanceId) {
+      const currentForgeInstanceId = readForgeInstanceIdentity(input.controllerHome)?.instanceId?.trim();
+      if (currentForgeInstanceId !== targetForgeInstanceId) {
+        throw new ChatgptExecutionPlacementError(targetForgeInstanceId, currentForgeInstanceId);
+      }
+    }
     if (!bridgeRuntime && seedUrl && !binding && hasChatgptConversationIdentity(seedUrl)) {
       binding = bindChatgptWorkConversation(store, {
         workId: input.workId,
@@ -456,7 +477,11 @@ export async function runWorkChatgptContinuation(
       executionPreferenceVerified: false,
       authorizationGrantRefs: [...authorizationGrantRefs],
       error: {
-        code: error instanceof Error && error.message.includes(':') ? error.message.split(':', 1)[0] : bridgeRuntime ? 'CHATGPT_BRIDGE_DISPATCH_FAILED' : 'CHATGPT_CONTROLLER_BROWSER_FAILED',
+        code: error instanceof ChatgptExecutionPlacementError
+          ? error.code
+          : error instanceof Error && error.message.includes(':')
+            ? error.message.split(':', 1)[0]
+            : bridgeRuntime ? 'CHATGPT_BRIDGE_DISPATCH_FAILED' : 'CHATGPT_CONTROLLER_BROWSER_FAILED',
         message: error instanceof Error ? error.message : String(error),
       },
     };

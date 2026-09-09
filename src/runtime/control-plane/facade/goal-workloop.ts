@@ -6,6 +6,7 @@ import {
   type HandoffInboxStoreOptions,
 } from './handoff-inbox-store';
 import { getControllerSession } from '../../../../packages/kernel/controller/api/index';
+import { executionPlacement, readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
 import { projectAutonomousGoalProgression, type ProgressionWorkSnapshot } from '../../../../packages/kernel/progression/api/index';
 import {
   applyEngineeringBlockerDisposition,
@@ -1346,10 +1347,18 @@ export function startGoalWorkloop(
         : repositoryWorkspaceParticipant && input.modeInput.requiresParallelism === true
           ? 'Parallel Work requires isolated placement.'
           : 'Current workspace is the stability-first default; isolation remains opt-in.';
+  const forgeInstanceId = ctx.workStore.controllerHome
+    ? readForgeInstanceIdentity(ctx.workStore.controllerHome)?.instanceId
+    : undefined;
   const work = createWorkContract(ctx.workStore, {
     workId: generatedWorkId,
     repoId: ctx.repoId,
     checkoutId: needsWorktree ? undefined : ctx.checkoutId,
+    executionPlacement: executionPlacement({
+      ...(forgeInstanceId ? { forgeInstanceId } : {}),
+      repositoryId: ctx.repoId,
+      ...(!needsWorktree && ctx.checkoutId ? { checkoutId: ctx.checkoutId } : {}),
+    }),
     principalId: ctx.principalId,
     controllerInstanceId: ctx.controllerInstanceId,
     baseRevision: ctx.sourceRevision,

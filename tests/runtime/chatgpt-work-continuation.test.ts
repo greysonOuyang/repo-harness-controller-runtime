@@ -19,6 +19,7 @@ import { ChatgptProviderDeliveryError, classifyChatgptProviderFailure } from '..
 import { createChatgptBrowserDeliveryHost } from '../../adapters/chatgpt/browser-delivery-host';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { createWorkContract, recordWorkEvidenceState, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { ensureForgeInstanceIdentity, executionPlacement } from '../../packages/kernel/identity/api/index';
 import { bootstrapWslWindowsBridgeBrowser, chatgptBridgeTargetMatchesPage, findInstalledWslWindowsBridgeBrowser, isWslWindowsRuntime, observeWslWindowsBridgeBrowser, openWslWindowsBridgeTarget } from '../../src/cli/chatgpt-browser/bridge-provider';
 import { writeChatgptBridgeExtension } from '../../src/cli/chatgpt-browser/bridge-extension';
 import { ensureBridgeToken, readBrowserBinding } from '../../src/cli/chatgpt-browser/binding';
@@ -598,7 +599,7 @@ describe('ChatGPT Work conversation binding', () => {
     const generated = writeChatgptBridgeExtension(generatedRoot, 'http://127.0.0.1:17651', 'test-token');
     const generatedScript = readFileSync(generated.contentScriptPath, 'utf8');
     expect(() => new Function(generatedScript)).not.toThrow();
-    expect(launcher).toContain('const bridgeRuntime = dependencies.bridgeRuntime ?? isWslWindowsRuntime()'); expect(launcher).toContain('dependencies.wslHost ?? createChatgptWslBridgeDeliveryHost()'); expect(launcher).toContain('dependencies.browserHost ?? createChatgptBrowserDeliveryHost({');
+    expect(launcher).toContain('const bridgeRuntime = dependencies.bridgeRuntime ?? isWslWindowsRuntime()'); expect(launcher).toContain('CHATGPT_EXECUTION_PLACEMENT_MISMATCH'); expect(launcher).toContain('dependencies.wslHost ?? createChatgptWslBridgeDeliveryHost()'); expect(launcher).toContain('dependencies.browserHost ?? createChatgptBrowserDeliveryHost({');
     expect(launcher).toContain('createChatgptWslBridgeDeliveryHost()');
     expect(wslHost).toContain('dispatchOnly: true');
     expect(wslHost).toContain("provider: 'chatgpt-bridge'");
@@ -636,6 +637,32 @@ describe('ChatGPT Work conversation binding', () => {
     });
     expect(result.status).toBe('failed');
     expect(result.error?.message).toContain('CHATGPT_WORK_CONTRACT_NOT_FOUND: repo-chatgpt-work:WORK-missing');
+  });
+
+  test('rejects a Work targeted at a different Forge instance before provider dispatch', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-chatgpt-placement-mismatch-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
+    ensureControllerHome(controllerHome);
+    ensureForgeInstanceIdentity({ controllerHome, preferredInstanceId: 'forge-mac' });
+    mkdirSync(repoRoot, { recursive: true });
+    for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'placement@example.test'], ['config', 'user.name', 'Placement Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'placement fixture\n'); execFileSync('git', ['add', '.'], { cwd: repoRoot }); execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'chatgpt-placement-mismatch' });
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId: 'WORK-PLACEMENT-MISMATCH', repoId: repository.repoId,
+      executionPlacement: executionPlacement({ forgeInstanceId: 'forge-wsl', repositoryId: repository.repoId }),
+      mode: 'goal_workloop', objective: 'Stay on the WSL Forge instance.', acceptanceCriteria: [], allowedPaths: ['**/*'], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true }, requestedBy: 'chatgpt', status: 'running',
+    });
+    let dispatches = 0;
+    const result = await runWorkChatgptContinuation({
+      controllerHome, repoId: repository.repoId, repoRoot, workId: 'WORK-PLACEMENT-MISMATCH', prompt: 'continue',
+      controllerAuthorityId: 'cra_44444444444444444444444444444444', relayScopeId: 'goal:WORK-PLACEMENT-MISMATCH',
+    }, { bridgeRuntime: false, browserHost: { dispatch: async () => { dispatches += 1; throw new Error('must not dispatch'); } } });
+    expect(dispatches).toBe(0);
+    expect(result).toMatchObject({ status: 'failed', error: { code: 'CHATGPT_EXECUTION_PLACEMENT_MISMATCH' } });
+    expect(result.error?.message).toContain('target=forge-wsl current=forge-mac');
   });
 
   test('fails closed before browser mutation when relay authority inputs are incomplete', async () => {
@@ -896,7 +923,9 @@ describe('ChatGPT Work conversation binding', () => {
     expect(engine).not.toContain('relayScopeId: relay.relayScopeId');
     expect(engine).toContain('Standalone browser keepalive auth-required prompt dispatched to ChatGPT.');
     const runtimeTools = readFileSync(join(process.cwd(), 'adapters/mcp/runtime-gateway/runtime-tools.ts'), 'utf8');
-    const launcherStart = runtimeTools.slice(runtimeTools.indexOf("if (operation === 'launcher_start')"), runtimeTools.indexOf('const checks = listControllerChecks', runtimeTools.indexOf("if (operation === 'launcher_start')")));
+    const workAdapter = readFileSync(join(process.cwd(), 'adapters/mcp/runtime-gateway/work-adapter.ts'), 'utf8');
+    const launcherStartIndex = workAdapter.indexOf("if (operation === 'launcher_start')");
+    const launcherStart = workAdapter.slice(launcherStartIndex, workAdapter.indexOf('const checks = listControllerChecks', launcherStartIndex));
     expect(launcherStart).toContain("if (controllerType === 'chatgpt')");
     expect(launcherStart).toContain('await runWorkChatgptContinuation({');
     expect(launcherStart).toContain('controllerAuthorityId: relay.authorityId');
@@ -905,7 +934,8 @@ describe('ChatGPT Work conversation binding', () => {
     expect(launcherStart).toContain("semantic closure still requires an explicit disposition.'");
     expect(launcherStart.indexOf('await runWorkChatgptContinuation({')).toBeLessThan(launcherStart.indexOf('const launched = await launchSuperController'));
     expect(launcherStart).toContain("controllerType: controllerType as 'codex' | 'grok' | 'claude'");
-    const controllerRelease = runtimeTools.slice(runtimeTools.indexOf("if (operation === 'controller_release')"), runtimeTools.indexOf("if (operation === 'launcher_start')"));
+    const controllerReleaseStart = workAdapter.indexOf("if (operation === 'controller_release')");
+    const controllerRelease = workAdapter.slice(controllerReleaseStart, launcherStartIndex);
     expect(controllerRelease).toContain('await runWorkChatgptContinuation({');
     expect(controllerRelease).toContain('controllerAuthorityId: relay.authorityId');
     expect(controllerRelease).toContain('relayScopeId: relay.relayScopeId');
