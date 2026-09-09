@@ -189,6 +189,10 @@
       "module": "core",
       "resource": "temp-isolated"
     },
+    "tests/cli/controller-check-runner.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
     "tests/cli/controller-home.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"

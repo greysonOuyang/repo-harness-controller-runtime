@@ -605,6 +605,7 @@ export function deriveCanonicalForwardingTiming(input: {
 
 export const DEFAULT_CANONICAL_RUNTIME_PROXY_LANES = 8;
 export const MAX_CANONICAL_RUNTIME_PROXY_LANES = 16;
+export const DEFAULT_CANONICAL_RUNTIME_PROXY_IDLE_TTL_MS = 30_000;
 
 export function canonicalRuntimeProxyLaneLimit(raw = process.env.FORGE_CANONICAL_RUNTIME_PROXY_LANES): number {
   const parsed = Number(raw);
@@ -690,22 +691,46 @@ export function createCanonicalRuntimeLaneScheduler(maxLanes = canonicalRuntimeP
   };
 }
 
-interface CanonicalRuntimeProxyLane {
-  current?: { identity: CanonicalRuntimeProxyIdentity; client: Client };
-  connecting?: Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }>;
+interface CanonicalRuntimeProxyConnection {
+  identity: CanonicalRuntimeProxyIdentity;
+  client: Client;
+  transport: StreamableHTTPClientTransport;
 }
 
-export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext): CanonicalRuntimeProxy {
+interface CanonicalRuntimeProxyLane {
+  current?: CanonicalRuntimeProxyConnection;
+  connecting?: Promise<CanonicalRuntimeProxyConnection>;
+  idleCloseTimer?: ReturnType<typeof setTimeout>;
+  leased: boolean;
+  leaseGeneration: number;
+}
+
+export interface CanonicalRuntimeProxyOptions {
+  /** Keep burst-created inner MCP sessions hot briefly, then release their retained Runtime graph. */
+  idleTtlMs?: number;
+}
+
+export function createCanonicalRuntimeProxy(
+  ctx: MultiRepositoryMcpToolContext,
+  options: CanonicalRuntimeProxyOptions = {},
+): CanonicalRuntimeProxy {
   const scheduler = createCanonicalRuntimeLaneScheduler();
   const lanes = new Map<number, CanonicalRuntimeProxyLane>();
+  const idleTtlMs = Math.max(1, Math.trunc(options.idleTtlMs ?? DEFAULT_CANONICAL_RUNTIME_PROXY_IDLE_TTL_MS));
   let closed = false;
 
   const laneState = (laneId: number): CanonicalRuntimeProxyLane => {
     const existing = lanes.get(laneId);
     if (existing) return existing;
-    const created: CanonicalRuntimeProxyLane = {};
+    const created: CanonicalRuntimeProxyLane = { leased: false, leaseGeneration: 0 };
     lanes.set(laneId, created);
     return created;
+  };
+
+  const clearLaneIdleTimer = (lane: CanonicalRuntimeProxyLane): void => {
+    if (!lane.idleCloseTimer) return;
+    clearTimeout(lane.idleCloseTimer);
+    lane.idleCloseTimer = undefined;
   };
 
   const closeLane = async (laneId: number, expectedClient?: Client): Promise<void> => {
@@ -716,17 +741,45 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
       lane.connecting = undefined;
     }
     if (!lane.current || (expectedClient && lane.current.client !== expectedClient)) return;
-    const closing = lane.current.client;
+    clearLaneIdleTimer(lane);
+    const closing = lane.current;
     lane.current = undefined;
-    await closing.close().catch(() => undefined);
+    // Client.close() only tears down the local SDK client. Explicitly terminate
+    // the Streamable HTTP session so the canonical Runtime drops its Server and
+    // transport graph instead of retaining an orphaned server-side session.
+    await closing.transport.terminateSession().catch(() => undefined);
+    await closing.client.close().catch(() => undefined);
+  };
+
+  const leaseLane = (laneId: number): void => {
+    const lane = laneState(laneId);
+    clearLaneIdleTimer(lane);
+    lane.leased = true;
+    lane.leaseGeneration += 1;
+  };
+
+  const releaseLane = (laneId: number): void => {
+    const lane = laneState(laneId);
+    lane.leased = false;
+    const releasedGeneration = lane.leaseGeneration;
+    scheduler.release(laneId);
+    if (closed || !lane.current) return;
+    clearLaneIdleTimer(lane);
+    lane.idleCloseTimer = setTimeout(() => {
+      const current = lanes.get(laneId);
+      if (!current || closed || current.leased || current.leaseGeneration !== releasedGeneration) return;
+      current.idleCloseTimer = undefined;
+      void closeLane(laneId);
+    }, idleTtlMs);
+    lane.idleCloseTimer.unref?.();
   };
 
   const closeAllLanes = async (): Promise<void> => {
     await Promise.all(Array.from(lanes.keys()).map(async (laneId) => await closeLane(laneId)));
   };
 
-  const connect = async (identity: CanonicalRuntimeProxyIdentity): Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }> => {
-    const connectOnce = async (): Promise<{ identity: CanonicalRuntimeProxyIdentity; client: Client }> => {
+  const connect = async (identity: CanonicalRuntimeProxyIdentity): Promise<CanonicalRuntimeProxyConnection> => {
+    const connectOnce = async (): Promise<CanonicalRuntimeProxyConnection> => {
       const abort = new AbortController();
       const timeout = setTimeout(() => abort.abort(new Error('CANONICAL_RUNTIME_TIMEOUT')), CANONICAL_RUNTIME_CONNECT_TIMEOUT_MS);
       const headers: Record<string, string> = {
@@ -738,7 +791,7 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
       const client = new Client({ name: 'forge-public-gateway-proxy', version: '1.0.0' });
       try {
         await client.connect(transport);
-        return { identity, client };
+        return { identity, client, transport };
       } catch (error) {
         await client.close().catch(() => undefined);
         throw error;
@@ -797,10 +850,11 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
     );
     if (handoff.waited) await closeAllLanes();
     const laneId = await scheduler.acquire(laneClass);
+    leaseLane(laneId);
     try {
       return { laneId, client: await clientForCurrentRuntime(laneId, timing) };
     } catch (error) {
-      scheduler.release(laneId);
+      releaseLane(laneId);
       throw error;
     }
   };
@@ -814,7 +868,7 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
         await closeLane(laneId, client);
         throw error;
       } finally {
-        scheduler.release(laneId);
+        releaseLane(laneId);
       }
     },
     async callTool(callerContext, name, args, timing = {}) {
@@ -862,7 +916,7 @@ export function createCanonicalRuntimeProxy(ctx: MultiRepositoryMcpToolContext):
         await closeLane(laneId, activeClient);
         throw error;
       } finally {
-        scheduler.release(laneId);
+        releaseLane(laneId);
       }
     },
     async close() {

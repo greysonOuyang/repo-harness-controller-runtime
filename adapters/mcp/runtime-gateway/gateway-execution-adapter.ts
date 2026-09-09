@@ -79,7 +79,8 @@ export async function executeGatewayRoutedOperation(
       return result(payload, payload.accepted === false);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const code = 'DIAGNOSTIC_PROCESS_FAILED';
+      const processErrorCode = /^((?:PROCESS_)[A-Z0-9_]+)(?::|$)/.exec(message)?.[1];
+      const code = processErrorCode ?? 'DIAGNOSTIC_PROCESS_FAILED';
       return result({
         accepted: false,
         mode: 'process_direct',

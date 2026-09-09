@@ -337,6 +337,83 @@ describe('MCP canonical Runtime proxy routing', () => {
     }
   });
 
+  test('reclaims idle shared proxy lanes and reconnects on demand', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-proxy-idle-reclaim-'));
+    const runtimeToken = 'runtime-proxy-idle-token';
+    let initializedRuntimeSessions = 0;
+    const runtimeTransport = await startRuntimeMcpTransport({
+      host: '127.0.0.1',
+      port: 0,
+      authToken: runtimeToken,
+      readiness: () => ({
+        ready: true,
+        reasonCodes: [],
+        observedAt: new Date().toISOString(),
+        diagnostics: {
+          database: { outcome: 'pass' },
+          scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' },
+          mcpEndToEnd: { outcome: 'pass' },
+        },
+      }),
+      createServer: () => {
+        initializedRuntimeSessions += 1;
+        const server = new Server(
+          { name: 'fixture-runtime-idle-reclaim', version: '1.0.0' },
+          { capabilities: { tools: { listChanged: false } } },
+        );
+        server.setRequestHandler('tools/list', async () => ({ tools: [] }));
+        return server;
+      },
+    });
+    const observedAt = new Date().toISOString();
+    mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+    writeFileSync(join(controllerHome, 'mcp', 'runtime-token'), runtimeToken, 'utf8');
+    writeRuntimeStatusSnapshot(controllerHome, {
+      schemaVersion: 1,
+      runtimeInstanceId: 'runtime-proxy-idle-reclaim-fixture',
+      pid: process.pid,
+      releaseId: 'release-proxy-idle-reclaim-fixture',
+      artifactIdentity: 'artifact-proxy-idle-reclaim-fixture',
+      endpoint: runtimeTransport.endpoint,
+      readiness: {
+        ready: true,
+        reasonCodes: [],
+        observedAt,
+        diagnostics: {
+          database: { outcome: 'pass' },
+          scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' },
+          mcpEndToEnd: { outcome: 'pass' },
+        },
+      },
+      startedAt: observedAt,
+      updatedAt: observedAt,
+    });
+    const proxy = createCanonicalRuntimeProxy(
+      createMcpToolContext({ controllerHome, profile: 'controller' }),
+      { idleTtlMs: 5 },
+    );
+    try {
+      await proxy.listTools();
+      expect(initializedRuntimeSessions).toBe(1);
+      expect(runtimeTransport.sessionSnapshot!().active).toBe(1);
+
+      for (let attempt = 0; attempt < 20 && runtimeTransport.sessionSnapshot!().active !== 0; attempt += 1) {
+        await Bun.sleep(5);
+      }
+      expect(runtimeTransport.sessionSnapshot!().active).toBe(0);
+
+      await proxy.listTools();
+      expect(initializedRuntimeSessions).toBe(2);
+      expect(runtimeTransport.sessionSnapshot!().active).toBe(1);
+    } finally {
+      await proxy.close();
+      await runtimeTransport.close();
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('bounds orphanable root Runtime sessions and evicts the least-recent idle session', async () => {
     const runtimeToken = 'runtime-session-capacity-fixture';
     const runtimeTransport = await startRuntimeMcpTransport({

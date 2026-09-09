@@ -20,6 +20,7 @@
 - Health session metrics describe only legacy compatibility state; modern request serving has no long-lived session capacity authority.
 - Closing or replacing transport state never implies that a durably accepted Work or Process is cancelled.
 - The Gateway-to-Canonical-Runtime client classifies structured SDK HTTP 404 as an expired inner session, reconnects once, and replays only an operation already proven replay-safe by its idempotency contract.
+- The public Gateway may burst-scale a bounded shared pool of inner Canonical Runtime MCP lanes. A released lane remains hot only for a bounded idle lease; reuse cancels retirement, while expiry explicitly terminates the Streamable HTTP session before closing the local client so the Runtime does not retain an orphaned Server/transport graph. Durable Work, Process, and Controller authority is never coupled to that transport retention window.
 
 ## Verification
 
