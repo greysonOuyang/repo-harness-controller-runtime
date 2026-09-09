@@ -23,13 +23,14 @@ import { resolveLocalBridgeSurface } from "../../../src/runtime/shared/local-bri
 import { listAssistantPluginManifests } from "../../../src/runtime/plugins/store";
 import { cachedGitIdentity, gitSnapshot } from "../../../src/cli/repository/inspector";
 import { buildRuntimeMaintenanceStatus } from "../../../src/runtime/recovery";
-import { allowedFacadeOperations, buildFacadeResult, countHandoffItems, listCapabilityDescriptors, summarizeCapabilityGroups, listHandoffItems, normalizeCheckIds, buildWorkContinuationSnapshot, listPlanContracts, summarizePlanContract, type FacadeTool, type HandoffInboxApplicationInput } from "../../../src/runtime/control-plane/facade";
+import { allowedFacadeOperations, buildFacadeResult, countHandoffItems, listCapabilityDescriptors, summarizeCapabilityGroups, listHandoffItems, normalizeCheckIds, buildWorkContinuationSnapshot, listPlanContracts, summarizePlanContract, runHandoffInboxApplication, type FacadeTool } from "../../../src/runtime/control-plane/facade";
 import { buildJobOperationDigest } from '../../../src/runtime/control-plane/facade/operation-digest';
 import { readActiveWorkCandidates, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
 import { observeRuntimeStatus } from "../../../src/runtime/root/status";
 import { getControllerSession } from "../../../packages/kernel/controller/api/index";
 import { summarizeHandoffItem } from '../../../src/runtime/control-plane/facade';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
+import { handoffResolvedContinuationEventName, triggerWorkContinuationRepositoryEvent } from '../../../src/runtime/workflow/schedules/work-continuation';
 
 
 export const GIT_IDENTITY_SAMPLE_TTL_MS = Math.max(1_000, Number(process.env.FORGE_GIT_IDENTITY_SAMPLE_TTL_MS ?? 3_000));
@@ -391,8 +392,11 @@ export function repositoryExecutionReadiness(
 }
 
 export interface StatusInboxAdapterPorts {
-  repair(ctx: MultiRepositoryMcpToolContext, repository: ReturnType<typeof selected>, args: Record<string, unknown>): Promise<CallToolResult>;
-  inboxApplication(input: HandoffInboxApplicationInput): ReturnType<import('../../../src/runtime/control-plane/facade/handoff-inbox-application').HandoffInboxApplicationRunner>;
+  repair(
+    ctx: MultiRepositoryMcpToolContext,
+    repository: ReturnType<typeof selected>,
+    args: Record<string, unknown>,
+  ): Promise<CallToolResult>;
 }
 
 export async function callStatusInboxAdapter(
@@ -781,16 +785,16 @@ export async function callStatusInboxAdapter(
       return result(payload, facade.status !== 'ok');
   }
   if (name === 'rh_inbox') {
-    return await callInboxAdapter(ctx, args, ports);
+    return await callInboxAdapter(ctx, args);
   }
   return undefined;
 }
 
-async function callInboxAdapter(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>, ports: StatusInboxAdapterPorts): Promise<CallToolResult> {
+async function callInboxAdapter(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>): Promise<CallToolResult> {
   const repository = selected(ctx, args);
   const operation = String(args.operation ?? 'list');
   if (!allowedFacadeOperations('rh_inbox').includes(operation)) return invalidFacadeOperation('rh_inbox', operation);
-  const app = await ports.inboxApplication({
+  const app = await runHandoffInboxApplication({
     operation: operation as 'get' | 'list' | 'ack' | 'accept' | 'resolve' | 'dismiss' | 'create',
     store: { controllerHome: ctx.controllerHome, repoId: repository.repoId },
     handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
@@ -807,6 +811,14 @@ async function callInboxAdapter(ctx: MultiRepositoryMcpToolContext, args: Record
     decision: typeof args.decision === 'string' ? args.decision : undefined,
     resolver: typeof args.resolver === 'string' ? args.resolver : undefined,
     controllerIdentity: { principalId: ctx.principalId, sessionId: ctx.sessionId },
+  }, {
+    triggerResolvedContinuation: (item) => triggerWorkContinuationRepositoryEvent(
+      ctx.controllerHome,
+      repository.repoId,
+      handoffResolvedContinuationEventName(item.id),
+      `handoff:${item.id}:${item.updatedAt}`,
+      { workId: item.workId, data: { handoffId: item.id, status: item.status, decision: item.decision } },
+    ),
   });
   if (operation === 'get') {
     const item = 'item' in app ? app.item : undefined;

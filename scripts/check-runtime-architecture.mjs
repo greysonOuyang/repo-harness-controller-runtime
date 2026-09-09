@@ -258,7 +258,7 @@ function requireExactShrinkingInventory(label, actual, allowed) {
 // Stage 4 boundary: rh_work is an ABI/translation adapter. Durable lifecycle
 // ownership stays in Kernel/application services and physical WorkHandle state
 // may not be persisted from the MCP adapter.
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "case 'rh_work': return await callWorkAdapter(ctx, args);");
+requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "if (name === 'rh_work') return callWorkAdapter(ctx, args);");
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'controllerTerminalizationAuthorityForInvocation');
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', 'assertControllerRoundInvocationAuthority');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /\b(?:transitionWorkHandle|writeWorkHandle|markWorkHandleFailed)\s*\(/, 'rh_work adapter must not persist WorkHandle lifecycle state; use the canonical completion/finalization authority');
@@ -302,68 +302,15 @@ function runtimeToolSwitchCaseInventory(source) {
 }
 
 const MCP_RUNTIME_GATEWAY_AUTHORITY_IMPORT_DEBT = new Set([
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../packages/kernel/controller/api/index',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../packages/kernel/scheduler/api/index',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../packages/kernel/work/api/index',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/cli/repositories/controller-home',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/cli/repositories/registry',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/cli/repositories/runtime-storage',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/cli/repositories/selected-path-actions',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/context/context-closure',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/context/semantic-navigation',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/direct-edit-work-completion',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/session-store',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/execution/work-handle-store',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/facade',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/facade/operation-digest',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/global-scheduler/scheduler',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/launcher/chatgpt-work-continuation',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/runtime-generation',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/control-plane/runtime-status-client',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/diagnostics/performance',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/evidence/artifact-store',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/evidence/event-ledger',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/evidence/evidence-store',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/jobs/store',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/jobs/types',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/jobs/wait',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime/check-result',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime/check-scheduling',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime/command-facade',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/health',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/maintenance/cleanup',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/plugins/store',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/projections/controller-context',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/projections/materialized-view',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/safe-tooling',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/shared/local-bridge-surface',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/watchdog/workflow-watchdog',
-  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/workflow/schedules/work-continuation',
-  'adapters/mcp/runtime-gateway/router.ts::../../../src/cli/editing/edit-session',
   'adapters/mcp/runtime-gateway/router.ts::../../../src/cli/repositories/command-classifier',
-  'adapters/mcp/runtime-gateway/router.ts::../../../src/cli/repositories/registry',
-  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/control-plane/execution/edit-validation-coordinator',
-  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/control-plane/execution/execution-identity',
   'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/diagnostics/process-facade',
   'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/execution/jobs/types',
   'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/execution/process-runtime',
-  'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/execution/process-runtime/check-scheduling',
   'adapters/mcp/runtime-gateway/router.ts::../../../src/runtime/execution/thin-harness',
+  'adapters/mcp/runtime-gateway/runtime-tools.ts::../../../src/runtime/execution/process-runtime/check-result',
 ]);
 
-const MCP_RUNTIME_TOOLS_SWITCH_CASE_DEBT = new Set([
-  'cancel_job', 'controller_context', 'controller_ready', 'get_artifact',
-  'get_job', 'get_local_job', 'get_local_job_output', 'git_commit_paths',
-  'git_diff_paths', 'git_stage_paths', 'ios_app_build', 'ios_app_install',
-  'ios_app_launch', 'ios_project_discover', 'ios_schemes_list', 'ios_simulator_boot',
-  'ios_simulator_log_tail', 'ios_simulator_screenshot', 'ios_simulators_list', 'ios_ui_smoke_test',
-  'ios_xcode_status', 'list_jobs', 'local_bridge_status', 'repository_change_verify',
-  'repository_runtime_snapshot', 'request_release_gate', 'rh_work', 'runtime_cleanup_apply',
-  'runtime_cleanup_preview', 'runtime_performance_diagnostics', 'schedule_dedupe_apply', 'schedule_dedupe_report',
-  'work_cancel', 'work_get', 'work_list', 'work_result_summary',
-  'work_status_digest', 'work_wait', 'workflow_watchdog_report',
-]);
+const MCP_RUNTIME_TOOLS_SWITCH_CASE_DEBT = new Set();
 
 const mcpAdapterBoundaryFixture = process.env.FORGE_MCP_RUNTIME_ADAPTER_BOUNDARY_FIXTURE;
 if (mcpAdapterBoundaryFixture) {
@@ -557,9 +504,7 @@ if (semanticAuthorityGuardrailFixture) {
 const SEMANTIC_STRING_AUTHORITY_DEBT = new Set([
   `adapters/mcp/runtime-gateway/execution-tools.ts::message.includes(':')`,
   `adapters/mcp/runtime-gateway/process-tools.ts::message.includes(':')`,
-  `adapters/mcp/runtime-gateway/router.ts::message.includes(':')`,
   `adapters/mcp/runtime-gateway/context-adapter.ts::error.message.startsWith('PLUGIN_NOT_FOUND:')`,
-  `adapters/mcp/runtime-gateway/runtime-tools.ts::message.includes('CONTROL_PLANE_REVISION_CONFLICT')`,
   `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('consecutive_failures:')`,
   `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('repeated_state:')`,
   `packages/kernel/controller/domain/controller-round-transition-policy.ts::reason.startsWith('round_budget_exhausted:')`,
@@ -1360,7 +1305,7 @@ forbid(
   'Execution Worker must invoke control-plane Work application services directly, never MCP transport',
 );
 requireText('src/runtime/execution/workers/executor.ts', '__from_durable_worker');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'managedProcessOperationDigest');
+requireText('adapters/mcp/runtime-gateway/work-compat-adapter.ts', 'managedProcessOperationDigest');
 forbid(
   'adapters/mcp/runtime-gateway/runtime-tools.ts',
   /\bcreateExecutionJob\b/,
@@ -1433,14 +1378,13 @@ requireMatch(
   /const DIRECT_REPOSITORY_TOOLS = new Set\(\[[\s\S]*?'repository_list'[\s\S]*?'repository_get'[\s\S]*?'repository_workbench'[\s\S]*?\]\);/,
   'declare DIRECT_REPOSITORY_TOOLS with repository_list, repository_get, and repository_workbench',
 );
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "case 'controller_context'");
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', "case 'local_bridge_status'");
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'readAgentExecutableReadinessSnapshot');
+requireText('adapters/mcp/runtime-gateway/runtime-observation-adapter.ts', "case 'controller_context'");
+requireText('adapters/mcp/runtime-gateway/runtime-observation-adapter.ts', "case 'local_bridge_status'");
 requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'connectorExposedTools');
 requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'currentCallableTools');
-forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /inspectAgentExecutableReadiness|resolveAgentExecutable|writeAgentExecutableReadinessSnapshot/, 'Gateway readiness must only read the Daemon-produced Agent executable snapshot');
+forbid('adapters/mcp/runtime-gateway/runtime-observation-adapter.ts', /inspectAgentExecutableReadiness|resolveAgentExecutable|writeAgentExecutableReadinessSnapshot/, 'Runtime observation adapter must not perform Agent executable discovery or mutate readiness snapshots');
 forbidBetween(
-  'adapters/mcp/runtime-gateway/runtime-tools.ts',
+  'adapters/mcp/runtime-gateway/runtime-observation-adapter.ts',
   "case 'repository_runtime_snapshot':",
   "case 'runtime_performance_diagnostics':",
   /rebuildRepositoryProjection\s*\(/,
@@ -1454,7 +1398,7 @@ forbid(
 );
 requireText('src/runtime/projections/controller-context.ts', 'controllerContextProjectionPayloadMatchesSourceIdentity');
 requireText('src/runtime/projections/controller-context.ts', 'sourceIdentityMatches');
-requireText('adapters/mcp/runtime-gateway/runtime-tools.ts', 'CONTEXT_PROJECTION_SOURCE_MISMATCH');
+requireText('adapters/mcp/runtime-gateway/runtime-observation-adapter.ts', 'CONTEXT_PROJECTION_SOURCE_MISMATCH');
 forbid('adapters/mcp/runtime-gateway/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"]controller_context['"][\s\S]*?\);/, 'controller_context must use a materialized projection or Durable Job, never the legacy Gateway path');
 forbid('adapters/mcp/runtime-gateway/router.ts', /const DIRECT_HOT_READ_TOOLS = new Set\([\s\S]*?['"](?:local_bridge_status|get_local_job|get_local_job_output)['"][\s\S]*?\);/, 'Local Bridge observations must use bounded snapshots, never reconciliation in the Gateway');
 requireText('src/runtime/execution/jobs/types.ts', 'requestId: string');
