@@ -180,6 +180,23 @@ export async function runPersistedCheckViaProcessRuntime(
       };
     }
   }
+  // Check-definition authority belongs to the canonical repository, while Work source
+  // verification may execute from an immutable snapshot that intentionally excludes
+  // machine-local registry files such as .forge/checks.json. Freeze the exact
+  // registered definition before materializing the source-under-test snapshot.
+  const check = listControllerChecks(input.repoRoot).find((entry) => entry.id === input.checkId);
+  if (!check) {
+    return {
+      mode: 'durable',
+      checkId: input.checkId,
+      durable: {
+        reason: 'check_not_found_or_requires_registry_lookup',
+        suggestedOperation: 'list_checks then run_check with a known check_id',
+      },
+      durableSideEffects: emptyEffects,
+    };
+  }
+  const checkSnapshot = snapshotControllerCheck(input.repoRoot, input.checkId);
   const verificationSnapshot = input.verificationSnapshot
     ? materializeWorkVerificationSnapshot({
         controllerHome: input.controllerHome,
@@ -192,18 +209,9 @@ export async function runPersistedCheckViaProcessRuntime(
   const cleanupVerificationSnapshot = () => {
     if (verificationSnapshot) cleanupWorkVerificationSnapshot(verificationSnapshot.root);
   };
-  const check = listControllerChecks(executionRoot).find((entry) => entry.id === input.checkId);
-  if (!check) {
+  if (check.id !== checkSnapshot.id) {
     cleanupVerificationSnapshot();
-    return {
-      mode: 'durable',
-      checkId: input.checkId,
-      durable: {
-        reason: 'check_not_found_or_requires_registry_lookup',
-        suggestedOperation: 'list_checks then run_check with a known check_id',
-      },
-      durableSideEffects: emptyEffects,
-    };
+    throw new Error(`CHECK_DEFINITION_AUTHORITY_MISMATCH: ${input.checkId}`);
   }
   if (input.forceDurable || (checkRequiresDurableWorkflow(input.checkId, check) && input.allowDurableCheckExecution !== true)) {
     cleanupVerificationSnapshot();
@@ -250,7 +258,6 @@ export async function runPersistedCheckViaProcessRuntime(
     check.effects,
     check.executionAuthority,
   );
-  const checkSnapshot = snapshotControllerCheck(executionRoot, input.checkId);
   const checkFingerprint = createHash('sha256')
     .update(JSON.stringify(checkSnapshot))
     .digest('hex');
@@ -299,6 +306,8 @@ export async function runPersistedCheckViaProcessRuntime(
     String(timeoutMs),
     '--expected-check-fingerprint',
     checkFingerprint,
+    '--check-snapshot',
+    Buffer.from(JSON.stringify(checkSnapshot)).toString('base64url'),
     '--result-receipt',
     checkResultReceiptPath,
     ...(verificationSnapshot ? [

@@ -45,6 +45,7 @@ import {
   startOrJoinEditValidation,
 } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { snapshotControllerCheck } from '../../src/cli/controller/check-runner';
 import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 
 function git(root: string, args: string[]): void {
@@ -750,6 +751,11 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
   test('Work-scoped persisted verification excludes protected concurrent untracked files but keeps Work-owned untracked files fail-closed', async () => {
     const fx = fixture();
     roots.push(fx.root);
+    // Modern repo-config checks are machine-local authority. Make the fixture
+    // match production: .forge is not source and must not enter the Work snapshot.
+    writeFileSync(join(fx.repoRoot, '.git', 'info', 'exclude'), '.forge/\n', { flag: 'a' });
+    git(fx.repoRoot, ['rm', '--cached', '.forge/checks.json']);
+    git(fx.repoRoot, ['commit', '-m', 'keep Forge check registry machine-local']);
     writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
       version: 1,
       checks: {
@@ -765,6 +771,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
         },
       },
     }, null, 2));
+    const canonicalIsolatedCheck = snapshotControllerCheck(fx.repoRoot, 'isolated');
     mkdirSync(join(fx.repoRoot, 'tests'), { recursive: true });
     writeFileSync(join(fx.repoRoot, 'tests', 'owned-untracked.test.ts'), 'owned\n');
     writeFileSync(join(fx.repoRoot, 'tests', 'protected-concurrent.test.ts'), 'protected\n');
@@ -777,7 +784,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       mode: 'direct_control',
       objective: 'Verify Work-owned snapshot content without exposing protected concurrent changes.',
       acceptanceCriteria: ['Work verification sees owned content and excludes protected concurrent content.'],
-      allowedPaths: ['.forge/**', 'tests/owned-untracked.test.ts'],
+      allowedPaths: ['tests/owned-untracked.test.ts'],
       forbiddenPaths: ['tests/protected-concurrent.test.ts'],
       checks: ['isolated'],
       constraints: { workspaceMode: 'current', requireWorktree: false, requireHandoffOnAmbiguity: true },
@@ -798,7 +805,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       requestSemanticFingerprint: 'work-verification-semantic-a',
       verificationSnapshot: {
         workId: 'work-verification-isolation',
-        allowedPaths: ['.forge/**', 'tests/owned-untracked.test.ts'],
+        allowedPaths: ['tests/owned-untracked.test.ts'],
         forbiddenPaths: ['tests/protected-concurrent.test.ts'],
       },
     });
@@ -807,6 +814,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(completed.ok).toBe(true);
     const record = getProcessRecord(fx.controllerHome, fx.repository.repoId, run.process!.processId)!;
     expect(record.origin?.workVerificationSnapshot).toBe(true);
+    expect(record.checkExecution?.definitionDigest).toBe(canonicalIsolatedCheck.definitionDigest);
+    expect(record.command?.args).toContain('--check-snapshot');
     const receipt = readPersistedCheckResultReceipt(record.origin?.checkResultReceiptPath);
     expect(receipt).toEqual(expect.objectContaining({ checkId: 'isolated', ok: true, status: 0 }));
     expect(receipt?.cacheKey).toBe(record.checkExecution?.cacheKey);
@@ -824,7 +833,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       requestSemanticFingerprint: 'work-verification-semantic-a',
       verificationSnapshot: {
         workId: 'work-verification-isolation',
-        allowedPaths: ['.forge/**', 'tests/owned-untracked.test.ts'],
+        allowedPaths: ['tests/owned-untracked.test.ts'],
         forbiddenPaths: ['tests/protected-concurrent.test.ts'],
       },
     });
@@ -877,7 +886,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       requestId: 'work-verification-isolation-fail',
       verificationSnapshot: {
         workId: 'work-verification-isolation',
-        allowedPaths: ['.forge/**', 'tests/owned-*.test.ts'],
+        allowedPaths: ['tests/owned-*.test.ts'],
         forbiddenPaths: ['tests/protected-concurrent.test.ts'],
       },
     });

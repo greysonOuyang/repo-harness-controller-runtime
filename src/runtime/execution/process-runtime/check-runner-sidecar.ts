@@ -6,6 +6,7 @@ import {
   controllerCheckExecutionIdentity,
   runControllerCheckAsync,
   snapshotControllerCheck,
+  type ControllerCheckSnapshot,
 } from '../../../cli/controller/check-runner';
 import { writePersistedCheckResultReceipt } from './check-result';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from './canary';
@@ -17,6 +18,7 @@ interface ParsedArgs {
   checkId: string;
   timeoutMs?: number;
   expectedCheckFingerprint: string;
+  checkSnapshot?: ControllerCheckSnapshot;
   resultReceiptPath?: string;
   cleanupRoot?: string;
   isolatedControllerHome?: string;
@@ -29,6 +31,20 @@ function requiredValue(argv: string[], flag: string): string {
   const value = index >= 0 ? argv[index + 1]?.trim() : undefined;
   if (!value) throw new Error(`PERSISTED_CHECK_USAGE: missing ${flag}`);
   return value;
+}
+
+
+function decodeCheckSnapshot(value: string): ControllerCheckSnapshot {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
+  } catch {
+    throw new Error('PERSISTED_CHECK_USAGE: invalid --check-snapshot');
+  }
+  if (!decoded || typeof decoded !== 'object' || Array.isArray(decoded)) {
+    throw new Error('PERSISTED_CHECK_USAGE: invalid --check-snapshot');
+  }
+  return decoded as ControllerCheckSnapshot;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -44,6 +60,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     checkId: requiredValue(argv, '--check-id'),
     timeoutMs,
     expectedCheckFingerprint: requiredValue(argv, '--expected-check-fingerprint'),
+    checkSnapshot: argv.includes('--check-snapshot') ? decodeCheckSnapshot(requiredValue(argv, '--check-snapshot')) : undefined,
     resultReceiptPath: argv.includes('--result-receipt') ? requiredValue(argv, '--result-receipt') : undefined,
     cleanupRoot: argv.includes('--cleanup-root') ? requiredValue(argv, '--cleanup-root') : undefined,
     isolatedControllerHome: argv.includes('--isolated-controller-home') ? requiredValue(argv, '--isolated-controller-home') : undefined,
@@ -60,7 +77,9 @@ export async function runPersistedCheckSidecar(argv = process.argv.slice(2)): Pr
   const args = parseArgs(argv);
   const root = resolve(args.repo);
   try {
-    const snapshot = snapshotControllerCheck(root, args.checkId);
+    // New callers carry the exact definition resolved from canonical repository
+    // authority. The fallback keeps older package releases compatible.
+    const snapshot = args.checkSnapshot ?? snapshotControllerCheck(root, args.checkId);
     const actualFingerprint = createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
     if (actualFingerprint !== args.expectedCheckFingerprint) {
       throw new Error('CHECK_SNAPSHOT_CHANGED: registered check changed before Process Runtime execution');
