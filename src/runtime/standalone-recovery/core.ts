@@ -888,6 +888,19 @@ function connectorCapacityRecoveryRecommended(verified: VerifyResult): boolean {
   );
 }
 
+function canonicalRuntimeSafeForTargetedConnectorRecovery(verified: VerifyResult): boolean {
+  // Targeted Connector/public-transport recovery mutates no Runtime release or
+  // Work authority. Use durable Runtime ownership + release/execution evidence
+  // as the safety fence; a single failed HTTP gateway/MCP observation is the
+  // symptom this action may need to repair and must not deadlock the recovery path.
+  return verified.runtime.ok
+    && verified.runtime.running
+    && verified.runtime.ready
+    && !verified.runtime.stale
+    && verified.releases.coherent !== false
+    && verified.probes.runtime_execution_surface?.ok !== false;
+}
+
 function mainToken(config: RecoveryConfig): string | undefined {
   const candidate = config.mainMcpTokenFile ?? join(config.controllerHome, 'mcp', 'mcp.tokens.json');
   const parsed = json<{ bearerToken?: unknown }>(candidate);
@@ -2109,17 +2122,13 @@ export async function restartPrimaryConnector(
   // That probe is expected to be false when this recovery action is needed,
   // so it must not prevent a healthy canonical Runtime from repairing the
   // Connector service.
-  const canonicalRuntimeHealthy = initialLocal.runtime.ok
-    && initialLocal.runtime.running
-    && initialLocal.runtime.ready
-    && !initialLocal.runtime.stale
-    && initialLocal.probes.active_gateway?.ok === true;
+  const canonicalRuntimeHealthy = canonicalRuntimeSafeForTargetedConnectorRecovery(initialLocal);
   if (!canonicalRuntimeHealthy) {
     return {
       ok: false,
       attempted: false,
       noOp: true,
-      detail: 'Canonical Runtime must be locally healthy before the primary Connector is restarted',
+      detail: 'Canonical Runtime ownership/release execution authority must be healthy before the primary Connector is restarted',
       verify: initialLocal,
     };
   }
@@ -3614,11 +3623,7 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
   }
   const recoveryHealthy = verified.probes.recovery_gateway?.ok !== false
     && verified.probes.recovery_external_http?.ok !== false;
-  const primaryRuntimeHealthy = localVerify.runtime.ok
-    && localVerify.runtime.running
-    && localVerify.runtime.ready
-    && !localVerify.runtime.stale
-    && localVerify.probes.active_gateway?.ok === true;
+  const primaryRuntimeHealthy = canonicalRuntimeSafeForTargetedConnectorRecovery(localVerify);
   const primaryConnectorConfigured = Boolean(config.primaryConnectorService);
   const primaryConnectorLocalFailed = verified.probes.primary_connector_local?.ok === false;
   const primaryConnectorCapacityFailed = connectorCapacityRecoveryRecommended(verified);

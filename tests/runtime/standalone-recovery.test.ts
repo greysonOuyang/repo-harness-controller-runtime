@@ -706,6 +706,49 @@ test('standalone Recovery restarts only the configured primary Connector service
   expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
 });
 
+test('standalone Recovery permits targeted Connector recovery when Runtime authority is healthy but gateway observation is stale', async () => {
+  const home = controllerHome();
+  const plistPath = join(home, 'connector-stale-gateway.plist');
+  writeFileSync(plistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+  const config = createRecoveryConfig(home, {
+    publicMcpUrl: 'https://mcp.example.test/mcp',
+    primaryConnectorService: { platform: 'launchd', label: 'com.moretea.forge.mcp-gateway-stale', plistPath },
+  });
+  const contradictoryLocal: VerifyResult = {
+    ...healthyVerify(),
+    ok: false,
+    probes: {
+      ...healthyVerify().probes,
+      active_gateway: { ok: false, detail: 'request failed' },
+      mcp_initialize: { ok: false, detail: 'MCP request failed' },
+      runtime_execution_surface: { ok: true, detail: 'attested execution surface' },
+    },
+  };
+  let localProbeCalls = 0;
+  const commands: string[][] = [];
+  const result = await restartPrimaryConnector(config, {
+    platform: 'darwin',
+    currentUid: async () => 501,
+    verifyLocal: async () => contradictoryLocal,
+    repairConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'binding current' }),
+    probeConnectorLocal: async () => {
+      localProbeCalls += 1;
+      return localProbeCalls >= 2
+        ? { ok: true, detail: 'HTTP 401 OAuth challenge', status: 401 }
+        : { ok: false, detail: 'connection refused' };
+    },
+    probeConnectorOwnership: async () => ({ ok: true, detail: 'listener owned' }),
+    reconnect: async () => ({ ok: true, detail: 'public MCP reachable', verify: healthyVerify() }),
+    runCommand: async (name, args) => {
+      commands.push([name, ...args]);
+      return { ok: true, status: 0, stdout: '', stderr: '' };
+    },
+  });
+
+  expect(result).toMatchObject({ ok: true, attempted: true });
+  expect(commands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway-stale']);
+});
+
 test('standalone Recovery restarts the canonical Linux systemd-user primary Connector without launchd', async () => {
   const home = controllerHome();
   const config = createRecoveryConfig(home, {
@@ -1944,6 +1987,57 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(tick.state.primaryConnectorFailures ?? 0).toBe(0);
     expect(tick.state.primaryConnectorRestartAttempts ?? 0).toBe(0);
     expect(tick.verify.probes.primary_connector_local).toMatchObject({ ok: true, status: 401 });
+  });
+
+  test('attributes a managed primary public MCP failure to Connector recovery even when gateway observation is stale', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-managed-public-stale-gateway', 'artifact-managed-public-stale-gateway');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await failingPublicGatewayServer(503);
+    const connector = await runtimeServer({ challengeUnauthenticatedMcp: true });
+    const publicGateway = await failingPublicGatewayServer(530);
+    const tunnelPlistPath = join(home, 'primary-tunnel-stale-gateway.plist');
+    writeFileSync(tunnelPlistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+    writeMainToken(home);
+    startObservedRuntime(
+      home,
+      runtime.endpoint,
+      'release-managed-public-stale-gateway',
+      'artifact-managed-public-stale-gateway',
+      new Date(Date.now() - 120_000).toISOString(),
+    );
+    const config = createRecoveryConfig(home, {
+      publicMcpUrl: publicGateway.endpoint,
+      primaryConnectorService: {
+        platform: 'launchd',
+        label: 'com.moretea.forge.mcp-gateway',
+        localMcpUrl: connector.endpoint,
+        minimumFailures: 2,
+        minimumFailureDurationMs: 5_000,
+      },
+      primaryPublicTunnelService: {
+        platform: 'launchd',
+        label: 'com.cloudflare.cloudflared.primary',
+        plistPath: tunnelPlistPath,
+      },
+    });
+
+    const verified = await verifyStableRuntime(config, undefined, { probeMcpProtocol: false });
+    expect(verified.runtime).toMatchObject({ ok: true, running: true, ready: true, stale: false });
+    expect(verified.probes.active_gateway).toMatchObject({ ok: false, status: 503 });
+    expect(verified.probes.external_mcp_http).toMatchObject({ ok: false, status: 530 });
+    expect(verified.probes.primary_connector_local).toMatchObject({ ok: true, status: 401 });
+
+    const tick = await watchdogTick(config, {
+      failures: 0,
+      rollbackUsed: false,
+      lastFullVerifyAt: Date.now(),
+    });
+    expect(tick.decision.action).toBe('degraded');
+    expect(tick.state.primaryConnectorFailures).toBe(1);
+    expect(tick.state.failures).toBe(1);
+    expect(tick.state.runtimeRestartAttempts ?? 0).toBe(0);
+    expect(tick.primaryRuntimeRestart).toBeUndefined();
   });
 
   test('turns public Gateway session-capacity exhaustion into the existing bounded Connector recovery decision', async () => {

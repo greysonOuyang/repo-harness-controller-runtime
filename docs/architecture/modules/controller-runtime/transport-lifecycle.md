@@ -16,6 +16,7 @@
 - On the legacy path, route and authenticated principal must match the stored session on GET, POST, and DELETE; active POST work is protected from capacity eviction.
 - Legacy stream-only sessions are reclaimable through client DELETE, explicit prior-session replacement, lease expiry, absolute lifetime, or oldest-safe capacity eviction.
 - Legacy initialize admission is an atomic registry reservation. Shared static-bearer clients use the global pool; per-principal fairness applies only where authentication provides a meaningful distinct principal.
+- Legacy capacity readiness distinguishes `immediate`, `eviction`, and `blocked` admission. Capacity eviction releases registry routing/ownership synchronously before old transport cleanup; peer cleanup is best-effort and must never hold the serialized initialize admission lane after the old session is fenced out.
 - Health session metrics describe only legacy compatibility state; modern request serving has no long-lived session capacity authority.
 - Closing or replacing transport state never implies that a durably accepted Work or Process is cancelled.
 - The Gateway-to-Canonical-Runtime client classifies structured SDK HTTP 404 as an expired inner session, reconnects once, and replays only an operation already proven replay-safe by its idempotency contract.

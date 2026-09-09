@@ -8,6 +8,7 @@ import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_ME
 import { mcpControllerHomeOAuthPath, mcpControllerHomeTokenPath } from '../../src/cli/mcp/auth';
 import { runMcpSetupChatgpt } from '../../src/cli/mcp/setup';
 import { mergeNoProxy, withDirectNetworkProxyBypass } from '../../src/cli/mcp/proxy-env';
+import { McpSessionRegistry } from '../../adapters/mcp/transports/session-registry';
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -281,6 +282,7 @@ describe('mcp http transport', () => {
           sessionCapacity: {
             active: 0,
             maximum: 64,
+            admissionMode: 'immediate',
             acceptingNewSessions: true,
             activePosts: 0,
             activeStreams: 0,
@@ -562,6 +564,7 @@ describe('mcp http transport', () => {
           active: 2,
           maximum: 2,
           capacityAvailable: 0,
+          admissionMode: 'eviction',
           acceptingNewSessions: true,
         });
         expect(health.sessions.closed.principalCapacity + health.sessions.closed.capacityEviction).toBe(1);
@@ -582,6 +585,49 @@ describe('mcp http transport', () => {
       await stopMcpServerProcess(proc);
       rmSync(repoRoot, { recursive: true, force: true });
     }
+  });
+
+  test('capacity eviction releases initialize admission before slow transport cleanup completes', async () => {
+    let releaseClose!: () => void;
+    const blockedClose = new Promise<void>((resolve) => { releaseClose = resolve; });
+    const registry = new McpSessionRegistry<{ close(): Promise<void> }, { id: string }>({
+      maximumSessions: 1,
+      maximumSessionsPerPrincipal: 1,
+    });
+    registry.register({
+      sessionId: 'old-session',
+      transport: { close: () => blockedClose },
+      toolContext: { id: 'old' },
+      route: '/mcp',
+      principalId: 'principal-a',
+      connectionId: 'connection-a',
+      clientIdentity: 'client-a',
+    });
+
+    expect(registry.snapshot()).toMatchObject({
+      active: 1,
+      maximum: 1,
+      capacityAvailable: 0,
+      admissionMode: 'eviction',
+      acceptingNewSessions: true,
+    });
+
+    const reservation = await Promise.race([
+      registry.reserveForInitialize({
+        principalId: 'principal-b',
+        connectionId: 'connection-b',
+        route: '/mcp',
+      }),
+      Bun.sleep(100).then(() => 'timed-out' as const),
+    ]);
+    expect(reservation).not.toBe('timed-out');
+    expect(typeof reservation).toBe('string');
+    expect(registry.get('old-session')).toBeUndefined();
+    expect(registry.snapshot().closed.capacityEviction).toBe(1);
+
+    registry.releaseInitialize(reservation as string);
+    releaseClose();
+    await Bun.sleep(0);
   });
 
   test('reclaims the oldest stream-only session before returning capacity backpressure', async () => {
