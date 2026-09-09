@@ -21,7 +21,7 @@ import { isTerminalWorkContractStatus, readWorkContractStore } from '../../../pa
 import { appendJsonLine, readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { cleanupControllerReleaseHistory } from './release-retention';
 import { cleanupWorkPreservationArtifacts } from './cleanup-artifact-retention';
-import { cleanupCodegraphCaches } from './codegraph-cache-retention';
+import { cleanupCodegraphCaches, CODEGRAPH_CACHE_RETENTION_POLICY_VERSION } from './codegraph-cache-retention';
 import { cleanupRetiredRepositoryNamespaces } from './repository-namespace-retention';
 import { maintainControlPlaneDatabase, type ControlPlaneDatabaseMaintenanceReport } from './persistence/sqlite-store';
 import { cleanupExpiredExperiences } from './persistence/experience-store';
@@ -274,7 +274,10 @@ const REMOVAL_PHASES: readonly RemovalPhase[] = ['worktrees', 'temporary', 'arti
 export function cleanupRemovalPhaseOrder(reason: RuntimeCleanupReport['reason'], sequence = 0): RemovalPhase[] {
   if (reason !== 'periodic') return [...REMOVAL_PHASES];
   const offset = ((Math.trunc(sequence) % REMOVAL_PHASES.length) + REMOVAL_PHASES.length) % REMOVAL_PHASES.length;
-  return [...REMOVAL_PHASES.slice(offset), ...REMOVAL_PHASES.slice(0, offset)];
+  // Periodic maintenance is a bounded shard, not a reordered full sweep.
+  // Eight one-minute generations cover every removal class once while startup/manual
+  // cleanup retains the complete all-phase contract.
+  return [REMOVAL_PHASES[offset]!];
 }
 
 interface WorktreeReferences {
@@ -835,9 +838,12 @@ export function cleanupControllerRuntimeState(
   const editSessionBudget = createScanBudget(maxEntries);
   const errors: string[] = [];
   const skippedByReason: Record<string, number> = {};
+  const sequence = options.periodicSequence ?? Math.floor(nowMs / 60_000);
+  const removalPhases = cleanupRemovalPhaseOrder(options.reason ?? 'manual', sequence);
+  const periodic = (options.reason ?? 'manual') === 'periodic';
   const retiredPlanBoundWorkAuthorities: string[] = [];
   const retiredOwnerlessWorkAuthorities: string[] = [];
-  try {
+  if (!periodic || removalPhases.includes('repository_namespaces')) try {
     for (const repository of listRepositories(home, { includeRemoved: true })) {
       const retired = retireTerminalPlanBoundWorkAuthorities({ controllerHome: home, repoId: repository.repoId });
       retiredPlanBoundWorkAuthorities.push(...retired.map((workId) => `${repository.repoId}:${workId}`));
@@ -856,7 +862,9 @@ export function cleanupControllerRuntimeState(
     errors.push(errorText('Work authority reconciliation', error));
   }
   const pidFiles = cleanupDaemonPidFile(home, nowIso, options, errors, removalBudget);
-  const references = collectReferencedWorktrees(home, referenceBudget, errors, nowMs);
+  const references: WorktreeReferences = (!periodic || removalPhases.includes('worktrees'))
+    ? collectReferencedWorktrees(home, referenceBudget, errors, nowMs)
+    : { referenced: new Set<string>(), unsafeRepositories: new Set<string>(), complete: true };
   let worktrees: ReturnType<typeof cleanupOrphanWorktrees> | undefined;
   let dependencyCleanup: ReturnType<typeof cleanupManagedWorktreeDependencyCopies> | undefined;
   let temporaryCleanup: ReturnType<typeof cleanupTemporaryStatePaths> | undefined;
@@ -888,9 +896,7 @@ export function cleanupControllerRuntimeState(
     retained: 0,
     errors: [] as string[],
   };
-  const sequence = options.periodicSequence ?? Math.floor(nowMs / 60_000);
-
-  for (const phase of cleanupRemovalPhaseOrder(options.reason ?? 'manual', sequence)) {
+  for (const phase of removalPhases) {
     if (phase === 'worktrees') {
       dependencyCleanup = cleanupManagedWorktreeDependencyCopies(home, dependencyBudget, errors, removalBudget);
       Object.entries(dependencyCleanup.skippedByReason).forEach(([key, value]) => { skippedByReason[key] = (skippedByReason[key] ?? 0) + value; });
@@ -1089,6 +1095,15 @@ export function cleanupControllerRuntimeState(
     });
     errors.push(...releaseRetention.errors);
   }
+  if (periodic) {
+    worktrees ??= { removed: [], skippedActive: [], skippedByReason: {}, reclaim: emptyReclaimMetrics() } as ReturnType<typeof cleanupOrphanWorktrees>;
+    dependencyCleanup ??= { migrated: [], skippedByReason: {} } as ReturnType<typeof cleanupManagedWorktreeDependencyCopies>;
+    temporaryCleanup ??= { removed: [], reclaim: emptyReclaimMetrics() } as ReturnType<typeof cleanupTemporaryStatePaths>;
+    artifactRetention ??= { removedPaths: [], attempted: 0, budgetExhausted: false, skippedByReason: {}, errors: [], inspected: 0, eligible: 0, retained: 0, skipped: 0, reclaimedBytes: 0, unknownReclaimedByteCount: 0 } as ReturnType<typeof cleanupWorkPreservationArtifacts>;
+    codegraphRetention ??= { policyVersion: CODEGRAPH_CACHE_RETENTION_POLICY_VERSION, removedPaths: [], attempted: 0, budgetExhausted: false, skippedByReason: {}, errors: [], inspected: 0, eligible: 0, retained: 0, reclaimedBytes: 0, unknownReclaimedByteCount: 0, observedBytes: 0, unknownObservedByteCount: 0, protected: 0, protectedOverCapacity: 0, truncated: false } as ReturnType<typeof cleanupCodegraphCaches>;
+    repositoryNamespaceRetention ??= { policyVersion: 'repository-namespace-retention-v1', removedPaths: [], attempted: 0, budgetExhausted: false, skippedByReason: {}, errors: [], inspected: 0, eligible: 0, retained: 0, reclaimedBytes: 0, unknownReclaimedByteCount: 0 } as ReturnType<typeof cleanupRetiredRepositoryNamespaces>;
+    releaseRetention ??= { removedPaths: [], removedBackupPaths: [], attempted: 0, budgetExhausted: false, skippedByReason: {}, errors: [], inspected: 0, eligible: 0, retained: 0, skipped: 0, reclaimedBytes: 0, unknownReclaimedByteCount: 0, reclaimedBackupBytes: 0, unknownReclaimedBackupByteCount: 0 } as ReturnType<typeof cleanupControllerReleaseHistory>;
+  }
   if (!worktrees || !dependencyCleanup || !temporaryCleanup || !artifactRetention || !codegraphRetention || !repositoryNamespaceRetention || !releaseRetention) {
     throw new Error('RUNTIME_CLEANUP_PHASE_INCOMPLETE');
   }
@@ -1102,7 +1117,7 @@ export function cleanupControllerRuntimeState(
   const removedCodegraphCachePaths = codegraphRetention.removedPaths.sort();
   const removedRepositoryNamespacePaths = repositoryNamespaceRetention.removedPaths.sort();
   let sqliteMaintenance: ControlPlaneDatabaseMaintenanceReport | undefined;
-  try {
+  if (!periodic || removalPhases.includes('releases')) try {
     sqliteMaintenance = maintainControlPlaneDatabase(home, {
       minimumReclaimableBytes: options.sqliteVacuumMinReclaimableBytes,
       minimumReclaimableRatio: options.sqliteVacuumMinReclaimableRatio,
