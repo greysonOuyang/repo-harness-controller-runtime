@@ -348,7 +348,7 @@ export function isFailedReviewedDirectEditWorkRecovery(
     && handle?.managedWorktree === false
     && handle.state === 'failed'
     && handle.finalization.validation === 'failed'
-    && String(handle.finalization.lastError ?? handle.failureReason ?? '').includes('WORK_HANDLE_HEAD_CHANGED');
+    && handle.finalization.failureCode === 'WORK_HANDLE_HEAD_CHANGED';
 }
 
 function isStalePreMutationDirectOwnershipRecovery(

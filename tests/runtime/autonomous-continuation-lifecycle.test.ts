@@ -413,6 +413,7 @@ describe('autonomous continuation lifecycle', () => {
       relayScopeId: opened.relayScopeId,
       disposition: 'continue_immediately',
       status: 'failed',
+      failureClass: 'abandoned_release',
       lastError: 'CONTROLLER_RELAY_CLAIM_RELEASED_WITHOUT_DISPOSITION',
       roundCount: 1,
       repeatedStateCount: 0,

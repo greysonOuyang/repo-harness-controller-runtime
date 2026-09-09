@@ -15,7 +15,7 @@ import { appendVerificationRecord, appendWorkEvidence, listWorkContracts, reconc
 import { readRepositoryAccessPolicy } from '../governance/access-policy';
 import { assertResolvedAuthorization, decideAuthorization } from '../governance/authorization';
 import { updateExecutionSession } from './session-store';
-import { validateWorkHandle } from './validation';
+import { validateWorkHandle, WorkHandleValidationError } from './validation';
 import { implementationReviewContentFingerprint } from './implementation-review-content';
 import { transferReviewedWorkAuthorityAcrossContentEquivalentCommit } from './content-equivalent-commit-authority';
 import {
@@ -31,7 +31,7 @@ import {
 import { effectiveVerificationEvidence, verificationInputFingerprint, workspaceValidationFingerprint, workValidationInputFingerprint } from './verification-evidence';
 import { completeWorkWithReceipt } from './work-completion-authority';
 import { adoptWorkHandleSuccessorCandidate, markWorkHandleFailed, readWorkHandle, resolveWorkDeliveryTargetBranch, transitionWorkHandle, workDeliveryBaseRevision, writeWorkHandle } from './work-handle-store';
-import type { WorkFinalizationStages, WorkHandleState } from './work-handle-store';
+import type { WorkFinalizationFailureCode, WorkFinalizationStages, WorkHandleState } from './work-handle-store';
 import { findWorkPathScopeViolation } from './work-path-scope';
 import type { WorkRemoteDeliveryReceipt } from './work-remote-delivery';
 import { pushExactWorkRemoteDelivery } from './work-remote-delivery';
@@ -1258,14 +1258,13 @@ function reconcileFailedNonLinearTargetAdvanceRepair(
   current: WorkHandleState,
   args: Record<string, unknown>,
 ): WorkHandleState {
-  const failure = current.finalization.lastError ?? current.failureReason ?? '';
   if (
     current.state !== 'failed'
     || current.finalization.merge !== 'failed'
+    || current.finalization.failureCode !== 'WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION'
     || args.merge !== true
     || !current.managedWorktree
     || !current.expectedHead
-    || !failure.startsWith('WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION:')
   ) return current;
 
   const repository = getRepository(current.repositoryId, ctx.controllerHome, { includeRemoved: true });
@@ -1320,7 +1319,7 @@ function reconcileFailedNonLinearTargetAdvanceRepair(
           validation: 'pending',
           commit: fresh.finalization.commit === 'failed' ? 'pending' : fresh.finalization.commit,
           merge: 'pending',
-          lastError: undefined,
+          failureCode: undefined, lastError: undefined,
         },
       });
     },
@@ -1526,6 +1525,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
             merge: fresh.finalization.merge === 'pending' ? 'skipped' : fresh.finalization.merge,
             branchCleanup: 'skipped',
             worktreeCleanup: 'skipped',
+            failureCode: fresh.finalization.validation === 'failed' ? fresh.finalization.failureCode : undefined,
             lastError: fresh.finalization.validation === 'failed' ? fresh.finalization.lastError : undefined,
           },
           terminalResourceDisposition: {
@@ -1660,9 +1660,13 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
       return update(fresh);
     }, 10_000);
 
-  const failStage = (stage: keyof WorkFinalizationStages, reason: string): Record<string, unknown> => {
+  const failStage = (
+    stage: keyof WorkFinalizationStages,
+    reason: string,
+    failureCode?: WorkFinalizationFailureCode,
+  ): Record<string, unknown> => {
     current = transact(`fail:${String(stage)}`, (fresh) => {
-      const finalization = { ...fresh.finalization, [stage]: 'failed', lastError: reason } as WorkFinalizationStages;
+      const finalization = { ...fresh.finalization, [stage]: 'failed', failureCode, lastError: reason } as WorkFinalizationStages;
       return markWorkHandleFailed(ctx.controllerHome, { ...fresh, finalization }, reason);
     });
     if (current.workContractId) {
@@ -1986,7 +1990,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
         branchCleanup: deleteBranchRequested
           ? (fresh.finalization.branchCleanup === 'done' ? 'done' : 'pending')
           : 'skipped',
-        lastError: undefined,
+        failureCode: undefined, lastError: undefined,
       },
     }));
   }
@@ -2006,7 +2010,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
   if (terminalCleanupOnly) {
     current = transact('terminal-cleanup-validation-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, {
       ...fresh,
-      finalization: { ...fresh.finalization, validation: 'done', lastError: undefined },
+      finalization: { ...fresh.finalization, validation: 'done', failureCode: undefined, lastError: undefined },
     }));
   } else if (noChangeRemovedWorktreeRecovery) {
     // A prior no-change finalize may have durably recorded validation and physical
@@ -2018,7 +2022,10 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     try {
       validatedRepository = validateWorkHandle(ctx.controllerHome, current, identity, 'full', 'finalize').worktreeRepository;
     } catch (error) {
-      return failStage('validation', error instanceof Error ? error.message : String(error));
+      const failureCode = error instanceof WorkHandleValidationError && error.code === 'WORK_HANDLE_HEAD_CHANGED'
+        ? error.code
+        : undefined;
+      return failStage('validation', error instanceof Error ? error.message : String(error), failureCode);
     }
     const validationContract = contractFor(ctx, current);
     if (!validationContract) throw new Error(`WORK_VALIDATION_CONTRACT_MISSING: ${current.workContractId ?? current.workId}`);
@@ -2029,7 +2036,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
         current = transact('validation-no-checks', (fresh) => writeWorkHandle(ctx.controllerHome, {
           ...fresh,
           validatedInputFingerprint: validationInput.fingerprint,
-          finalization: { ...fresh.finalization, validation: 'done', lastError: undefined },
+          finalization: { ...fresh.finalization, validation: 'done', failureCode: undefined, lastError: undefined },
         }));
       }
       projectWorkValidationOutcome(ctx.controllerHome, current, 'passed', 'No validation checks were required.');
@@ -2042,7 +2049,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
       current = transact('validation-required', (fresh) => writeWorkHandle(ctx.controllerHome, {
         ...fresh,
         validatedInputFingerprint: undefined,
-        finalization: { ...fresh.finalization, validation: 'pending', lastError: undefined },
+        finalization: { ...fresh.finalization, validation: 'pending', failureCode: undefined, lastError: undefined },
       }));
       markWorkValidationPending(ctx.controllerHome, current);
       throw new Error('WORK_VALIDATION_REQUIRED: run work_validate against the exact current workspace before finalization');
@@ -2079,7 +2086,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
       commit: 'skipped',
       merge: 'skipped',
       branchCleanup: wants.cleanup && deleteBranchRequested ? 'pending' : 'skipped',
-      lastError: undefined,
+      failureCode: undefined, lastError: undefined,
     };
     // Collapse the no-op Git stages into the same durable lifecycle write used
     // to enter/establish the delivery boundary. Physical cleanup remains
@@ -2154,7 +2161,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
         ...fresh.finalization,
         validation: checks.length ? (validationPreservedAcrossCommit ? 'done' : 'pending') : 'done',
         commit: 'done',
-        lastError: undefined,
+        failureCode: undefined, lastError: undefined,
       },
       validatedInputFingerprint: checks.length
         ? (validationPreservedAcrossCommit ? postCommitInput.fingerprint : undefined)
@@ -2186,7 +2193,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     if (authorityTransfer.invalidatedCheckIds.length > 0) {
       current = transact('commit-review-revalidation-required', (fresh) => writeWorkHandle(ctx.controllerHome, {
         ...fresh,
-        finalization: { ...fresh.finalization, validation: 'pending', lastError: undefined },
+        finalization: { ...fresh.finalization, validation: 'pending', failureCode: undefined, lastError: undefined },
         validatedInputFingerprint: undefined,
       }));
       markWorkValidationPending(ctx.controllerHome, current);
@@ -2218,7 +2225,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     );
     current = alreadyMaterializedCommit
       ? transact('commit-already-materialized', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'committed', {
-          finalization: { ...fresh.finalization, commit: 'done', lastError: undefined },
+          finalization: { ...fresh.finalization, commit: 'done', failureCode: undefined, lastError: undefined },
           failureReason: undefined,
         }))
       : transact('commit-skipped', (fresh) => writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, commit: 'skipped' } }));
@@ -2238,7 +2245,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     );
     if (directTarget.integrated) {
       current = transact('direct-target-delivery-integrated', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'merged', {
-        finalization: { ...fresh.finalization, merge: 'done', branchCleanup: 'skipped', lastError: undefined },
+        finalization: { ...fresh.finalization, merge: 'done', branchCleanup: 'skipped', failureCode: undefined, lastError: undefined },
         failureReason: undefined,
       }));
       appendWorkEvidence({ controllerHome: ctx.controllerHome, repoId: current.repositoryId }, current.workContractId ?? current.workId, {
@@ -2309,7 +2316,11 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
             advance.candidateHead,
           );
           if (nonLinearCommits.length > 0) {
-            return failStage('merge', `WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION: candidate already contains merge commit(s) above reconciled target ${advance.targetHead}: ${nonLinearCommits.slice(0, 8).join(', ')}`);
+            return failStage(
+              'merge',
+              `WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION: candidate already contains merge commit(s) above reconciled target ${advance.targetHead}: ${nonLinearCommits.slice(0, 8).join(', ')}`,
+              'WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION',
+            );
           }
           const scopeViolation = targetAdvanceWorkScopeViolation(contract, advance.candidateChangedPaths);
           if (scopeViolation) {
@@ -2381,7 +2392,11 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
             encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000,
           });
           if (mergeCommits.length > 0) {
-            return failStage('merge', `WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION: integrated candidate contains merge commit(s): ${mergeCommits.slice(0, 8).join(', ')}`);
+            return failStage(
+              'merge',
+              `WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION: integrated candidate contains merge commit(s): ${mergeCommits.slice(0, 8).join(', ')}`,
+              'WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION',
+            );
           }
           if (
             !advance.mergedTree
@@ -2429,7 +2444,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
               deliveryBaseCommit: advance.targetHead,
               expectedHead: integratedHead,
               failureReason: undefined,
-              finalization: { ...fresh.finalization, validation: validationPreserved ? 'done' : 'pending', merge: 'pending', lastError: undefined },
+              finalization: { ...fresh.finalization, validation: validationPreserved ? 'done' : 'pending', merge: 'pending', failureCode: undefined, lastError: undefined },
               validationRun: undefined,
               validatedInputFingerprint: validationPreserved ? integratedInput.fingerprint : undefined,
             },
@@ -2601,7 +2616,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     if (pendingAuthorization) return { authorization: pendingAuthorization, work: compactHandle(current), stages: current.finalization };
     if (!merged.completed) return { ...failStage('merge', merged.error?.message ?? 'merge failed'), merge: merged };
     current = transact('merge-done', (fresh) => transitionWorkHandle(ctx.controllerHome, fresh, 'merged', {
-      finalization: { ...fresh.finalization, merge: 'done', branchCleanup: !deleteBranchRequested ? 'skipped' : deleteAfterWorktreeCleanup ? 'pending' : 'done', lastError: undefined },
+      finalization: { ...fresh.finalization, merge: 'done', branchCleanup: !deleteBranchRequested ? 'skipped' : deleteAfterWorktreeCleanup ? 'pending' : 'done', failureCode: undefined, lastError: undefined },
       failureReason: undefined,
     }));
   } else if (!wants.merge && current.finalization.merge === 'pending') {
@@ -2720,7 +2735,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
       current = transact('worktree-cleanup-done', (fresh) => {
         setRepositoryCheckoutLifecycle({ controllerHome: ctx.controllerHome, repoId: fresh.repositoryId, checkoutId: fresh.checkoutId, lifecycle: 'removed', reason: `Work ${fresh.workId} cleanup completed.` });
         markRepositoryProjectionDirty(ctx.controllerHome, fresh.repositoryId, `cleanup:${fresh.workId}:worktree`);
-        return writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, worktreeCleanup: 'done', lastError: undefined } });
+        return writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, worktreeCleanup: 'done', failureCode: undefined, lastError: undefined } });
       });
     }
   } else if (!wants.cleanup && current.finalization.worktreeCleanup === 'pending') {
@@ -2749,7 +2764,7 @@ export async function finalizeWork(ctx: McpExecutionContext, args: Record<string
     if (deleted.execution.status !== 'executed' || deleted.execution.ok !== true) return failStage('branchCleanup', deleted.execution.stderr || 'feature branch cleanup failed');
     current = transact('branch-cleanup-done', (fresh) => {
       markRepositoryProjectionDirty(ctx.controllerHome, fresh.repositoryId, `cleanup:${fresh.workId}:branch`);
-      return writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, branchCleanup: 'done', lastError: undefined } });
+      return writeWorkHandle(ctx.controllerHome, { ...fresh, finalization: { ...fresh.finalization, branchCleanup: 'done', failureCode: undefined, lastError: undefined } });
     });
   }
 

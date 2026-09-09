@@ -568,6 +568,27 @@ export function getRepository(repoId: string, controllerHome?: string, options: 
   return record;
 }
 
+export type RepositoryCheckoutSelectionErrorCode = 'CHECKOUT_NOT_FOUND' | 'CHECKOUT_NOT_ACTIVE';
+
+export class RepositoryCheckoutSelectionError extends Error {
+  readonly code: RepositoryCheckoutSelectionErrorCode;
+  readonly repoId: string;
+  readonly checkoutId: string;
+  readonly lifecycle?: RepositoryCheckoutLifecycle;
+
+  constructor(input: { code: RepositoryCheckoutSelectionErrorCode; repoId: string; checkoutId: string; lifecycle?: RepositoryCheckoutLifecycle }) {
+    const message = input.code === 'CHECKOUT_NOT_FOUND'
+      ? `checkout not found for ${input.repoId}: ${input.checkoutId}`
+      : `CHECKOUT_NOT_ACTIVE: ${input.repoId}/${input.checkoutId} is ${input.lifecycle ?? 'unknown'}`;
+    super(message);
+    this.name = 'RepositoryCheckoutSelectionError';
+    this.code = input.code;
+    this.repoId = input.repoId;
+    this.checkoutId = input.checkoutId;
+    this.lifecycle = input.lifecycle;
+  }
+}
+
 export function selectRepositoryCheckout(
   record: RepositoryRecord,
   checkoutId?: string,
@@ -575,10 +596,10 @@ export function selectRepositoryCheckout(
 ): RepositoryRecord {
   if (!checkoutId?.trim()) return record;
   const checkout = record.checkouts.find((candidate) => candidate.checkoutId === checkoutId.trim());
-  if (!checkout) throw new Error(`checkout not found for ${record.repoId}: ${checkoutId}`);
+  if (!checkout) throw new RepositoryCheckoutSelectionError({ code: 'CHECKOUT_NOT_FOUND', repoId: record.repoId, checkoutId: checkoutId.trim() });
   const lifecycle = repositoryCheckoutLifecycle(checkout);
   if (lifecycle !== 'active' && !(options.allowArchived === true && lifecycle === 'archived')) {
-    throw new Error(`CHECKOUT_NOT_ACTIVE: ${record.repoId}/${checkout.checkoutId} is ${lifecycle}`);
+    throw new RepositoryCheckoutSelectionError({ code: 'CHECKOUT_NOT_ACTIVE', repoId: record.repoId, checkoutId: checkout.checkoutId, lifecycle });
   }
   return {
     ...record,

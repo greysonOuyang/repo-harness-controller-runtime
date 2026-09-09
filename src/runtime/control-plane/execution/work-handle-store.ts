@@ -95,12 +95,18 @@ export interface WorkCleanupReceipt {
   blockers: string[];
 }
 
+export type WorkFinalizationFailureCode =
+  | 'WORK_HANDLE_HEAD_CHANGED'
+  | 'WORK_TARGET_ADVANCE_LINEAR_HISTORY_VIOLATION';
+
 export interface WorkFinalizationStages {
   validation: 'pending' | 'done' | 'failed';
   commit: 'pending' | 'done' | 'skipped' | 'failed';
   merge: 'pending' | 'done' | 'skipped' | 'failed';
   branchCleanup: 'pending' | 'done' | 'skipped' | 'failed';
   worktreeCleanup: 'pending' | 'done' | 'skipped' | 'failed';
+  /** Typed recovery classification. lastError remains diagnostic text only. */
+  failureCode?: WorkFinalizationFailureCode;
   lastError?: string;
 }
 
@@ -431,7 +437,7 @@ export function adoptWorkHandleSuccessorCandidate(
       merge: 'pending',
       branchCleanup: 'pending',
       worktreeCleanup: 'pending',
-      lastError: undefined,
+      failureCode: undefined, lastError: undefined,
     },
     validationRun: undefined,
     validatedInputFingerprint: undefined,

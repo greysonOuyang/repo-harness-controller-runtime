@@ -120,7 +120,7 @@ export function decideControllerRoundTransition(
       if (current.status !== 'dispatching') return { kind: 'reject', code: `CONTROLLER_RELAY_DISPATCH_STATE_INVALID:${current.status}` };
       return accept(current, {
         status: 'dispatched', lifecycleStage: 'dispatch_confirmed', consecutiveFailures: 0, providerDispatchEffectId: event.providerDispatchEffectId,
-        lastError: undefined, nextRecoveryAt: undefined, blockedReason: undefined,
+        failureClass: undefined, lastError: undefined, nextRecoveryAt: undefined, blockedReason: undefined,
         ...(event.bindingId ? { bindingId: event.bindingId } : {}),
         ...(event.providerDispatchReceiptId ? { providerDispatchReceiptId: event.providerDispatchReceiptId } : {}),
         dispatchedAt: event.at, updatedAt: event.at,
@@ -132,7 +132,7 @@ export function decideControllerRoundTransition(
       if (!event.providerDispatchEffectId.trim()) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_PROVIDER_EFFECT_ID_REQUIRED' };
       return accept(current, {
         status: 'blocked', consecutiveFailures: current.consecutiveFailures + 1, providerFailureTotal: (current.providerFailureTotal ?? 0) + 1, nextRecoveryAt: undefined,
-        lastError: event.error, blockedReason: 'provider_dispatch_outcome_unknown',
+        failureClass: undefined, lastError: event.error, blockedReason: 'provider_dispatch_outcome_unknown',
         providerDispatchEffectId: event.providerDispatchEffectId, updatedAt: event.at,
       }, 'controller_round_relay_dispatch_outcome_unknown');
     }
@@ -141,7 +141,7 @@ export function decideControllerRoundTransition(
       if (current.status !== 'dispatching') return { kind: 'reject', code: `CONTROLLER_RELAY_DISPATCH_STATE_INVALID:${current.status}` };
       if (!event.handoffId.trim()) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_WAIT_FOR_USER_HANDOFF_REQUIRED' };
       return accept(current, {
-        status: 'waiting_for_user', nextRecoveryAt: undefined, lastError: event.error,
+        status: 'waiting_for_user', nextRecoveryAt: undefined, failureClass: undefined, lastError: event.error,
         blockedReason: 'provider_user_action_required', handoffId: event.handoffId, updatedAt: event.at,
       }, 'controller_round_relay_waiting_for_user');
     }
@@ -150,11 +150,11 @@ export function decideControllerRoundTransition(
       if (current.status !== 'dispatching') return { kind: 'reject', code: `CONTROLLER_RELAY_DISPATCH_STATE_INVALID:${current.status}` };
       const failures = current.consecutiveFailures + 1;
       if (!event.recovery) {
-        return accept(current, { status: 'failed', consecutiveFailures: failures, providerFailureTotal: (current.providerFailureTotal ?? 0) + 1, nextRecoveryAt: undefined, lastError: event.error, updatedAt: event.at }, 'controller_round_relay_failed');
+        return accept(current, { status: 'failed', consecutiveFailures: failures, providerFailureTotal: (current.providerFailureTotal ?? 0) + 1, nextRecoveryAt: undefined, failureClass: undefined, lastError: event.error, updatedAt: event.at }, 'controller_round_relay_failed');
       }
       const blocked = failures >= current.maxFailures;
       return accept(current, {
-        status: blocked ? 'blocked' : 'dispatching', consecutiveFailures: failures, providerFailureTotal: (current.providerFailureTotal ?? 0) + 1, lastError: event.error,
+        status: blocked ? 'blocked' : 'dispatching', consecutiveFailures: failures, providerFailureTotal: (current.providerFailureTotal ?? 0) + 1, failureClass: undefined, lastError: event.error,
         blockedReason: blocked ? `consecutive_failures:${failures}>=${current.maxFailures}` : undefined,
         nextRecoveryAt: blocked ? undefined : event.nextRecoveryAt, updatedAt: event.at,
       }, blocked ? 'controller_round_relay_recovery_blocked' : 'controller_round_relay_recovery_retry_scheduled');
@@ -166,7 +166,7 @@ export function decideControllerRoundTransition(
       return accept(current, {
         status: 'dispatching', lifecycleStage: 'dispatching', consecutiveFailures: 0,
         providerRecoveryEpoch: (current.providerRecoveryEpoch ?? 0) + 1, providerRecoveryEvidenceId: event.evidenceId.slice(0, 500),
-        blockedReason: undefined, lastError: undefined, nextRecoveryAt: undefined,
+        blockedReason: undefined, failureClass: undefined, lastError: undefined, nextRecoveryAt: undefined,
         reason: `provider_environment_recovered:${event.evidenceId.slice(0, 240)}`, updatedAt: event.at,
       }, 'controller_round_relay_provider_environment_recovered');
     }
@@ -188,22 +188,22 @@ export function decideControllerRoundTransition(
         if (current.controllerId === event.session.controllerId && current.sessionId === event.session.sessionId && current.claimGeneration === event.session.claimGeneration) {
           return { kind: 'no_op', current, reason: 'claim_already_acknowledged' };
         }
-        return accept(current, { controllerType: event.session.controllerType, controllerInstanceId: event.controllerInstanceId, sessionId: event.session.sessionId, claimGeneration: event.session.claimGeneration, lifecycleStage: 'controller_claimed', claimedAt: event.at, updatedAt: event.at, lastError: undefined }, 'controller_round_relay_claim_migrated');
+        return accept(current, { controllerType: event.session.controllerType, controllerInstanceId: event.controllerInstanceId, sessionId: event.session.sessionId, claimGeneration: event.session.claimGeneration, lifecycleStage: 'controller_claimed', claimedAt: event.at, updatedAt: event.at, failureClass: undefined, lastError: undefined }, 'controller_round_relay_claim_migrated');
       }
       const blocker = controllerRoundBlockerClass(current);
       if (blocker === 'provider_dispatch_outcome_unknown') {
         if (!current.providerDispatchEffectId) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_PROVIDER_EFFECT_ID_REQUIRED' };
-        return accept(current, { status: 'claimed', lifecycleStage: 'controller_claimed', controllerId: event.session.controllerId, controllerType: event.session.controllerType, principalId: event.principalId, controllerInstanceId: event.controllerInstanceId, sessionId: event.session.sessionId, claimGeneration: event.session.claimGeneration, consecutiveFailures: 0, blockedReason: undefined, lastError: undefined, nextRecoveryAt: undefined, claimedAt: event.at, updatedAt: event.at }, 'controller_round_relay_claim_confirmed_unknown_dispatch');
+        return accept(current, { status: 'claimed', lifecycleStage: 'controller_claimed', controllerId: event.session.controllerId, controllerType: event.session.controllerType, principalId: event.principalId, controllerInstanceId: event.controllerInstanceId, sessionId: event.session.sessionId, claimGeneration: event.session.claimGeneration, consecutiveFailures: 0, blockedReason: undefined, failureClass: undefined, lastError: undefined, nextRecoveryAt: undefined, claimedAt: event.at, updatedAt: event.at }, 'controller_round_relay_claim_confirmed_unknown_dispatch');
       }
       if (!['dispatching', 'dispatched'].includes(current.status)) return { kind: 'reject', code: `CONTROLLER_RELAY_CLAIM_STATE_INVALID:${current.status}` };
-      return accept(current, { status: 'claimed', lifecycleStage: 'controller_claimed', controllerId: event.session.controllerId, controllerType: event.session.controllerType, principalId: event.principalId, controllerInstanceId: event.controllerInstanceId, sessionId: event.session.sessionId, claimGeneration: event.session.claimGeneration, claimedAt: event.at, updatedAt: event.at, lastError: undefined }, 'controller_round_relay_claim_acknowledged');
+      return accept(current, { status: 'claimed', lifecycleStage: 'controller_claimed', controllerId: event.session.controllerId, controllerType: event.session.controllerType, principalId: event.principalId, controllerInstanceId: event.controllerInstanceId, sessionId: event.session.sessionId, claimGeneration: event.session.claimGeneration, claimedAt: event.at, updatedAt: event.at, failureClass: undefined, lastError: undefined }, 'controller_round_relay_claim_acknowledged');
     }
     case 'semantic_state_changed': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
       if (controllerRoundBlockerClass(current) !== 'repeated_state') return { kind: 'reject', code: 'CONTROLLER_RELAY_SEMANTIC_PROGRESS_BLOCKER_MISMATCH' };
       if (event.stateFingerprint === current.stateFingerprint) return { kind: 'no_op', current, reason: 'semantic_fingerprint_unchanged' };
       if (current.roundCount > current.maxRounds || current.consecutiveFailures >= current.maxFailures) return { kind: 'reject', code: 'CONTROLLER_RELAY_OTHER_BUDGET_EXHAUSTED' };
-      return accept(current, { status: 'claimed', lifecycleStage: 'controller_claimed', controllerId: event.session.controllerId, controllerType: event.session.controllerType, principalId: event.principalId, controllerInstanceId: event.controllerInstanceId, sessionId: event.session.sessionId, claimGeneration: event.session.claimGeneration, stateFingerprint: event.stateFingerprint, repeatedStateCount: 0, blockedReason: undefined, lastError: undefined, claimedAt: event.at, updatedAt: event.at }, 'controller_round_relay_claim_rearmed_after_state_change');
+      return accept(current, { status: 'claimed', lifecycleStage: 'controller_claimed', controllerId: event.session.controllerId, controllerType: event.session.controllerType, principalId: event.principalId, controllerInstanceId: event.controllerInstanceId, sessionId: event.session.sessionId, claimGeneration: event.session.claimGeneration, stateFingerprint: event.stateFingerprint, repeatedStateCount: 0, blockedReason: undefined, failureClass: undefined, lastError: undefined, claimedAt: event.at, updatedAt: event.at }, 'controller_round_relay_claim_rearmed_after_state_change');
     }
     case 'stalled_round_observed': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
@@ -219,7 +219,7 @@ export function decideControllerRoundTransition(
       else if (repeatedStateCount >= current.maxRepeatedState) blockedReason = `repeated_state:${repeatedStateCount}>=${current.maxRepeatedState}`;
       if (blockedReason) return accept(current, { status: 'blocked', stateFingerprint: event.stateFingerprint, roundCount, repeatedStateCount, blockedReason, updatedAt: event.at }, 'controller_round_relay_stalled_blocked');
       const authorityId = current.status === 'dispatching' && current.authorityId ? current.authorityId : event.proposedAuthorityId;
-      return accept(current, { authorityId, status: 'dispatching', lifecycleStage: 'dispatching', stateFingerprint: event.stateFingerprint, roundCount, repeatedStateCount, lastError: blocker === 'repeated_state' ? undefined : event.lastError, reason: blocker === 'repeated_state' ? 'semantic_state_changed_after_repeated_state_block' : current.reason, nextRecoveryAt: undefined, claimedAt: undefined, blockedReason: undefined, updatedAt: event.at }, 'controller_round_relay_stalled_recovery_begin');
+      return accept(current, { authorityId, status: 'dispatching', lifecycleStage: 'dispatching', stateFingerprint: event.stateFingerprint, roundCount, repeatedStateCount, failureClass: undefined, lastError: blocker === 'repeated_state' ? undefined : event.lastError, reason: blocker === 'repeated_state' ? 'semantic_state_changed_after_repeated_state_block' : current.reason, nextRecoveryAt: undefined, claimedAt: undefined, blockedReason: undefined, updatedAt: event.at }, 'controller_round_relay_stalled_recovery_begin');
     }
     case 'semantic_disposition_submitted': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
@@ -283,7 +283,7 @@ export function decideControllerRoundTransition(
         stateFingerprint: event.successorStateFingerprint, repeatedStateCount: 0, controllerInstanceId: '', sessionId: '', claimGeneration: 0,
         assistantContextSnapshot: undefined,
         bindingId: undefined, providerDispatchEffectId: undefined, providerDispatchAttempt: 0, providerDispatchStartedAt: undefined, providerDispatchReceiptId: undefined,
-        blockedReason: undefined, lastError: undefined, nextRecoveryAt: undefined, dispatchedAt: undefined, claimedAt: undefined, updatedAt: event.at,
+        blockedReason: undefined, failureClass: undefined, lastError: undefined, nextRecoveryAt: undefined, dispatchedAt: undefined, claimedAt: undefined, updatedAt: event.at,
       };
       return { kind: 'accept_atomic', next: handedOff, action: 'controller_round_relay_successor_handoff_closed', relatedWorkId: event.successorWorkId, relatedNext: successor, relatedAction: 'controller_round_relay_successor_dispatch_begin' };
     }
@@ -294,15 +294,15 @@ export function decideControllerRoundTransition(
     }
     case 'terminal_work_observed': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
-      return current.status === 'failed' ? { kind: 'no_op', current, reason: 'terminal_work_already_retired' } : accept(current, { status: 'failed', lastError: event.error, claimedAt: undefined, updatedAt: event.at }, 'controller_round_relay_terminal_work_retired');
+      return current.status === 'failed' ? { kind: 'no_op', current, reason: 'terminal_work_already_retired' } : accept(current, { status: 'failed', failureClass: 'terminal_work', lastError: event.error, claimedAt: undefined, updatedAt: event.at }, 'controller_round_relay_terminal_work_retired');
     }
     case 'abandoned_release_observed': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
-      return current.status !== 'claimed' ? { kind: 'no_op', current, reason: 'round_not_claimed' } : accept(current, { status: 'failed', lastError: event.error, claimedAt: undefined, updatedAt: event.at }, 'controller_round_relay_abandoned_release');
+      return current.status !== 'claimed' ? { kind: 'no_op', current, reason: 'round_not_claimed' } : accept(current, { status: 'failed', failureClass: 'abandoned_release', lastError: event.error, claimedAt: undefined, updatedAt: event.at }, 'controller_round_relay_abandoned_release');
     }
     case 'authority_recovery_requested': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
-      return accept(current, { authorityId: event.proposedAuthorityId, status: event.keepsConfirmedDispatch ? 'dispatched' : 'dispatching', lifecycleStage: event.keepsConfirmedDispatch ? 'dispatch_confirmed' : 'dispatching', claimedAt: undefined, nextRecoveryAt: undefined, updatedAt: event.at }, 'controller_round_relay_explicit_authority_recovered');
+      return accept(current, { authorityId: event.proposedAuthorityId, status: event.keepsConfirmedDispatch ? 'dispatched' : 'dispatching', lifecycleStage: event.keepsConfirmedDispatch ? 'dispatch_confirmed' : 'dispatching', failureClass: undefined, claimedAt: undefined, nextRecoveryAt: undefined, updatedAt: event.at }, 'controller_round_relay_explicit_authority_recovered');
     }
   }
 }

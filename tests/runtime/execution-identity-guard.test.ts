@@ -11,6 +11,7 @@ import {
   addRepositoryCheckout,
   loadRepositoryRegistry,
   registerRepository,
+  RepositoryCheckoutSelectionError,
   resolveRepositorySelection,
   saveRepositoryRegistry,
   selectRepositoryCheckout,
@@ -31,6 +32,8 @@ import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { ensureRepositoryWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { spawnManagedProcess } from '../../src/runtime/execution/process-runtime';
+import { startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
+import { currentPermissionSnapshotVersion, validateWorkHandle, WorkHandleValidationError } from '../../src/runtime/control-plane/execution/validation';
 
 const roots: string[] = [];
 
@@ -105,6 +108,38 @@ function sampleHandle(input: {
 }
 
 describe('execution identity pre-spawn guard', () => {
+  test('emits typed WORK_HANDLE_HEAD_CHANGED when finalization identity drifts', () => {
+    const fx = dualRepoFixture();
+    const identity = { sessionId: 'sess-test', principalId: 'principal-test', controllerInstanceId: 'instance-test' };
+    startExecutionSession(fx.controllerHome, {
+      ...identity,
+      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
+    });
+    const handle = {
+      ...sampleHandle({
+        workId: 'work-typed-head-drift',
+        repositoryId: fx.repoA.repoId,
+        checkoutId: fx.repoA.activeCheckoutId,
+        worktreePath: fx.repoARoot,
+        branch: 'main',
+        expectedHead: fx.headA,
+      }),
+      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
+    };
+
+    writeFileSync(join(fx.repoARoot, 'advance.txt'), 'advance\n');
+    spawnSync('git', ['-C', fx.repoARoot, 'add', 'advance.txt'], { encoding: 'utf8' });
+    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'advance'], { encoding: 'utf8' });
+
+    let observed: unknown;
+    try {
+      validateWorkHandle(fx.controllerHome, handle, identity, 'full', 'finalize');
+    } catch (error) {
+      observed = error;
+    }
+    expect(observed).toBeInstanceOf(WorkHandleValidationError);
+    expect((observed as WorkHandleValidationError).code).toBe('WORK_HANDLE_HEAD_CHANGED');
+  });
   test('rejects explicit checkout A when cwd routes into repo B', () => {
     const fx = dualRepoFixture();
     const identity = executionIdentityForRepository(fx.repoA);
@@ -265,7 +300,18 @@ describe('execution identity pre-spawn guard', () => {
       lifecycle: 'archived',
       reason: 'test fixture',
     });
-    const selected = selectRepositoryCheckout(withCheckout, addedCheckout!.checkoutId, { allowArchived: true });
+    const refreshed = loadRepositoryRegistry(fx.controllerHome).repositories.find((record) => record.repoId === fx.repoA.repoId)!;
+    let selectionError: unknown;
+    try {
+      selectRepositoryCheckout(refreshed, addedCheckout!.checkoutId);
+    } catch (error) {
+      selectionError = error;
+    }
+    expect(selectionError).toBeInstanceOf(RepositoryCheckoutSelectionError);
+    expect((selectionError as RepositoryCheckoutSelectionError).code).toBe('CHECKOUT_NOT_ACTIVE');
+    expect((selectionError as RepositoryCheckoutSelectionError).lifecycle).toBe('archived');
+
+    const selected = selectRepositoryCheckout(refreshed, addedCheckout!.checkoutId, { allowArchived: true });
     const identity = executionIdentityForRepository(selected);
     expect(() => assertExecutionIdentity({
       controllerHome: fx.controllerHome,

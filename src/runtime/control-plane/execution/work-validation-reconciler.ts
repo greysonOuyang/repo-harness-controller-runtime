@@ -185,7 +185,7 @@ function settleInfrastructureFailure(
   summary: string,
 ): WorkValidationReconciliation {
   const next = transitionWorkHandle(controllerHome, handle, 'failed', {
-    finalization: { ...handle.finalization, validation: 'failed', lastError: summary },
+    finalization: { ...handle.finalization, validation: 'failed', failureCode: undefined, lastError: summary },
     validationRun: undefined,
     failureReason: summary,
   });
@@ -211,7 +211,7 @@ export function reconcileWorkValidation(
 
   if (run.requestedChecks.length === 0) {
     const next = transitionWorkHandle(controllerHome, handle, run.resumeState, {
-      finalization: { ...handle.finalization, validation: 'done', lastError: undefined },
+      finalization: { ...handle.finalization, validation: 'done', failureCode: undefined, lastError: undefined },
       validationRun: undefined,
       validatedInputFingerprint: run.fingerprint,
       failureReason: undefined,
@@ -273,7 +273,7 @@ export function reconcileWorkValidation(
           return settleInfrastructureFailure(controllerHome, handle, receipt.summary);
         }
         const next = transitionWorkHandle(controllerHome, handle, 'failed', {
-          finalization: { ...handle.finalization, validation: 'failed', lastError: receipt.summary },
+          finalization: { ...handle.finalization, validation: 'failed', failureCode: undefined, lastError: receipt.summary },
           validationRun: undefined,
           failureReason: receipt.summary,
         });
@@ -287,7 +287,7 @@ export function reconcileWorkValidation(
   }
 
   const next = transitionWorkHandle(controllerHome, handle, run.resumeState, {
-    finalization: { ...handle.finalization, validation: 'done', lastError: undefined },
+    finalization: { ...handle.finalization, validation: 'done', failureCode: undefined, lastError: undefined },
     validationRun: undefined,
     validatedInputFingerprint: run.fingerprint,
     failureReason: undefined,
