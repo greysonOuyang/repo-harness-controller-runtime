@@ -12,6 +12,7 @@ import { repoLocalNoIndexControllerHome, repositoryControllerRoot } from '../../
 import {
   getRepository,
   listRepositories,
+  RepositoryCheckoutSelectionError,
   selectRepositoryCheckout,
   setRepositoryCheckoutLifecycle,
 } from '../../../cli/repositories/registry';
@@ -391,8 +392,9 @@ function selectTerminalCleanupTarget(repository: ReturnType<typeof getRepository
     try {
       return selectRepositoryCheckout(repository, sourceCheckoutId, { allowArchived: true });
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (!message.startsWith('CHECKOUT_NOT_ACTIVE:') && !message.startsWith('checkout not found for ')) throw error;
+      const unavailable = error instanceof RepositoryCheckoutSelectionError
+        && (error.code === 'CHECKOUT_NOT_FOUND' || (error.code === 'CHECKOUT_NOT_ACTIVE' && error.lifecycle === 'removed'));
+      if (!unavailable) throw error;
     }
   }
   // Terminal cleanup only performs repository-common Git administration after

@@ -377,7 +377,8 @@ describe('standalone Direct Edit Work completion', () => {
         merge: 'pending',
         branchCleanup: 'pending',
         worktreeCleanup: 'pending',
-        lastError: 'WORK_HANDLE_HEAD_CHANGED: expected old, found current',
+        failureCode: 'WORK_HANDLE_HEAD_CHANGED',
+        lastError: 'diagnostic text may change without changing recovery authority',
       },
     };
 
@@ -400,6 +401,14 @@ describe('standalone Direct Edit Work completion', () => {
     })).toBe(false);
     expect(isFailedReviewedDirectEditWorkRecovery({ ...failedWork, status: 'cancelled' }, handle)).toBe(false);
     expect(isFailedReviewedDirectEditWorkRecovery(failedWork, { ...handle, managedWorktree: true })).toBe(false);
+    expect(isFailedReviewedDirectEditWorkRecovery(failedWork, {
+      ...handle,
+      finalization: {
+        ...handle.finalization,
+        failureCode: undefined,
+        lastError: 'WORK_HANDLE_HEAD_CHANGED: misleading diagnostic only',
+      },
+    })).toBe(false);
   });
 
   test('retires postcommit completion authority so new Direct Edit delivery cannot bypass precommit implementation review', () => {

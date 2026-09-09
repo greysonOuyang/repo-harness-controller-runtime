@@ -29,6 +29,8 @@ export type ControllerRoundRelayStatus =
   | 'blocked'
   | 'failed';
 
+export type ControllerRoundFailureClass = 'terminal_work' | 'abandoned_release';
+
 export interface ControllerRoundRelayRecord {
   schemaVersion: 1;
   repoId: string;
@@ -86,6 +88,8 @@ export interface ControllerRoundRelayRecord {
   /** Explicit schedule/manual/replan occurrence identity when a prior lineage exists. */
   occurrenceId?: string;
   blockedReason?: string;
+  /** Typed failed-lineage classification. lastError remains diagnostic text only. */
+  failureClass?: ControllerRoundFailureClass;
   lastError?: string;
   nextRecoveryAt?: string;
   submittedAt: string;

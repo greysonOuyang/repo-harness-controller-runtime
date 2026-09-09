@@ -778,7 +778,7 @@ export function beginInitialControllerRoundDispatch(
       throw new Error(`CONTROLLER_RELAY_SCOPE_MISMATCH: Work ${work.workId} is already bound to ${existing.value.relayScopeId}`);
     }
     const previous = relayHistory(options, relayScopeId)[0];
-    const abandonedReleasedRound = previous?.status === 'failed' && previous.lastError === CONTROLLER_RELAY_ABANDONED_RELEASE_ERROR;
+    const abandonedReleasedRound = previous?.status === 'failed' && previous.failureClass === 'abandoned_release';
     const stateFingerprint = mechanicalStateFingerprint(options, work, requirementId, relayScopeId);
     const occurrenceId = bounded(input.occurrenceId, 500);
     return applyControllerRoundTransition(options, existing, {

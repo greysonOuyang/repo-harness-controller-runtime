@@ -36,8 +36,33 @@ function gitSucceeds(root: string, args: string[]): boolean {
   return spawnSync('git', ['-C', root, ...args], { stdio: 'ignore', timeout: 10_000 }).status === 0;
 }
 
-function fail(code: string, message: string): never {
-  throw new Error(`${code}: ${message}`);
+export type WorkHandleValidationErrorCode =
+  | 'CHECKOUT_NOT_REGISTERED'
+  | 'REPOSITORY_NOT_EXECUTABLE'
+  | 'REPOSITORY_VALIDATION_FAILED'
+  | 'WORKTREE_INVALID'
+  | 'WORKTREE_MISSING'
+  | 'WORKTREE_PATH_MISMATCH'
+  | 'WORK_CONTRACT_MISSING'
+  | 'WORK_CONTRACT_REPOSITORY_MISMATCH'
+  | 'WORK_HANDLE_BRANCH_CHANGED'
+  | 'WORK_HANDLE_HEAD_CHANGED'
+  | 'WORK_HANDLE_LIFECYCLE_INVALID'
+  | 'WORK_HANDLE_PRINCIPAL_MISMATCH'
+  | 'WORK_HANDLE_STALE_PERMISSION';
+
+export class WorkHandleValidationError extends Error {
+  readonly code: WorkHandleValidationErrorCode;
+
+  constructor(code: WorkHandleValidationErrorCode, message: string) {
+    super(`${code}: ${message}`);
+    this.name = 'WorkHandleValidationError';
+    this.code = code;
+  }
+}
+
+function fail(code: WorkHandleValidationErrorCode, message: string): never {
+  throw new WorkHandleValidationError(code, message);
 }
 
 export function currentPermissionSnapshotVersion(controllerHome: string, repoId: string): number {
