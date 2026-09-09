@@ -26,6 +26,29 @@ export const ALL_BROWSER_PROVIDER_CAPABILITIES = [
   'browser.persistent_handle',
 ] as const satisfies readonly BrowserProviderCapability[];
 
+export const DEFAULT_NATIVE_FOREGROUND_VERIFICATION_WAIT_MS = 750;
+
+/**
+ * Normal Browser semantic actions already await the provider primitive and return
+ * bounded post-action evidence. A caller may request an additional compatibility
+ * settle delay explicitly, but omission never creates a hidden fixed sleep.
+ */
+export function browserExplicitPostActionWaitMs(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0;
+}
+
+/**
+ * Native foreground activation is different from ordinary semantic mutation: it
+ * must observe system foreground authority after an Apple Events/Computer action.
+ * Keep its provider-specific verification budget unless the caller explicitly
+ * supplies a non-negative compatibility value.
+ */
+export function browserNativeForegroundVerificationWaitMs(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : DEFAULT_NATIVE_FOREGROUND_VERIFICATION_WAIT_MS;
+}
+
 const READ_ACTIONS = new Set([
   'list_sessions', 'reconcile_sessions', 'get_handoff_status',
   'get_text', 'get_html', 'query_selector', 'query_all', 'get_attribute', 'list_frames', 'verify_state', 'reconcile_effect',

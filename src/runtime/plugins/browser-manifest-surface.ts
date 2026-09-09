@@ -104,7 +104,7 @@ const frameScopeProperties = {
 
 function interactSchema(extra: Record<string, unknown>, required: string[]): Record<string, unknown> {
   return sessionTargetSchema({
-    post_action_wait_ms: { type: 'number' },
+    post_action_wait_ms: { type: 'number', minimum: 0, description: 'Optional explicit compatibility settle delay after a semantic action. Omit for normal provider completion; native foreground activation retains its provider-specific verification budget.' },
     ...extra,
   }, required);
 }

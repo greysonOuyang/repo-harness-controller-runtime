@@ -22,6 +22,8 @@ import { MAX_BROWSER_CDP_ENDPOINT_CANDIDATES } from '../../../packages/plugin-ru
 import {
   ALL_BROWSER_PROVIDER_CAPABILITIES,
   browserActionCanReplayAfterDispatch as canReplayBrowserActionAfterDispatch,
+  browserExplicitPostActionWaitMs,
+  browserNativeForegroundVerificationWaitMs,
   executeBrowserRuntimeAction,
   invalidateBrowserRuntime,
 } from './browser-runtime';
@@ -97,7 +99,6 @@ import type {
 const BROWSER_PLUGIN_ID = 'browser';
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_TEXT_CHARS = 20_000;
-const DEFAULT_POST_ACTION_WAIT_MS = 750;
 const DEFAULT_CDP_DISCOVERY_TIMEOUT_MS = 1_500;
 const MAX_CDP_DISCOVERY_TIMEOUT_MS = 5_000;
 
@@ -4131,15 +4132,16 @@ async function executeBrowserPluginActionInternal(
       case 'activate_page': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
-          const waitMs = positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS);
           if (connection.provider === 'macos-apple-events') {
-            await establishAuthoritativeNativeForeground(input, page, connection, target, waitMs);
+            await establishAuthoritativeNativeForeground(
+              input, page, connection, target, browserNativeForegroundVerificationWaitMs(input.args.post_action_wait_ms),
+            );
           } else {
             if (!page.bringToFront) {
               throw new AssistantPluginError('PLUGIN_BROWSER_ACTIVATION_UNSUPPORTED', 'The selected browser provider cannot bring the saved page to the foreground.', { retryable: false });
             }
             await page.bringToFront();
-            await delay(waitMs);
+            await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           }
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'activate_page', 'Activated the exact saved browser page in authoritative foreground state.', {});
         });
@@ -4182,7 +4184,7 @@ async function executeBrowserPluginActionInternal(
             element.click();
             return { tag: element.tagName.toLowerCase(), className: element.className || '', text: normalize(element.innerText || element.textContent || '') };
           }, { text });
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'click_text', `Clicked exact visible text ${text}.`, { text, clicked });
         });
       }
@@ -4227,7 +4229,7 @@ async function executeBrowserPluginActionInternal(
               if (page.uncheck) await page.uncheck(selector, { timeout: timeoutMs });
               else await page.click(selector, { timeout: timeoutMs });
             }
-            await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+            await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
             const summary = input.actionId === 'click'
               ? `Clicked ${selector}.`
               : input.actionId === 'double_click'
@@ -4258,7 +4260,7 @@ async function executeBrowserPluginActionInternal(
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (input.actionId === 'fill' || !page.type) await page.fill(selector, text, { timeout: timeoutMs });
           else await page.type(selector, text, { timeout: timeoutMs });
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, input.actionId, `${input.actionId} ${selector} with ${text.length} characters.`, {
             selector,
             textLength: text.length,
@@ -4278,7 +4280,7 @@ async function executeBrowserPluginActionInternal(
           if (!Array.isArray(selectedValues) || selectedValues.length === 0) {
             throw new AssistantPluginError('PLUGIN_BROWSER_SELECT_OPTION_FAILED', 'The browser provider did not retain any requested option selection.', { retryable: true, details: { selector, requestedCount: values.length } });
           }
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'select_option', `Selected ${values.length} option(s) on ${selector}.`, { selector, values, selectedValues });
         });
       }
@@ -4288,7 +4290,7 @@ async function executeBrowserPluginActionInternal(
         const key = requiredString(input.args.key, 'key');
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           await page.press(selector, key, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'press', `Pressed ${key} on ${selector}.`, {
             selector,
             key,
@@ -4301,7 +4303,7 @@ async function executeBrowserPluginActionInternal(
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (page.keyboard?.press) await page.keyboard.press(key);
           else await page.press('body', key, { timeout: positiveNumber(input.args.timeout_ms, current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS) });
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'keyboard_shortcut', `Pressed shortcut ${key}.`, { key });
         });
       }
@@ -4443,7 +4445,7 @@ async function executeBrowserPluginActionInternal(
             }
           }
           if (nativeTrustedInput) await page.trustedInput!(trustedRequest);
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'trusted_input', `Sent trusted browser input (${kind}).`, { kind, ...(guard ? { guard } : {}) });
         });
       }
@@ -4463,7 +4465,7 @@ async function executeBrowserPluginActionInternal(
             const accepted = element.dispatchEvent(domEvent);
             return { accepted, defaultPrevented: domEvent.defaultPrevented };
           }, { selector, event });
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'dispatch_event', `Dispatched ${event} on ${selector}.`, {
             selector,
             event,
@@ -4533,7 +4535,7 @@ async function executeBrowserPluginActionInternal(
             throw new AssistantPluginError('PLUGIN_BROWSER_FILE_ATTACH_UNSUPPORTED', 'The selected browser provider does not support local file attachment.', { retryable: false });
           }
           await page.setInputFiles(selector, resolved.length === 1 ? resolved[0] : resolved);
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           const fileNames = resolved.map((path) => basename(path));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'attach_local_file', `Attached ${resolved.length} local file(s) to ${selector}.`, {
             selector,
@@ -4594,7 +4596,7 @@ async function executeBrowserPluginActionInternal(
           if (!existsSync(dest)) {
             throw new AssistantPluginError('PLUGIN_BROWSER_DOWNLOAD_FAILED', 'Browser download save completed without producing an artifact; refusing false success.', { retryable: true, details: { selector } });
           }
-          await delay(positiveNumber(input.args.post_action_wait_ms, DEFAULT_POST_ACTION_WAIT_MS));
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'await_file_transfer', `Captured download artifact for ${selector}.`, {
             selector,
             download: {

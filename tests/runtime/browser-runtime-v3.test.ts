@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+  browserExplicitPostActionWaitMs,
+  browserNativeForegroundVerificationWaitMs,
   executeBrowserRuntimeAction,
   invalidateBrowserRuntime,
 } from '../../src/runtime/plugins/browser-runtime';
@@ -66,6 +68,23 @@ function provider(options: {
     revalidate: options.revalidate,
   };
 }
+
+describe('Browser Runtime completion wait policy', () => {
+  test('normal semantic actions have no hidden settle delay but preserve explicit compatibility waits', () => {
+    expect(browserExplicitPostActionWaitMs(undefined)).toBe(0);
+    expect(browserExplicitPostActionWaitMs(0)).toBe(0);
+    expect(browserExplicitPostActionWaitMs(125)).toBe(125);
+    expect(browserExplicitPostActionWaitMs(-1)).toBe(0);
+    expect(browserExplicitPostActionWaitMs(Number.NaN)).toBe(0);
+  });
+
+  test('native foreground keeps a provider verification budget unless explicitly overridden', () => {
+    expect(browserNativeForegroundVerificationWaitMs(undefined)).toBe(750);
+    expect(browserNativeForegroundVerificationWaitMs(-1)).toBe(750);
+    expect(browserNativeForegroundVerificationWaitMs(0)).toBe(0);
+    expect(browserNativeForegroundVerificationWaitMs(25)).toBe(25);
+  });
+});
 
 describe('Browser Runtime V3 native create-tab provenance', () => {
   test('prefers the structured stable ref and preserves exact assignment provenance', () => {

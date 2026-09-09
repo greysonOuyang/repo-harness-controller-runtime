@@ -44,6 +44,7 @@ The 2026-09-09 #200 latency review proved that the native Desktop Operator is no
 - registration fingerprint/revision or endpoint-contract change disposes the old provider binding before replacement;
 - if the Unix connection changes after negotiation, the pending action is rejected before dispatch and the next explicit invocation must renegotiate; non-idempotent effects are never replayed automatically;
 - timeout, cancellation, response-size and protocol-error bounds remain per request; transport reuse creates no new durable lifecycle or retry authority.
+- Browser semantic mutations do not pay an unconditional fixed post-action sleep: provider primitives and bounded post-action identity/evidence are the normal completion path; `post_action_wait_ms` is explicit compatibility input only, while native foreground activation may retain a provider-specific verification budget because system foreground authority must be observed.
 
 This is a transport/runtime optimization beneath the existing Computer authority. Browser/OS handles remain ephemeral observations, and Process Runtime plus existing unknown-outcome reconciliation remain authoritative for execution concurrency and effect recovery.
 
