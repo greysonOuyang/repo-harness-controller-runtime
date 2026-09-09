@@ -13,7 +13,7 @@ import { createWorkContract, getWorkContract, recordWorkCompletionReceipt, recor
 import { implementationReviewChangedPathDigest, workRequiresImplementationReview } from '../../src/runtime/control-plane/facade/work-implementation-review';
 import { approvePlanContract, claimPlanStepForWork, completePlanStepForWork, createPlanContract, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { claimControllerSession, getControllerSession, releaseObservedControllerSession, resumeControllerSession, withControllerSessionTerminalizationFence } from '../../src/runtime/control-plane/facade/controller-session-store';
-import { acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay, readControllerRoundSemanticStateFingerprint, submitControllerRoundDisposition } from '../../src/runtime/control-plane/facade/controller-round-relay';
+import { acknowledgeControllerRoundClaim, beginControllerRoundRelayAfterRelease, beginInitialControllerRoundDispatch, finishControllerRoundRelayDispatch, getControllerRoundRelay, readControllerRoundSemanticStateFingerprint, rearmControllerRoundAfterProviderRecovery, submitControllerRoundDisposition } from '../../src/runtime/control-plane/facade/controller-round-relay';
 import { ensureRepositoryWorkHandle, reconcileRepositoryWorkHandlePlacement } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { ensureRunningRepositoryWorkCheckout } from '../../src/runtime/control-plane/execution/retained-work-resume';
 import { cleanupTerminalWork } from '../../src/runtime/control-plane/execution/work-terminal-cleanup';
@@ -1438,7 +1438,7 @@ describe('rh_work terminalization authority', () => {
     });
   }, 15_000);
 
-  test('scheduled continuation adopts the exact reserved occurrence across legacy binding projection migration without duplicate dispatch', async () => {
+  test('scheduled continuation binds the first post-recovery occurrence onto a pre-occurrence legacy relay without duplicate dispatch', async () => {
     const fx = fixture();
     const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
     const workId = 'work-scheduled-legacy-binding-adoption';
@@ -1467,11 +1467,11 @@ describe('rh_work terminalization authority', () => {
     const occurrenceId = 'occ-legacy-binding-adoption';
     const relayScopeId = `goal:${workId}`;
     const legacyBindingId = `chatgpt:legacy:${fx.repository.repoId}:${workId}`;
-    const relay = beginInitialControllerRoundDispatch(store, {
+    const legacyRelay = beginInitialControllerRoundDispatch(store, {
       workId,
       relayScopeId,
       bindingId: legacyBindingId,
-      occurrenceId,
+      maxFailures: 1,
       identity: {
         controllerId: owner.controllerId,
         controllerType: owner.controllerType,
@@ -1480,15 +1480,50 @@ describe('rh_work terminalization authority', () => {
         sessionId: owner.sessionId,
       },
     });
-    expect(relay).toMatchObject({ status: 'dispatching', occurrenceId, bindingId: legacyBindingId });
+    expect(legacyRelay).toMatchObject({ status: 'dispatching', bindingId: legacyBindingId });
+    expect(legacyRelay.occurrenceId).toBeUndefined();
+    const blocked = finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'PLUGIN_NOT_FOUND: browser' })!;
+    expect(blocked).toMatchObject({ status: 'blocked', blockedReason: 'consecutive_failures:1>=1' });
+    expect(blocked.occurrenceId).toBeUndefined();
+    expect(releaseObservedControllerSession(store, { workId, actor: 'test-provider-recovery-release', owner }).allowed).toBe(true);
+    expect(getControllerSession(store, workId)).toBeUndefined();
+    const relay = rearmControllerRoundAfterProviderRecovery(store, {
+      workId, relayScopeId, authorityId: blocked.authorityId!, expectedUpdatedAt: blocked.updatedAt,
+      evidenceId: 'runtime:verified-browser-provider:legacy-occurrence',
+    });
+    expect(relay).toMatchObject({
+      status: 'dispatching', bindingId: legacyBindingId,
+      authorityId: legacyRelay.authorityId, providerRecoveryEpoch: 1,
+      providerRecoveryEvidenceId: 'runtime:verified-browser-provider:legacy-occurrence',
+    });
+    expect(relay.occurrenceId).toBeUndefined();
+    const recoveredOwner = claimControllerSession(store, {
+      workId,
+      controllerId: owner.controllerId,
+      controllerType: owner.controllerType,
+      sessionId: 'transport-legacy-binding-recovered',
+      principalId: owner.principalId!,
+      controllerInstanceId: owner.controllerInstanceId!,
+      leaseMs: 60_000,
+    });
+    const recoveredBinding = upsertChatgptControllerBinding(store, {
+      workId,
+      sessionId: recoveredOwner.sessionId,
+      title: 'current work-scoped provider target after recovery',
+      model: 'gpt-5.6',
+      reasoning: 'high',
+      tabPolicy: 'auto',
+    });
+    expect(recoveredBinding.binding.bindingId).toBe(currentBinding.binding.bindingId);
+    bindControllerSessionBinding(store, { workId, sessionId: recoveredOwner.sessionId, binding: recoveredBinding.binding });
     updateScheduledContinuationDispatch(store, occurrenceId, 'test-legacy-binding-prepare', (_current, at) => ({
       schemaVersion: 1,
       repoId: fx.repository.repoId,
       scheduleId: schedule.scheduleId,
       occurrenceId,
       workId,
-      controllerSessionId: owner.sessionId,
-      controllerBindingId: currentBinding.binding.bindingId,
+      controllerSessionId: recoveredOwner.sessionId,
+      controllerBindingId: recoveredBinding.binding.bindingId,
       relayScopeId,
       status: 'prepared',
       createdAt: at,
@@ -1496,11 +1531,11 @@ describe('rh_work terminalization authority', () => {
     }));
 
     let resumeCalls = 0;
-    const input = { scheduleId: schedule.scheduleId, occurrenceId, workId, controllerBindingId: currentBinding.binding.bindingId };
+    const input = { scheduleId: schedule.scheduleId, occurrenceId, workId, controllerBindingId: recoveredBinding.binding.bindingId };
     const host = {
-      resume: async (binding: typeof currentBinding.binding, context: { authorityId: string }) => {
+      resume: async (binding: typeof recoveredBinding.binding, context: { authorityId: string }) => {
         resumeCalls += 1;
-        expect(binding.bindingId).toBe(currentBinding.binding.bindingId);
+        expect(binding.bindingId).toBe(recoveredBinding.binding.bindingId);
         expect(context.authorityId).toBe(relay.authorityId!);
         return { accepted: true, dispatchId: 'provider-dispatch-after-binding-migration' };
       },
@@ -1508,11 +1543,11 @@ describe('rh_work terminalization authority', () => {
     const first = await resumeScheduledControllerContinuation(store, input, host);
     expect(first.reused).toBe(false);
     expect(first.dispatch).toMatchObject({
-      status: 'dispatched', occurrenceId, controllerBindingId: currentBinding.binding.bindingId,
+      status: 'dispatched', occurrenceId, controllerBindingId: recoveredBinding.binding.bindingId,
       hostDispatchId: 'provider-dispatch-after-binding-migration',
     });
     expect(getControllerRoundRelay(store, workId)).toMatchObject({
-      status: 'dispatched', occurrenceId, bindingId: currentBinding.binding.bindingId,
+      status: 'dispatched', occurrenceId, bindingId: recoveredBinding.binding.bindingId,
       providerDispatchReceiptId: 'provider-dispatch-after-binding-migration',
     });
 

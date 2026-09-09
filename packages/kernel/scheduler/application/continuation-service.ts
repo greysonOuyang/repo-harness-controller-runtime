@@ -1,5 +1,6 @@
 import {
   beginInitialControllerRoundDispatch,
+  bindLegacyControllerRoundOccurrence,
   controllerSessionPrincipalId,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
@@ -93,6 +94,7 @@ export async function resumeScheduledControllerContinuation(
   if (prepared.status === 'outcome_unknown') throw new Error(`SCHEDULE_CONTINUATION_OUTCOME_UNKNOWN: ${input.occurrenceId}`);
   if (prepared.status === 'dispatching') throw new Error(`SCHEDULE_CONTINUATION_ALREADY_DISPATCHING: ${input.occurrenceId}`);
 
+  const currentControllerPrincipalId = controllerSessionPrincipalId(session);
   const roundMatchesReservedOccurrence = (candidate: ReturnType<typeof getControllerRoundRelay>): boolean => Boolean(
     candidate
     && candidate.status === 'dispatching'
@@ -102,10 +104,33 @@ export async function resumeScheduledControllerContinuation(
     && candidate.controllerType === session.controllerType
     && candidate.authorityId,
   );
+  const bindRecoveredLegacyOccurrence = (candidate: ReturnType<typeof getControllerRoundRelay>) => {
+    if (!candidate
+      || candidate.status !== 'dispatching'
+      || candidate.occurrenceId
+      || candidate.relayScopeId !== prepared.relayScopeId
+      || candidate.controllerId !== session.controllerId
+      || candidate.controllerType !== session.controllerType
+      || (candidate.principalId?.trim() || candidate.controllerId) !== currentControllerPrincipalId
+      || !candidate.authorityId
+      || (candidate.providerRecoveryEpoch ?? 0) < 1
+      || !candidate.providerRecoveryEvidenceId) return candidate;
+    return bindLegacyControllerRoundOccurrence(options, {
+      workId: work.workId,
+      relayScopeId: prepared.relayScopeId,
+      occurrenceId: prepared.occurrenceId,
+      authorityId: candidate.authorityId,
+      expectedUpdatedAt: candidate.updatedAt,
+      identity: { controllerId: session.controllerId, controllerType: session.controllerType, principalId: currentControllerPrincipalId },
+    });
+  };
 
   let relay = previous ? getControllerRoundRelay(options, work.workId) : undefined;
   if (relay && !roundMatchesReservedOccurrence(relay)) {
-    throw new Error(`SCHEDULE_CONTINUATION_ROUND_ALREADY_OPEN: ${input.occurrenceId}:${relay.relayScopeId}`);
+    relay = bindRecoveredLegacyOccurrence(relay);
+    if (!roundMatchesReservedOccurrence(relay)) {
+      throw new Error(`SCHEDULE_CONTINUATION_ROUND_ALREADY_OPEN: ${input.occurrenceId}:${relay?.relayScopeId ?? canonicalRelayScopeId}`);
+    }
   }
   if (!relay) {
     try {
@@ -124,8 +149,9 @@ export async function resumeScheduledControllerContinuation(
         },
       });
     } catch (error) {
-      if (error instanceof Error && error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:') && previous) {
-        const existing = getControllerRoundRelay(options, work.workId);
+      if (error instanceof Error && error.message.startsWith('CONTROLLER_RELAY_ROUND_ALREADY_OPEN:')) {
+        let existing = getControllerRoundRelay(options, work.workId);
+        if (!roundMatchesReservedOccurrence(existing)) existing = bindRecoveredLegacyOccurrence(existing);
         if (roundMatchesReservedOccurrence(existing)) relay = existing;
         else throw new Error(`SCHEDULE_CONTINUATION_ROUND_ALREADY_OPEN: ${input.occurrenceId}:${canonicalRelayScopeId}`);
       } else {

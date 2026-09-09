@@ -27,6 +27,7 @@ import { invalidateExecutionSession, readExecutionSession, startExecutionSession
 import {
   acknowledgeControllerRoundClaim,
   beginInitialControllerRoundDispatch,
+  bindLegacyControllerRoundOccurrence,
   claimStalledControllerRoundRelays,
   finishControllerRoundRelayDispatch,
   getControllerRoundRelay,
@@ -1224,6 +1225,10 @@ describe('scheduled external Controller wake', () => {
       maxFailures: 3,
     });
     expect(opened.authorityId).toBeTruthy();
+    expect(() => bindLegacyControllerRoundOccurrence(store, {
+      workId, relayScopeId: opened.relayScopeId, occurrenceId: 'OCC-LEGACY-BEFORE-RECOVERY', authorityId: opened.authorityId!, expectedUpdatedAt: opened.updatedAt,
+      identity: { controllerId: opened.controllerId, controllerType: opened.controllerType, principalId: opened.principalId },
+    })).toThrow('CONTROLLER_RELAY_LEGACY_OCCURRENCE_PROVIDER_RECOVERY_REQUIRED');
     expect(finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'PLUGIN_NOT_FOUND: browser' })).toMatchObject({ status: 'dispatching', consecutiveFailures: 1, providerFailureTotal: 1 });
     expect(finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'PLUGIN_NOT_FOUND: browser' })).toMatchObject({ status: 'dispatching', consecutiveFailures: 2, providerFailureTotal: 2 });
     const blocked = finishControllerRoundRelayDispatch(store, { workId, ok: false, recovery: true, error: 'PLUGIN_NOT_FOUND: browser' })!;
@@ -1248,6 +1253,38 @@ describe('scheduled external Controller wake', () => {
       providerFailureTotal: 3, providerRecoveryEpoch: 1, providerRecoveryEvidenceId: 'runtime:verified-browser-provider:rev-1',
       blockedReason: undefined, lastError: undefined,
     });
+    expect(rearmed.occurrenceId).toBeUndefined();
+    const identity = { controllerId: opened.controllerId, controllerType: opened.controllerType, principalId: opened.principalId };
+    expect(() => bindLegacyControllerRoundOccurrence(store, {
+      workId: 'WORK-RELAY-PROVIDER-RECOVERY-OTHER', relayScopeId: rearmed.relayScopeId, occurrenceId: 'OCC-LEGACY-1',
+      authorityId: rearmed.authorityId!, expectedUpdatedAt: rearmed.updatedAt, identity,
+    })).toThrow('CONTROLLER_RELAY_LEGACY_OCCURRENCE_RELAY_REQUIRED');
+    expect(() => bindLegacyControllerRoundOccurrence(store, {
+      workId, relayScopeId: 'goal:wrong-scope', occurrenceId: 'OCC-LEGACY-1', authorityId: rearmed.authorityId!, expectedUpdatedAt: rearmed.updatedAt, identity,
+    })).toThrow('CONTROLLER_RELAY_LEGACY_OCCURRENCE_SCOPE_MISMATCH');
+    expect(() => bindLegacyControllerRoundOccurrence(store, {
+      workId, relayScopeId: rearmed.relayScopeId, occurrenceId: 'OCC-LEGACY-1', authorityId: 'cra_wrong', expectedUpdatedAt: rearmed.updatedAt, identity,
+    })).toThrow('CONTROLLER_RELAY_LEGACY_OCCURRENCE_AUTHORITY_MISMATCH');
+    expect(() => bindLegacyControllerRoundOccurrence(store, {
+      workId, relayScopeId: rearmed.relayScopeId, occurrenceId: 'OCC-LEGACY-1', authorityId: rearmed.authorityId!,
+      expectedUpdatedAt: new Date(Date.parse(rearmed.updatedAt) - 1).toISOString(), identity,
+    })).toThrow('CONTROLLER_RELAY_LEGACY_OCCURRENCE_STALE');
+    expect(() => bindLegacyControllerRoundOccurrence(store, {
+      workId, relayScopeId: rearmed.relayScopeId, occurrenceId: 'OCC-LEGACY-1', authorityId: rearmed.authorityId!, expectedUpdatedAt: rearmed.updatedAt,
+      identity: { ...identity, controllerId: 'another-controller' },
+    })).toThrow('CONTROLLER_RELAY_LEGACY_OCCURRENCE_CONTROLLER_MISMATCH');
+
+    const bound = bindLegacyControllerRoundOccurrence(store, {
+      workId, relayScopeId: rearmed.relayScopeId, occurrenceId: 'OCC-LEGACY-1', authorityId: rearmed.authorityId!, expectedUpdatedAt: rearmed.updatedAt, identity,
+    });
+    expect(bound).toMatchObject({
+      status: 'dispatching', occurrenceId: 'OCC-LEGACY-1', authorityId: opened.authorityId, roundCount: opened.roundCount,
+      disposition: opened.disposition, providerFailureTotal: 3, providerRecoveryEpoch: 1,
+      providerRecoveryEvidenceId: 'runtime:verified-browser-provider:rev-1',
+    });
+    expect(() => bindLegacyControllerRoundOccurrence(store, {
+      workId, relayScopeId: bound.relayScopeId, occurrenceId: 'OCC-LEGACY-2', authorityId: bound.authorityId!, expectedUpdatedAt: bound.updatedAt, identity,
+    })).toThrow('CONTROLLER_RELAY_OCCURRENCE_ALREADY_BOUND:OCC-LEGACY-1');
   });
 
   test('fresh occurrence policy cannot bypass semantic wait, failed lineage, or duplicate occurrence identity', () => {

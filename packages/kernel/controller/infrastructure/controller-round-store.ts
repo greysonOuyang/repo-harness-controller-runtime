@@ -1118,6 +1118,15 @@ export interface RearmControllerRoundAfterProviderRecoveryInput {
   evidenceId: string;
 }
 
+export interface BindLegacyControllerRoundOccurrenceInput {
+  workId: string;
+  relayScopeId: string;
+  occurrenceId: string;
+  authorityId: string;
+  expectedUpdatedAt: string;
+  identity: Pick<ControllerRoundRelayIdentity, 'controllerId' | 'controllerType' | 'principalId'>;
+}
+
 /** Exact evidence-gated provider/environment recovery for one exhausted same-round dispatch responsibility. */
 export function rearmControllerRoundAfterProviderRecovery(
   options: ControllerRoundRelayStoreOptions,
@@ -1144,6 +1153,46 @@ export function rearmControllerRoundAfterProviderRecovery(
     const evidenceId = bounded(input.evidenceId, 500);
     if (!evidenceId) throw new Error('CONTROLLER_RELAY_PROVIDER_RECOVERY_EVIDENCE_REQUIRED');
     return applyControllerRoundTransition(options, current, { type: 'provider_environment_recovered', at: nowIso(options), evidenceId });
+  });
+}
+
+/**
+ * One-time migration of a pre-occurrence-era dispatch responsibility onto the
+ * first explicit post-recovery Scheduler occurrence. This does not create a
+ * round or provider effect: exact round authority, CAS and controller lineage
+ * fence the single occurrenceId write before normal strict occurrence matching
+ * resumes.
+ */
+export function bindLegacyControllerRoundOccurrence(
+  options: ControllerRoundRelayStoreOptions,
+  input: BindLegacyControllerRoundOccurrenceInput,
+): ControllerRoundRelayRecord {
+  const workId = input.workId.trim();
+  const relayScopeId = input.relayScopeId.trim();
+  const occurrenceId = bounded(input.occurrenceId, 500);
+  if (!occurrenceId) throw new Error('CONTROLLER_RELAY_OCCURRENCE_ID_REQUIRED');
+  const initial = readRelayRecord(options, workId);
+  if (!initial) throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_RELAY_REQUIRED: ${workId}`);
+  if (initial.value.relayScopeId !== relayScopeId) throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_SCOPE_MISMATCH: ${workId}`);
+  return relayLock(options, initial.value.relayScopeId, `controller-relay-bind-legacy-occurrence:${workId}`, () => {
+    const current = readRelayRecord(options, workId);
+    if (!current) throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_RELAY_REQUIRED: ${workId}`);
+    if (current.value.updatedAt !== input.expectedUpdatedAt.trim()) throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_STALE: ${workId}`);
+    if (current.value.relayScopeId !== relayScopeId) throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_SCOPE_MISMATCH: ${workId}`);
+    if (current.value.originWorkId !== workId) throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_WORK_MISMATCH: ${workId}`);
+    if ((current.value.authorityId?.trim() || '') !== input.authorityId.trim()) throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_AUTHORITY_MISMATCH: ${workId}`);
+    const expectedPrincipalId = input.identity.principalId.trim() || input.identity.controllerId.trim();
+    const currentPrincipalId = current.value.principalId?.trim() || current.value.controllerId;
+    if (current.value.controllerId !== input.identity.controllerId.trim()
+      || relayControllerType(current.value) !== input.identity.controllerType
+      || currentPrincipalId !== expectedPrincipalId) {
+      throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_CONTROLLER_MISMATCH: ${workId}`);
+    }
+    const work = getWorkContract(options, workId);
+    if (!work || isTerminalWorkContractStatus(work.status)) throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_WORK_TERMINAL: ${workId}:${work?.status ?? 'missing'}`);
+    const requirement = requirementForRelay(options, current.value.requirementId);
+    if (requirement && !['planned', 'active'].includes(requirement.state)) throw new Error(`CONTROLLER_RELAY_LEGACY_OCCURRENCE_REQUIREMENT_TERMINAL: ${requirement.state}`);
+    return applyControllerRoundTransition(options, current, { type: 'legacy_occurrence_bound', at: nowIso(options), occurrenceId });
   });
 }
 

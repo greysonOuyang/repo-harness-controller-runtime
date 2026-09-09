@@ -34,6 +34,7 @@ export type ControllerRoundTransitionEvent =
   | { type: 'semantic_state_changed'; at: string; stateFingerprint: string; session: ControllerSession & { claimGeneration: number }; principalId: string; controllerInstanceId: string }
   | { type: 'stalled_round_observed'; at: string; stateFingerprint: string; proposedAuthorityId: string; lastError?: string }
   | { type: 'provider_environment_recovered'; at: string; evidenceId: string }
+  | { type: 'legacy_occurrence_bound'; at: string; occurrenceId: string }
   | { type: 'semantic_disposition_submitted'; at: string; disposition: ControllerRoundDisposition; stateFingerprint: string; maxRounds: number; maxRepeatedState: number; maxFailures: number; controllerSession: Pick<ControllerSession, 'controllerId' | 'controllerType' | 'principalId' | 'controllerInstanceId' | 'sessionId' | 'claimGeneration'>; handoffId?: string; reason?: string; bindingId?: string; qualityDecisions?: ControllerRoundRelayRecord['qualityDecisions']; qualityAdjustmentResults?: ControllerRoundRelayRecord['qualityAdjustmentResults']; observationWindow?: ControllerRoundRelayRecord['observationWindow'] }
   | { type: 'successor_bound'; at: string; successorWorkId: string }
   | { type: 'controller_release_observed'; at: string; proposedAuthorityId: string }
@@ -168,6 +169,18 @@ export function decideControllerRoundTransition(
         blockedReason: undefined, lastError: undefined, nextRecoveryAt: undefined,
         reason: `provider_environment_recovered:${event.evidenceId.slice(0, 240)}`, updatedAt: event.at,
       }, 'controller_round_relay_provider_environment_recovered');
+    }
+    case 'legacy_occurrence_bound': {
+      if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
+      if (current.status !== 'dispatching') return { kind: 'reject', code: `CONTROLLER_RELAY_LEGACY_OCCURRENCE_STATE_INVALID:${current.status}` };
+      if (current.occurrenceId?.trim()) return { kind: 'reject', code: `CONTROLLER_RELAY_OCCURRENCE_ALREADY_BOUND:${current.occurrenceId.trim()}` };
+      if (!current.authorityId?.trim()) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_LEGACY_OCCURRENCE_AUTHORITY_REQUIRED' };
+      if ((current.providerRecoveryEpoch ?? 0) < 1 || !current.providerRecoveryEvidenceId?.trim()) {
+        return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_LEGACY_OCCURRENCE_PROVIDER_RECOVERY_REQUIRED' };
+      }
+      const occurrenceId = event.occurrenceId.trim();
+      if (!occurrenceId) return { kind: 'needs_evidence', code: 'CONTROLLER_RELAY_OCCURRENCE_ID_REQUIRED' };
+      return accept(current, { occurrenceId, updatedAt: event.at }, 'controller_round_relay_legacy_occurrence_bound');
     }
     case 'controller_claim_observed': {
       if (!current) return { kind: 'reject', code: 'CONTROLLER_RELAY_CURRENT_REQUIRED' };
