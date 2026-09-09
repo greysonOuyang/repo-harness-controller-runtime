@@ -10,7 +10,7 @@ import { allControllerToolDefinitions, controllerExposureSnapshot, controllerToo
 import { legacyIosPluginInvocation } from './legacy-ios-tool-adapter';
 import { boundedPluginArtifactImageContent, jsonPreview, result, resultWithPluginArtifactImages } from './result-adapter';
 import { expectedRevision, repositoryRootForRepoId, selected, stringList } from './shared-adapter';
-import { callContextAdapter } from './context-adapter';import { ageMs, callStatusInboxAdapter, controllerReadinessEvidence, GIT_IDENTITY_SAMPLE_TTL_MS, localControllerDiagnosticMatchesRuntime, probeLocalControllerHealth, runtimeSourceSnapshotStatus, summarizeInvalidActiveWorkCandidate, summarizeWorkListItem, type ControllerReadinessSignals } from './status-inbox-adapter';
+import { callContextAdapter } from './context-adapter';import { callPluginAdapter } from './plugin-adapter';import { callRecoveryAdapter } from './recovery-adapter';import { callArtifactAdapter } from './artifact-adapter';import { callFilesystemAdapter } from './filesystem-adapter';import { callModelAdapter } from './model-adapter';import { ageMs, callStatusInboxAdapter, controllerReadinessEvidence, GIT_IDENTITY_SAMPLE_TTL_MS, localControllerDiagnosticMatchesRuntime, probeLocalControllerHealth, runtimeSourceSnapshotStatus, summarizeInvalidActiveWorkCandidate, summarizeWorkListItem, type ControllerReadinessSignals } from './status-inbox-adapter';
 export { boundedPluginArtifactImageContent } from './result-adapter';
 import { repositoryScopedToolArgs } from '../multi-repository';
 import { resolveMcpPath } from '../paths';
@@ -48,10 +48,7 @@ import {
 import { ensureRepositoryRuntimeStorage } from '../../../src/cli/repositories/runtime-storage';
 import { assessWorkMode, parseExplicitTaskMode } from '../../../src/cli/controller/work-mode';
 import { projectBoard } from '../../../src/cli/controller/issue-store';
-import {
-  buildControllerTaskLedgerProjection,
-  writeControllerTaskLedgerArtifacts,
-} from '../../../src/cli/controller/task-ledger';
+import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
 import { buildControllerContextPack, buildControllerContextPackAsync, CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from '../../../src/cli/controller/context-pack';
 import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
 import { buildControllerOperationalPlan } from '../../../src/cli/controller/operational-plan';
@@ -62,7 +59,6 @@ import { listActiveAgentJobSnapshots } from '../../../src/cli/agent-jobs/job-man
 import { readAgentExecutableReadinessSnapshot } from '../../../src/cli/agent-jobs/executable-resolver';
 import {
   commitSelectedPaths,
-  prepareTransferArtifacts,
   selectedPathDiff,
   stageSelectedPaths,
 } from '../../../src/cli/repositories/selected-path-actions';
@@ -85,43 +81,16 @@ import {
   FORGE_TOOL_SURFACE,
   FORGE_VERSION,
 } from '../../../src/cli/controller/runtime-config';
-import { resolveLocalBridgeSurface, summarizeRecentJobs } from '../../../src/runtime/shared/local-bridge-surface';import { assistantPluginScope, controllerPluginRepository, executeAssistantPluginReadDirect, getAssistantPluginManifest, isDirectPluginReadAction, listAssistantPluginManifests, submitAssistantPluginAction } from '../../../src/runtime/plugins/store';
-import { startLightweightPluginAction, waitLightweightPluginAction } from '../../../src/runtime/plugins/lightweight-action';
-import { mcpPluginExecutionOrigin } from '../../../src/runtime/plugins/execution-origin';
+import { resolveLocalBridgeSurface, summarizeRecentJobs } from '../../../src/runtime/shared/local-bridge-surface';import { listAssistantPluginManifests } from '../../../src/runtime/plugins/store';
 import {
   summarizeExecutionJobForMcp,
   summarizeJobResultForLowInterception,
   summarizePluginForLowInterception,
-  applyExternalFilesystemGrant,
-  buildWorkspaceAuthStatus,
-  listExternalFilesystemTargets,
-  prepareWorkspaceAuthLogin,
-  previewExternalFilesystemGrant,
-  readExternalFilesystemSnapshot,
-  buildReviewArtifactIndex,
-  ensureReviewArtifactRoots,
-  prepareBrowserReviewPacket,
-  prepareIosReviewPacket,
 } from '../../../src/runtime/safe-tooling';
-import { buildModelClientSummary, buildModelControlPlaneSummary, deepSeekControllerManifest, deepSeekFunctionToolManifest, prepareDeepSeekControllerHandoff, prepareDeepSeekControllerRequest, prepareDeepSeekToolCall } from '../../../src/runtime/model-clients';
 import { sessionCacheGlobalDiagnostics } from '../../../src/cli/repository/session-cache';
 import { cachedGitIdentity, gitIdentityPerformanceSnapshot, gitSnapshot, gitSnapshotPerformanceSnapshot } from '../../../src/cli/repository/inspector';
 import { buildWorkflowWatchdogReport } from '../../../src/runtime/watchdog/workflow-watchdog';
 import { applyRuntimeCleanup, previewRuntimeCleanup } from '../../../src/runtime/maintenance/cleanup';
-import {
-  applyRuntimeMaintenance,
-  buildCapabilityRecoverySnapshot,
-  buildRuntimeMaintenanceStatus,
-  recoveryActionById,
-  buildRecoveryAuditRecord,
-  assertRecoveryAuthorized,
-  writeRecoveryAuditRecord,
-  listRecoveryAuditRecords,
-  type RuntimeMaintenanceActionId,
-  previewRuntimeStorageRepair,
-  applyRuntimeStorageRepair,
-} from '../../../src/runtime/recovery';
-import { assertRuntimeReleaseFiles, stageRuntimeReleaseFromCandidateSource } from '../../../src/runtime/root/release-materialize';
 import {
   getLocalBridgeJobEventsSnapshot,
   getLocalBridgeJobSnapshot,
@@ -146,7 +115,8 @@ import {
   currentCallableTools,
   runtimeToolDefinitions,
 } from './runtime-tool-definitions';
-import { callWorkAdapter, callStandaloneRecoveryTool, contextRecord, contextText, runFacadeRepair, runtimeIdentitySnapshot } from './work-adapter';
+import { callWorkAdapter, contextRecord, contextText, runFacadeRepair, runtimeIdentitySnapshot } from './work-adapter';
+import { callStandaloneRecoveryTool } from './recovery-client-adapter';
 
 const RH_CONTEXT_CURRENT_WINDOW_MS = 24 * 60 * 60 * 1_000;
 
@@ -541,72 +511,6 @@ function summarizeRuntimeProjectionForReadiness<T extends { currentAttention?: u
   };
 }
 
-function summarizePlugin(manifest: ReturnType<typeof getAssistantPluginManifest>): Record<string, unknown> {
-  return {
-    pluginId: manifest.pluginId,
-    provider: manifest.provider,
-    displayName: manifest.displayName,
-    pluginVersion: manifest.pluginVersion,
-    revision: manifest.revision,
-    enabled: manifest.enabled,
-    lifecycle: manifest.lifecycle,
-    health: manifest.health,
-    authority: manifest.authority,
-    permissions: manifest.permissions,
-    capabilities: manifest.capabilities,
-    actions: manifest.actions.map((action) => ({
-      actionId: action.actionId,
-      title: action.title,
-      description: action.description,
-      readOnly: action.readOnly,
-      risk: action.risk,
-      confirmation: action.confirmation,
-      requiredConfirmationText: action.requiredConfirmationText,
-      defaultTimeoutMs: action.defaultTimeoutMs,
-      cancellable: action.cancellable,
-      idempotent: action.idempotent,
-      scopes: action.scopes,
-      resourceClaims: action.resourceClaims,
-      argumentsSchema: action.argumentsSchema,
-    })),
-    updatedAt: manifest.updatedAt,
-  };
-}
-
-function summarizePluginActionReceipt(manifest: ReturnType<typeof getAssistantPluginManifest>): Record<string, unknown> {
-  return {
-    pluginId: manifest.pluginId,
-    provider: manifest.provider,
-    displayName: manifest.displayName,
-    pluginVersion: manifest.pluginVersion,
-    revision: manifest.revision,
-    enabled: manifest.enabled,
-    lifecycleState: manifest.lifecycle.state,
-    health: {
-      state: manifest.health.state,
-      ready: manifest.health.ready,
-      checkedAt: manifest.health.checkedAt,
-      errorCount: manifest.health.errors.length,
-      warningCount: manifest.health.warnings.length,
-    },
-    updatedAt: manifest.updatedAt,
-  };
-}
-
-function compactSubmittedPluginActionResult(value: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
-  if (!value) return undefined;
-  const nested = value.result;
-  if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return value;
-  const work = value.work;
-  return {
-    ...(nested as Record<string, unknown>),
-    ...(work && typeof work === 'object' && !Array.isArray(work) ? { work } : {}),
-  };
-}
-
-
-
-
 /**
  * Read-only Runtime identity projection. A stored identity is accepted only
  * while the live Runtime owner has the same Runtime instance and PID.
@@ -881,16 +785,6 @@ function structuralIndexRoot(repository: ReturnType<typeof resolveRepositorySele
     .find((root) => existsSync(join(root, '.codegraph', 'codegraph.db')));
 }
 
-function pluginRepository(
-  ctx: MultiRepositoryMcpToolContext,
-  args: Record<string, unknown>,
-  pluginId: string,
-) {
-  return assistantPluginScope(pluginId, ctx.controllerHome) === 'controller'
-    ? controllerPluginRepository(ctx.controllerHome)
-    : selected(ctx, args);
-}
-
 async function legacyIosPluginAction(
   ctx: MultiRepositoryMcpToolContext,
   legacyTool: string,
@@ -1005,102 +899,6 @@ export async function controllerReadiness(
     },
     observedAt: new Date().toISOString(),
   };
-}
-
-async function capabilityRecoveryInput(ctx: MultiRepositoryMcpToolContext, repository: ReturnType<typeof selected>, args: Record<string, unknown>) {
-  const readiness = await controllerReadinessEvidence(ctx, repository);
-  const runtimeSnapshot = readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId);
-  const localBridge = loadMcpRuntimeState(repository.canonicalRoot)?.localController;
-  const inferredLocalBridge = inferLocalControllerProcess(repository.canonicalRoot);
-  const contextProjectionSourceRevision = String(runtimeSnapshot.projection.metadata?.contentRevision ?? runtimeSnapshot.projection.revision);
-  const contextGitIdentity = cachedGitIdentity(repository.canonicalRoot);
-  const contextSourceIdentity = {
-    repoId: repository.repoId,
-    checkoutId: repository.activeCheckoutId,
-    canonicalRoot: repository.canonicalRoot,
-    head: contextGitIdentity.head,
-    branch: contextGitIdentity.branch,
-    workingTreeFingerprint: contextGitIdentity.workingTreeFingerprint,
-    runtimeGeneration: runtimeSnapshot.projection.metadata?.producerGeneration,
-    sourceRevision: contextProjectionSourceRevision,
-    variant: 'summary' as const,
-    toolset: ctx.toolset,
-    profile: ctx.policy.profile,
-  };
-  const contextProjection = readControllerContextProjection(ctx.controllerHome, repository.repoId, {
-    sourceIdentity: contextSourceIdentity,
-  });
-  const contextProjectionStale = controllerContextProjectionNeedsRefresh(
-    contextProjection,
-    contextProjectionSourceRevision,
-    contextSourceIdentity,
-  );
-  const recentErrors = Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : [];
-  const runtimeSource = runtimeSourceSnapshotStatus(readiness.daemon.source, ctx.runtimeSourceRoot);
-  let runtimeStorageReady: boolean | undefined;
-  let runtimeStorageWarnings: string[] = [];
-  try {
-    const runtimeStorage = ensureRepositoryRuntimeStorage(repository, ctx.controllerHome);
-    runtimeStorageReady = runtimeStorage.readyForExecution;
-    runtimeStorageWarnings = runtimeStorage.warnings;
-  } catch (error) {
-    runtimeStorageReady = false;
-    runtimeStorageWarnings = [error instanceof Error ? error.message : String(error)];
-  }
-  const plugins = listAssistantPluginManifests(ctx.controllerHome, repository, {
-    preferStored: true,
-  });
-  const localJobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 30);
-  const executionJobs = listExecutionJobs(ctx.controllerHome, repository.repoId, 30);
-  return {
-    generatedAt: new Date().toISOString(),
-    daemonStatus: readiness.daemon.status,
-    daemonError: readiness.daemon.error,
-    schedulerStatus: readiness.durableScheduler.status,
-    schedulerHeartbeatAgeMs: readiness.durableScheduler.heartbeatAgeMs,
-    schedulerDispatchHeartbeatAgeMs: readiness.durableScheduler.dispatchHeartbeatAgeMs,
-    queueDepth: readiness.workerLoop.queueDepth,
-    runningWorkers: readiness.workerLoop.runningWorkers,
-    activeLeases: readiness.workerLoop.activeLeases,
-    localBridgeRunning: localBridge?.running ?? inferredLocalBridge?.running,
-    localBridgeError: localBridge?.error,
-    runtimeHealth: readiness.health as RuntimeHealthEvaluation,
-    runtimeOperationalView: readiness.operationalView,
-    connectorHealthy: undefined,
-    runtimeProjectionStale: runtimeSnapshot.stale,
-    runtimeProjectionPersisted: runtimeSnapshot.persisted,
-    runtimeSourceCoherence: {
-      ready: !runtimeSource.restartRequired,
-      code: runtimeSource.code,
-      reasons: runtimeSource.reasons,
-      summary: runtimeSource.restartRequired
-        ? formatRuntimeSourceDriftMessage(runtimeSource)
-        : 'Runtime source snapshot matches the current Controller Runtime source.',
-    },
-    contextProjectionStale,
-    commandPreviewAvailable: args.command_preview_available === undefined ? true : args.command_preview_available === true,
-    commandExecuteAvailable: args.command_execute_available === undefined ? true : args.command_execute_available === true,
-    issueToolsAvailable: args.issue_tools_available === undefined ? true : args.issue_tools_available === true,
-    jobToolsAvailable: args.job_tools_available === undefined ? true : args.job_tools_available === true,
-    checksAvailable: listControllerChecks(repository.canonicalRoot).length > 0,
-    runtimeStorageReady,
-    runtimeStorageWarnings,
-    pluginStates: plugins.map((plugin) => ({
-      pluginId: plugin.pluginId,
-      enabled: plugin.enabled,
-      healthState: plugin.health.state,
-      ready: plugin.health.ready,
-      errors: plugin.health.errors,
-      warnings: plugin.health.warnings,
-    })),
-    recentErrors,
-    localJobs: localJobs.map((job) => ({ status: job.status, error: job.error, updatedAt: job.updatedAt })),
-    executionJobs: executionJobs.map((job) => ({ status: job.status, error: job.error, updatedAt: job.updatedAt, operation: job.payload.operation })),
-  };
-}
-
-async function capabilityRecoverySnapshot(ctx: MultiRepositoryMcpToolContext, repository: ReturnType<typeof selected>, args: Record<string, unknown>) {
-  return buildCapabilityRecoverySnapshot(await capabilityRecoveryInput(ctx, repository, args));
 }
 
 function workPhase(status: ExecutionJob['status']): 'queued' | 'running' | 'attention' | 'completed' {
@@ -1347,6 +1145,16 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
     if (statusInbox) return statusInbox;
     const context = await callContextAdapter(ctx, name, args);
     if (context) return context;
+    const plugin = await callPluginAdapter(ctx, name, args);
+    if (plugin) return plugin;
+    const recovery = await callRecoveryAdapter(ctx, name, args);
+    if (recovery) return recovery;
+    const artifact = callArtifactAdapter(ctx, name, args);
+    if (artifact) return artifact;
+    const filesystem = callFilesystemAdapter(ctx, name, args);
+    if (filesystem) return filesystem;
+    const model = callModelAdapter(ctx, name, args);
+    if (model) return model;
     switch (name) {
       case 'rh_work': return await callWorkAdapter(ctx, args);
       case 'work_get': {
@@ -1594,22 +1402,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           ...(directEditWorkCompletion ? { directEditWorkCompletion } : {}),
         }, Boolean(committed.error));
       }
-      case 'prepare_transfer_artifacts': {
-        const repository = selected(ctx, args);
-        const transfer = prepareTransferArtifacts(repository, { reason: args.reason });
-        const taskLedger = writeControllerTaskLedgerArtifacts(repository.canonicalRoot, { reason: args.reason });
-        return result({
-          repoId: repository.repoId,
-          checkoutId: repository.activeCheckoutId,
-          ...transfer,
-          taskLedger: taskLedger.projection,
-          artifacts: [
-            ...transfer.artifacts,
-            ...taskLedger.artifacts,
-          ],
-        });
-      }
-
       case 'schedule_dedupe_report': {
         const repository = selected(ctx, args);
         return result({ report: buildScheduleDedupeReport(ctx.controllerHome, repository.repoId) });
@@ -2391,307 +2183,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
           },
         });
       }
-      case 'capability_recovery_probe': {
-        const repository = selected(ctx, args);
-        const snapshot = await capabilityRecoverySnapshot(ctx, repository, args);
-        const blockingCapabilityCount = snapshot.capabilities
-          .filter((capability) => ['blocked', 'unavailable', 'degraded'].includes(capability.state))
-          .length;
-        const ready = blockingCapabilityCount === 0 && snapshot.platformBlocked !== true;
-        return result({
-          ready,
-          reasonCodes: ready ? [] : [snapshot.externalLifecycleHandoff?.reasonCode ?? 'RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
-          diagnostics: {
-            capabilityCount: snapshot.capabilities.length,
-            blockingCapabilityCount,
-            platformBlocked: snapshot.platformBlocked === true,
-            recentAuditCount: listRecoveryAuditRecords(ctx.controllerHome, repository.repoId, 10).length,
-          },
-          externalLifecycleHandoff: snapshot.externalLifecycleHandoff,
-          observedAt: snapshot.generatedAt,
-          mutatesState: false,
-          ownsRuntimeLifecycle: false,
-        });
-      }
-      case 'capability_recovery_plan': {
-        const repository = selected(ctx, args);
-        const snapshot = await capabilityRecoverySnapshot(ctx, repository, args);
-        const blockingCapabilityCount = snapshot.capabilities
-          .filter((capability) => ['blocked', 'unavailable', 'degraded'].includes(capability.state))
-          .length;
-        const ready = blockingCapabilityCount === 0 && snapshot.platformBlocked !== true;
-        return result({
-          ready,
-          reasonCodes: ready ? [] : [snapshot.externalLifecycleHandoff?.reasonCode ?? 'RUNTIME_DIAGNOSTICS_ATTENTION_REQUIRED'],
-          diagnostics: {
-            capabilityCount: snapshot.capabilities.length,
-            blockingCapabilityCount,
-            platformBlocked: snapshot.platformBlocked === true,
-          },
-          observedAt: snapshot.generatedAt,
-          handoffRequired: !ready,
-          externalLifecycleHandoff: snapshot.externalLifecycleHandoff,
-          notes: snapshot.notes,
-          next: ready
-            ? 'Continue through the current Runtime and Work interfaces.'
-            : snapshot.externalLifecycleHandoff
-              ? 'Create or consume an rh_inbox handoff for the external Runtime lifecycle owner. Operate on the existing single forge-runtime only, then verify controller_ready and rh_status source coherence.'
-              : 'Inspect runtime_maintenance_status and create an rh_inbox handoff when operator or external Controller action is required.',
-        });
-      }
-      case 'runtime_maintenance_status': {
-        const repository = selected(ctx, args);
-        return result(buildRuntimeMaintenanceStatus(repository, ctx.controllerHome, {
-          minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
-          maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
-          cancelPendingApprovals: args.cancel_pending_approvals === true,
-        }) as unknown as Record<string, unknown>);
-      }
-      case 'runtime_maintenance_apply': {
-        const repository = selected(ctx, args);
-        const actionId = String(args.action_id ?? '').trim() as RuntimeMaintenanceActionId;
-        if (!actionId) return result({ error: { code: 'RUNTIME_MAINTENANCE_ACTION_REQUIRED', message: 'action_id is required.' } }, true);
-        if (args.confirm_maintenance !== true || String(args.authorization ?? '') !== actionId) {
-          throw new Error('RUNTIME_MAINTENANCE_AUTHORIZATION_REQUIRED: confirm_maintenance=true and authorization=action_id are required.');
-        }
-        return result(applyRuntimeMaintenance(repository, ctx.controllerHome, {
-          actionId,
-          confirmMaintenance: true,
-          minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
-          maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
-          cancelPendingApprovals: args.cancel_pending_approvals === true,
-        }) as unknown as Record<string, unknown>);
-      }
-      case 'workspace_auth_status': {
-        const repository = selected(ctx, args);
-        return result(buildWorkspaceAuthStatus(listAssistantPluginManifests(ctx.controllerHome, repository)));
-      }
-      case 'workspace_auth_login_prepare': {
-        selected(ctx, args);
-        return result(prepareWorkspaceAuthLogin(ctx.controllerHome, {
-          service: typeof args.service === 'string' ? args.service : undefined,
-          scopes: Array.isArray(args.scopes) ? args.scopes.map(String) : undefined,
-          redirectUri: typeof args.redirect_uri === 'string' ? args.redirect_uri : undefined,
-        }));
-      }
-      case 'external_filesystem_targets_list': {
-        const repository = selected(ctx, args);
-        return result(listExternalFilesystemTargets(repository.canonicalRoot));
-      }
-      case 'external_filesystem_grant_preview': {
-        const repository = selected(ctx, args);
-        return result(previewExternalFilesystemGrant(repository.canonicalRoot, args) as unknown as Record<string, unknown>);
-      }
-      case 'external_filesystem_grant_apply': {
-        const repository = selected(ctx, args);
-        return result(applyExternalFilesystemGrant(repository.canonicalRoot, args) as unknown as Record<string, unknown>);
-      }
-      case 'external_filesystem_text_snapshot': {
-        const repository = selected(ctx, args);
-        return result(readExternalFilesystemSnapshot(repository.canonicalRoot, args) as unknown as Record<string, unknown>);
-      }
-      case 'capability_recovery_apply': {
-        const repository = selected(ctx, args);
-        const actionId = String(args.action_id ?? '').trim();
-        const action = recoveryActionById(actionId);
-        if (!action) return result({ error: { code: 'RECOVERY_ACTION_UNKNOWN', message: actionId } }, true);
-        assertRecoveryAuthorized(action, action.confirmation === 'none' ? action.id : args.confirm_authorization === true ? String(args.authorization ?? '') : undefined);
-        const reason = typeof args.reason === 'string' && args.reason.trim() ? args.reason.trim() : 'manual recovery action';
-        let payload: Record<string, unknown>;
-        let affectedPaths: string[] = [];
-        switch (action.id) {
-          case 'recovery.stage_and_activate_runtime_release': {
-            const staged = stageRuntimeReleaseFromCandidateSource({
-              controllerHome: ctx.controllerHome,
-              sourceRoot: repository.canonicalRoot,
-            });
-            assertRuntimeReleaseFiles(staged);
-            payload = {
-              staged: {
-                releaseId: staged.releaseId,
-                sourceCommit: staged.sourceCommit,
-                artifactIdentity: staged.artifactIdentity,
-                manifestSha256: staged.manifestSha256,
-              },
-              activation: await callStandaloneRecoveryTool(ctx.controllerHome, 'activate_runtime_release', {
-                request_id: `runtime-cutover-${Date.now()}`,
-                release_path: staged.manifestPath,
-              }),
-            };
-            affectedPaths = ['controllerHome/runtime/releases', 'controllerHome/runtime/releases/authority.json'];
-            break;
-          }
-          case 'recovery.restart_primary_connector': {
-            payload = await callStandaloneRecoveryTool(ctx.controllerHome, 'restart_primary_connector', {
-              request_id: `connector-restart-${Date.now()}`,
-            });
-            affectedPaths = ['controllerHome/recovery/audit'];
-            break;
-          }
-          case 'recovery.probe_again':
-            payload = { recovery: await capabilityRecoverySnapshot(ctx, repository, args) };
-            break;
-          case 'recovery.rebuild_projection': {
-            const projection = rebuildRepositoryProjection(ctx.controllerHome, repository.repoId);
-            payload = { projection };
-            affectedPaths = ['.ai/harness/controller/projections'];
-            break;
-          }
-          case 'recovery.refresh_repository': {
-            const runtimeStorage = ensureRepositoryRuntimeStorage(repository, ctx.controllerHome);
-            const projection = rebuildRepositoryProjection(ctx.controllerHome, repository.repoId);
-            payload = { runtimeStorage, projection };
-            affectedPaths = ['.ai/harness/controller', '.ai/harness/local-bridge'];
-            break;
-          }
-          case 'recovery.cleanup_preview': {
-            payload = previewRuntimeCleanup(repository.canonicalRoot, {
-              minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
-              includeTempDirs: true,
-              includeTerminalLocalJobs: true,
-              includeLegacyRuns: true,
-              includeHistoricalAttention: true,
-              maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
-            }) as unknown as Record<string, unknown>;
-            break;
-          }
-          case 'recovery.cleanup_apply': {
-            payload = applyRuntimeCleanup(repository.canonicalRoot, {
-              minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
-              includeTempDirs: true,
-              includeTerminalLocalJobs: true,
-              includeLegacyRuns: true,
-              includeHistoricalAttention: true,
-              maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
-              confirmCleanup: true,
-            }) as unknown as Record<string, unknown>;
-            affectedPaths = ['.ai/harness/local-jobs-archive', '.ai/harness/jobs-archive', '.ai/harness/controller/acknowledged-attention.jsonl'];
-            break;
-          }
-          case 'recovery.reconcile_jobs':
-          case 'recovery.local_jobs_reconcile': {
-            const maintenance = applyRuntimeMaintenance(repository, ctx.controllerHome, {
-              actionId: 'local_jobs_reconcile',
-              confirmMaintenance: true,
-              minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : 10,
-              maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
-            });
-            payload = { maintenance };
-            affectedPaths = ['.ai/harness/local-jobs', '.ai/harness/local-jobs-quarantine', '.ai/harness/controller'];
-            break;
-          }
-          case 'recovery.local_jobs_quarantine_unreadable': {
-            const maintenance = applyRuntimeMaintenance(repository, ctx.controllerHome, {
-              actionId: 'quarantine_unreadable_local_jobs',
-              confirmMaintenance: true,
-              minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : 0,
-              maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
-            });
-            payload = { maintenance };
-            affectedPaths = ['.ai/harness/local-jobs', '.ai/harness/local-jobs-quarantine'];
-            break;
-          }
-          case 'recovery.runtime_storage_finalize_relocation': {
-            const maintenance = applyRuntimeMaintenance(repository, ctx.controllerHome, {
-              actionId: 'runtime_storage_finalize_relocation',
-              confirmMaintenance: true,
-              minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : 0,
-              maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
-            });
-            payload = { maintenance };
-            affectedPaths = ['.ai/harness/local-jobs', '.ai/harness/controller'];
-            break;
-          }
-          case 'recovery.create_patch_handoff':
-            payload = prepareTransferArtifacts(repository, { reason }) as unknown as Record<string, unknown>;
-            affectedPaths = ['.ai/harness/transfers', '.ai/harness/session'];
-            break;
-          case 'recovery.workspace_auth_login_prepare':
-            payload = { skipped: true, nextTool: 'workspace_auth_login_prepare', reason: 'Auth login is a non-secret handoff and should be prepared through the dedicated typed tool.' };
-            break;
-          case 'recovery.external_filesystem_grant_preview':
-            payload = { skipped: true, nextTool: 'external_filesystem_grant_preview', reason: 'External filesystem access must be converted into a named read-only target first.' };
-            break;
-          default:
-            payload = { skipped: true, reason: `No executor is registered for ${action.id}.` };
-        }
-        const audit = writeRecoveryAuditRecord(ctx.controllerHome, repository.repoId, buildRecoveryAuditRecord({
-          actor: 'capability_recovery_apply',
-          action,
-          result: payload.skipped === true ? 'skipped' : 'succeeded',
-          reason,
-          affectedPaths,
-        }));
-        return result({ repoId: repository.repoId, action, audit, result: payload });
-      }
-      case 'runtime_storage_repair_preview': {
-        const repository = selected(ctx, args);
-        const preview = previewRuntimeStorageRepair(repository, ctx.controllerHome, {
-          minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
-          maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
-        });
-        return result({ ...preview });
-      }
-      case 'runtime_storage_repair_apply': {
-        const repository = selected(ctx, args);
-        const candidateIds = Array.isArray(args.candidate_ids) ? args.candidate_ids.map(String) : undefined;
-        const applied = applyRuntimeStorageRepair(repository, ctx.controllerHome, {
-          candidateIds,
-          minAgeMinutes: typeof args.min_age_minutes === 'number' ? args.min_age_minutes : undefined,
-          maxCandidates: typeof args.max_candidates === 'number' ? args.max_candidates : undefined,
-          confirmRepair: args.confirm_repair === true,
-        });
-        const runtimeStorage = ensureRepositoryRuntimeStorage(repository, ctx.controllerHome);
-        const projection = rebuildRepositoryProjection(ctx.controllerHome, repository.repoId);
-        return result({ ...applied, runtimeStorage, projection });
-      }
-      case 'list_plugins': {
-        const controllerRepository = controllerPluginRepository(ctx.controllerHome);
-        const controllerPlugins = listAssistantPluginManifests(ctx.controllerHome, controllerRepository, {
-          forceRefresh: true,
-        }).map(summarizePlugin);
-        let repositoryPlugins: ReturnType<typeof summarizePlugin>[] = [];
-        let repositoryId: string | undefined;
-        try {
-          const repository = selected(ctx, args);
-          repositoryId = repository.repoId;
-          repositoryPlugins = listAssistantPluginManifests(ctx.controllerHome, repository, {
-            forceRefresh: true,
-          }).map(summarizePlugin);
-        } catch (error) {
-          if (typeof args.repo_id === 'string' && args.repo_id.trim()) throw error;
-        }
-        return result({
-          scope: repositoryPlugins.length > 0 ? 'combined' : 'controller',
-          repositoryId,
-          plugins: [...repositoryPlugins, ...controllerPlugins]
-            .sort((left, right) => String(left.pluginId).localeCompare(String(right.pluginId))),
-        });
-      }
-      case 'get_plugin': {
-        const pluginId = String(args.plugin_id ?? '').trim();
-        const repository = pluginRepository(ctx, args, pluginId);
-        return result({
-          scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
-          plugin: summarizePlugin(getAssistantPluginManifest(ctx.controllerHome, repository, pluginId)),
-        });
-      }
-      case 'review_artifacts_prepare': {
-        const repository = selected(ctx, args);
-        return result(ensureReviewArtifactRoots(repository));
-      }
-      case 'review_artifacts_index': {
-        const repository = selected(ctx, args);
-        return result(buildReviewArtifactIndex(repository, { limit: args.limit }) as unknown as Record<string, unknown>);
-      }
-      case 'browser_review_packet': {
-        const repository = selected(ctx, args);
-        return result(prepareBrowserReviewPacket(repository, { limit: args.limit }) as unknown as Record<string, unknown>);
-      }
-      case 'ios_review_packet': {
-        const repository = selected(ctx, args);
-        return result(prepareIosReviewPacket(repository, { udid: args.udid, label: args.label, capture: args.capture, limit: args.limit }) as unknown as Record<string, unknown>);
-      }
       case 'workflow_watchdog_report': {
         const repository = selected(ctx, args);
         return result(buildWorkflowWatchdogReport(ctx.controllerHome, repository, { staleMinutes: args.stale_minutes, includeProcesses: args.include_processes }) as unknown as Record<string, unknown>);
@@ -2741,156 +2232,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
         });
         return result({ ...applied });
       }
-      case 'plugin_action_execute': {
-        const pluginId = String(args.plugin_id ?? '').trim();
-        const workId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
-        const repository = pluginRepository(ctx, args, pluginId);
-        const workRepository = workId ? selected(ctx, args) : undefined;
-        const actionId = String(args.action_id ?? '').trim();
-        const requestId = String(args.request_id ?? '').trim();
-        const actionArguments = args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
-          ? args.arguments as Record<string, unknown>
-          : {};
-        const request = {
-          pluginId,
-          actionId,
-          requestId,
-          workId,
-          ...(workId && workRepository ? { workRepoId: workRepository.repoId } : {}),
-          args: actionArguments,
-          timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
-          signal: ctx.signal,
-          confirmAuthorization: args.confirm_authorization === true,
-          confirmationText: typeof args.confirmation_text === 'string' ? args.confirmation_text : undefined,
-          origin: mcpPluginExecutionOrigin(ctx.principalId, 'plugin_action_execute', requestId),
-        };
-        const manifest = getAssistantPluginManifest(ctx.controllerHome, repository, pluginId);
-        const action = manifest.actions.find((entry) => entry.actionId === actionId);
-        if (action && isDirectPluginReadAction(action)) {
-          const direct = await executeAssistantPluginReadDirect(ctx.controllerHome, repository, request);
-          const value = {
-            accepted: true,
-            direct: true,
-            durable: false,
-            plugin: summarizePluginActionReceipt(direct.manifest),
-            action: {
-              actionId: direct.action.actionId,
-              risk: direct.action.risk,
-              confirmation: direct.action.confirmation,
-            },
-            scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
-            result: direct.result,
-            detail: {
-              tool: 'rh_context',
-              arguments: {
-                ...(repository.repoId === '__controller__' ? {} : { repo_id: repository.repoId }),
-                capability_id: `plugin.${pluginId}.${actionId}`,
-                detail_level: 'detail',
-              },
-            },
-            next: 'Continue with the returned bounded result; use rh_context capability detail only when the typed action schema/policy is needed.',
-          };
-          return resultWithPluginArtifactImages(value, ctx.controllerHome, repository.repoId, direct.result);
-        }
-        if (repository.repoId !== '__controller__' && action?.executionMode === 'lightweight_process') {
-          const timeoutMs = Math.max(1_000, request.timeoutMs ?? action?.defaultTimeoutMs ?? 10 * 60_000);
-          let { handle } = await startLightweightPluginAction({
-            controllerHome: ctx.controllerHome,
-            repository,
-            request,
-            interactiveWaitMs: typeof args.interactive_wait_ms === 'number' ? args.interactive_wait_ms : 750,
-            timeoutMs,
-          });
-          if (!handle.completed && args.wait === true) {
-            handle = await waitLightweightPluginAction(
-              ctx.controllerHome,
-              repository.repoId,
-              handle.processId,
-              typeof args.wait_ms === 'number' ? Math.max(1, args.wait_ms) : 15_000,
-              ctx.signal,
-            );
-          }
-          if (!handle.completed) {
-            return result({
-              accepted: true,
-              direct: false,
-              durable: false,
-              mode: 'lightweight_process',
-              plugin: summarizePluginActionReceipt(manifest),
-              action: action ? {
-                actionId: action.actionId,
-                risk: action.risk,
-                confirmation: action.confirmation,
-                requiredConfirmationText: action.requiredConfirmationText,
-              } : { actionId },
-              scope: 'repository',
-              requestId,
-              process: handle,
-              resultRef: { kind: 'process_logs', processId: handle.processId },
-              next: 'The typed plugin action is isolated from the Canonical Runtime. Use process_wait on processId; after completion, call plugin_action_execute again with the same request_id to retrieve the deduplicated structured receipt.',
-            });
-          }
-          if (!handle.ok) {
-            return result({
-              accepted: true,
-              direct: false,
-              durable: false,
-              mode: 'lightweight_process',
-              requestId,
-              process: handle,
-              error: {
-                code: handle.timedOut ? 'PLUGIN_ACTION_TIMEOUT' : handle.cancelled ? 'PLUGIN_ACTION_CANCELLED' : 'PLUGIN_ACTION_FAILED',
-                message: handle.stderrTail || handle.stdoutTail || `Plugin action process exited with code ${String(handle.exitCode)}`,
-              },
-            }, true);
-          }
-        }
-        // The sidecar writes the authoritative receipt. Re-entering the store
-        // with the same request id is a bounded deduplicated read of that result.
-        const submitted = await submitAssistantPluginAction(ctx.controllerHome, repository, request);
-        const compactResult = compactSubmittedPluginActionResult(submitted.result);
-        const value = {
-          accepted: true,
-          deduplicated: submitted.deduplicated,
-          direct: true,
-          durable: false,
-          plugin: summarizePluginActionReceipt(submitted.manifest),
-          action: {
-            actionId: submitted.action.actionId,
-            risk: submitted.action.risk,
-            confirmation: submitted.action.confirmation,
-            requiredConfirmationText: submitted.action.requiredConfirmationText,
-          },
-          scope: repository.repoId === '__controller__' ? 'controller' : 'repository',
-          receiptId: submitted.receipt.receiptId,
-          requestId: submitted.receipt.requestId,
-          ...(submitted.receipt.workId ? { workId: submitted.receipt.workId } : {}),
-          authorization: submitted.authorization,
-          result: compactResult,
-          detail: {
-            tool: 'rh_context',
-            arguments: {
-              ...(repository.repoId === '__controller__' ? {} : { repo_id: repository.repoId }),
-              capability_id: `plugin.${pluginId}.${actionId}`,
-              detail_level: 'detail',
-            },
-          },
-          next: 'Continue with the returned bounded plugin result; use rh_context capability detail only when the typed action schema/policy is needed.',
-        };
-        return resultWithPluginArtifactImages(value, ctx.controllerHome, repository.repoId, compactResult);
-      }
-      case 'toolchain_plugin_summary': {
-        const pluginId = String(args.plugin_id ?? '').trim();
-        const repository = pluginRepository(ctx, args, pluginId);
-        const manifest = getAssistantPluginManifest(ctx.controllerHome, repository, pluginId);
-        return result({
-          plugin: summarizePluginForLowInterception(manifest),
-          nonOpaque: true,
-          next: manifest.pluginId === 'browser'
-            ? 'Use rh_context for browser capability schemas and plugin_action_execute for typed HTTP(S) browser actions.'
-            : undefined,
-        });
-      }
       case 'work_result_summary': {
         const repository = selected(ctx, args);
         const jobId = String(args.job_id ?? '').trim();
@@ -2938,48 +2279,6 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
             ? 'Managed process is terminal; inspect the bounded digest above.'
             : `Continue independent work. Use process_get only if an observation can change the next decision; join once with process_wait when this exact result becomes a dependency. Do not re-run the original operation.`,
         }, digest.phase === 'failed' || digest.phase === 'timed_out');
-      }
-      case 'model_clients_summary': {
-        return result({ clients: buildModelClientSummary(), policyOwner: 'forge', transportEncryption: 'not-configured-by-this-tool' });
-      }
-      case 'model_control_plane_summary': {
-        return result({ controlPlane: buildModelControlPlaneSummary(), transportEncryption: 'not-configured-by-this-tool' });
-      }
-      case 'deepseek_tool_manifest': {
-        return result({ provider: 'deepseek', tools: deepSeekFunctionToolManifest(), policyOwner: 'forge' });
-      }
-      case 'deepseek_tool_call_prepare': {
-        const functionArguments = args.function_arguments && typeof args.function_arguments === 'object' && !Array.isArray(args.function_arguments)
-          ? args.function_arguments as Record<string, unknown>
-          : {};
-        return result({ prepared: prepareDeepSeekToolCall(String(args.function_name ?? '').trim(), functionArguments) });
-      }
-      case 'deepseek_controller_manifest': {
-        return result({ manifest: deepSeekControllerManifest() });
-      }
-      case 'deepseek_controller_handoff_prepare': {
-        const repository = selected(ctx, args);
-        return result({ handoff: prepareDeepSeekControllerHandoff({
-          reason: args.reason as never,
-          objective: typeof args.objective === 'string' ? args.objective : undefined,
-          repoId: repository.repoId,
-          currentController: typeof args.current_controller === 'string' ? args.current_controller : undefined,
-          blockedToolName: typeof args.blocked_tool_name === 'string' ? args.blocked_tool_name : undefined,
-          recentSafeError: typeof args.recent_safe_error === 'string' ? args.recent_safe_error : undefined,
-        }) });
-      }
-      case 'deepseek_controller_request_prepare': {
-        const repository = selected(ctx, args);
-        return result({ preview: prepareDeepSeekControllerRequest({
-          reason: args.reason as never,
-          objective: typeof args.objective === 'string' ? args.objective : undefined,
-          userMessage: typeof args.user_message === 'string' ? args.user_message : undefined,
-          repoId: repository.repoId,
-          currentController: typeof args.current_controller === 'string' ? args.current_controller : undefined,
-          blockedToolName: typeof args.blocked_tool_name === 'string' ? args.blocked_tool_name : undefined,
-          recentSafeError: typeof args.recent_safe_error === 'string' ? args.recent_safe_error : undefined,
-          model: typeof args.model === 'string' ? args.model : undefined,
-        }) });
       }
       case 'request_release_gate': {
         const repository = selected(ctx, args);
