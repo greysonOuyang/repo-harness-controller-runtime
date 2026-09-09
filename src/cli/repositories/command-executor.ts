@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
-import { appendFileSync, mkdirSync } from 'fs';
-import { dirname, join } from 'path';
+import { appendFileSync, existsSync, lstatSync, mkdirSync } from 'fs';
+import { dirname, join, relative, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { MAX_AGENT_TIMEOUT_MS, MIN_AGENT_TIMEOUT_MS } from '../controller/runtime-config';
 import { repositoryControllerRoot } from './controller-home';
@@ -137,6 +137,36 @@ function boundedInteger(value: number | undefined, fallback: number, minimum: nu
     throw new Error(`COMMAND_OPTION_INVALID: value must be between ${minimum} and ${maximum}`);
   }
   return normalized;
+}
+
+function boundedSnapshotFingerprintPaths(
+  root: string,
+  cwd: string,
+  command: CanonicalRepositoryCommand,
+): string[] | undefined {
+  if (command.kind !== 'argv') return undefined;
+  const program = (command.executable ?? '').split(/[\\/]/).at(-1)?.toLowerCase().replace(/\.exe$/, '');
+  const args = [...(command.args ?? [])];
+  if (program !== 'git' || args[0]?.toLowerCase() !== 'add') return undefined;
+  const separator = args.indexOf('--');
+  if (separator < 0 || separator === args.length - 1) return undefined;
+  const operands = args.slice(separator + 1);
+  if (operands.length > 32) return undefined;
+
+  const paths: string[] = [];
+  for (const operand of operands) {
+    if (!operand || operand.includes('\0') || operand.startsWith(':') || /[*?\[\]]/.test(operand)) return undefined;
+    const absolute = resolve(cwd, operand);
+    const path = relative(root, absolute).replace(/\\/g, '/');
+    if (!path || path === '..' || path.startsWith('../')) return undefined;
+    try {
+      if (existsSync(absolute) && lstatSync(absolute).isDirectory()) return undefined;
+    } catch {
+      return undefined;
+    }
+    paths.push(path);
+  }
+  return [...new Set(paths)].sort();
 }
 
 function approvalToken(
@@ -326,6 +356,7 @@ async function prepareRepositoryCommandExecutionAsync(
       ? readonlyUnobservedRepositorySnapshot()
       : await repositorySnapshotAsync(root, input.signal, {
           fingerprintTimeoutMs: input.snapshotFingerprintTimeoutMs,
+          fingerprintPaths: boundedSnapshotFingerprintPaths(root, cwd, command),
         }));
   return finalizePreparedExecution(
     repository,
@@ -590,6 +621,7 @@ export async function executeRepositoryCommandAsync(
     try {
       after = await repositorySnapshotAsync(root, signal?.aborted ? undefined : signal, {
         fingerprintTimeoutMs: input.snapshotFingerprintTimeoutMs,
+        fingerprintPaths: boundedSnapshotFingerprintPaths(root, cwd, command),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

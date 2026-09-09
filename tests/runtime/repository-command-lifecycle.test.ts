@@ -390,6 +390,30 @@ describe('repository command execution lifecycle', () => {
     expect(result.changedPaths).toEqual([]);
   });
 
+  test('path-bounded git add does not fingerprint unrelated dirty files before spawn', async () => {
+    const controllerHome = tempRoot('forge-cmd-bounded-snapshot-home-');
+    const repoRoot = tempRoot('forge-cmd-bounded-snapshot-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access', repoRoot);
+    for (const name of ['target.txt', 'unrelated-a.txt', 'unrelated-b.txt']) writeFileSync(join(repoRoot, name), 'base\n');
+    git(repoRoot, ['add', 'target.txt', 'unrelated-a.txt', 'unrelated-b.txt']);
+    git(repoRoot, ['commit', '-m', 'add bounded snapshot fixture']);
+    for (const name of ['target.txt', 'unrelated-a.txt', 'unrelated-b.txt']) writeFileSync(join(repoRoot, name), `changed:${name}\n`);
+
+    const result = await executeRepositoryCommandAsync(controllerHome, repository, {
+      command: ['git', 'add', '--', 'target.txt'],
+      timeoutMs: 10_000,
+      snapshotFingerprintTimeoutMs: 1,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.evidenceError).toBeUndefined();
+    expect(result.repositoryChanged).toBe(true);
+    expect(result.changedPaths).toEqual(['target.txt']);
+    expect(gitOutput(repoRoot, ['diff', '--cached', '--name-only'])).toBe('target.txt');
+    expect(gitOutput(repoRoot, ['diff', '--name-only']).split(/\r?\n/).filter(Boolean).sort()).toEqual(['unrelated-a.txt', 'unrelated-b.txt']);
+  });
+
   test('post-execution fingerprint timeout preserves child success while marking repository evidence unknown', async () => {
     const controllerHome = tempRoot('forge-cmd-post-evidence-home-');
     const repoRoot = tempRoot('forge-cmd-post-evidence-repo-');
