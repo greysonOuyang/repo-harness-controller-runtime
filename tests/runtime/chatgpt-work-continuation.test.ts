@@ -213,10 +213,14 @@ describe('ChatGPT Work conversation binding', () => {
       workId: 'WORK-1',
       conversationUrl: 'https://chatgpt.com/c/conversation-1',
       latestBrowserSessionId: 'chgpt_20260812_120000_first',
+      authorizationGrantRefs: ['plugin-grant-browser-session', 'plugin-grant-browser-interaction', 'plugin-grant-browser-session'],
       localAlias: 'Forge · YaoZhunShi · Medication V2',
     });
     expect(first.conversationId).toBe('conversation-1');
-    expect(getChatgptWorkConversationBinding(options, 'WORK-1')?.latestBrowserSessionId).toBe('chgpt_20260812_120000_first');
+    expect(getChatgptWorkConversationBinding(options, 'WORK-1')).toMatchObject({
+      latestBrowserSessionId: 'chgpt_20260812_120000_first',
+      authorizationGrantRefs: ['plugin-grant-browser-session', 'plugin-grant-browser-interaction'],
+    });
     const continued = bindChatgptWorkConversation(options, {
       workId: 'WORK-1',
       conversationUrl: 'https://www.chatgpt.com/c/conversation-1?model=current',
@@ -224,6 +228,7 @@ describe('ChatGPT Work conversation binding', () => {
     });
     expect(continued.conversationId).toBe('conversation-1');
     expect(continued.latestBrowserSessionId).toBe('chgpt_20260812_130000_followup');
+    expect(continued.authorizationGrantRefs).toEqual(['plugin-grant-browser-session', 'plugin-grant-browser-interaction']);
     expect(() => bindChatgptWorkConversation(options, {
       workId: 'WORK-1',
       conversationUrl: 'https://chatgpt.com/c/other-conversation',
@@ -833,12 +838,21 @@ describe('ChatGPT Work conversation binding', () => {
     expect(providerDelivery).toContain("DEFAULT_CHATGPT_AUTOMATION_MODEL = 'gpt-5.6'");
     expect(providerDelivery).toContain("DEFAULT_CHATGPT_AUTOMATION_REASONING = 'high'");
     expect(source).toContain("DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge'"); expect(browserRuntime).not.toContain('CHATGPT_WORK_MODE_RADIO_SELECTOR');
-    expect(browserRuntime).toContain('new AsyncLocalStorage<ChatgptBrowserActionOrigin>()');
+    expect(browserRuntime).toContain('new AsyncLocalStorage<ChatgptBrowserActionContext>()');
     expect(browserRuntime).toContain("surface: 'schedule', actor: 'chatgpt-work-continuation'");
+    expect(browserRuntime).toContain("origin.surface === 'chatgpt-action' && CHATGPT_BROWSER_AUTHORIZATION_ACTIONS.has(actionId)");
+    expect(browserRuntime).toContain(".filter((action) => !action.readOnly && action.confirmation === 'authorization')");
+    expect(browserRuntime).toContain('submitAssistantPluginAction(');
+    expect(browserRuntime).toContain('controllerPluginRepository(controllerHome)');
+    expect(browserRuntime).toContain('authorizationGrantRefs: [...(context?.authorizationGrantRefs ?? [])]');
     expect(source).toContain("originSurface?: 'chatgpt-action' | 'schedule'");
+    expect(source).toContain('authorizationGrantRefs?: readonly string[]');
     expect(source).toContain("surface: input.originSurface ?? 'chatgpt-action'");
     const controllerHost = readFileSync(join(process.cwd(), 'adapters/chatgpt/controller-host.ts'), 'utf8');
+    const workBinding = readFileSync(join(process.cwd(), 'adapters/chatgpt/work-conversation-binding-store.ts'), 'utf8');
     expect(controllerHost).toContain("originSurface: 'schedule'");
+    expect(workBinding).toContain('authorizationGrantRefs?: string[]');
+    expect(workBinding).toContain('input.authorizationGrantRefs ?? existing?.value.authorizationGrantRefs ?? []');
     expect(source).toContain('从成功的 controller_claim 响应中取得 data.controllerAuthorityId');
     expect(source).toContain('本次启动的 controller round 已具备 durable controller authority：controller_authority_id=');
     expect(source).toContain('第一次 controller_claim 必须使用这组完全相同的 authority');

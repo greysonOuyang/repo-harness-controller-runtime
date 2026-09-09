@@ -80,6 +80,8 @@ export interface WorkChatgptContinuationInput {
   timeoutMs?: number;
   /** Authorization provenance for Browser actions. Immediate/source launches default to chatgpt-action; Scheduler resume must pass schedule. */
   originSurface?: 'chatgpt-action' | 'schedule';
+  /** Explicit controller-scoped Browser grant refs already authorized for this Work transport. */
+  authorizationGrantRefs?: readonly string[];
 }
 
 export interface WorkChatgptContinuationDependencies {
@@ -100,6 +102,7 @@ export interface WorkChatgptContinuationResult {
   reasoning: ChatgptAutomationReasoning;
   tabPolicy: ChatgptAutomationTabPolicy;
   executionPreferenceVerified: boolean;
+  authorizationGrantRefs?: string[];
   /** Typed provider delivery disposition. Present when provider dispatch was attempted; callers must not infer this from error strings. */
   providerDeliveryStatus?: ChatgptProviderDeliveryStatus;
   tabCleanupStatus?: ChatgptAutomationTabCleanupStatus;
@@ -288,6 +291,11 @@ export async function runWorkChatgptContinuation(
 ): Promise<WorkChatgptContinuationResult> {
   const store = { controllerHome: input.controllerHome, repoId: input.repoId };
   const existing = getChatgptWorkConversationBinding(store, input.workId);
+  const authorizationGrantRefs = new Set(
+    [...(existing?.authorizationGrantRefs ?? []), ...(input.authorizationGrantRefs ?? [])]
+      .map((ref) => ref.trim())
+      .filter(Boolean),
+  );
   const transportConversation = input.transportConversation ?? 'bound';
   const seedUrl = transportConversation === 'fresh' ? undefined : input.conversationUrl?.trim() || existing?.conversationUrl;
   const model = normalizeModel(input.model);
@@ -317,6 +325,7 @@ export async function runWorkChatgptContinuation(
       reasoning,
       tabPolicy,
       executionPreferenceVerified: false,
+      authorizationGrantRefs: [...authorizationGrantRefs],
       error: {
         code: 'CHATGPT_CONTROLLER_ROUND_AUTHORITY_INCOMPLETE',
         message: authorityInputError.message,
@@ -346,6 +355,7 @@ export async function runWorkChatgptContinuation(
         workId: input.workId,
         conversationUrl: seedUrl,
         latestBrowserSessionId: deliverySessionId,
+        authorizationGrantRefs: [...authorizationGrantRefs],
         localAlias: input.title,
       });
     }
@@ -373,6 +383,7 @@ export async function runWorkChatgptContinuation(
         reasoning,
         timeoutMs: input.timeoutMs,
       }),
+      authorizationGrantRefs,
     );
     const observedUrl = delivery.conversationUrl ?? targetUrl;
     const mayPersistObservedConversation = delivery.status === 'dispatch_confirmed' || delivery.status === 'outcome_unknown';
@@ -384,12 +395,14 @@ export async function runWorkChatgptContinuation(
             previousConversationId: binding.conversationId,
             conversationUrl: observedUrl,
             latestBrowserSessionId: delivery.browserSessionId,
+            authorizationGrantRefs: [...authorizationGrantRefs],
             localAlias: binding.localAlias ?? input.title,
           })
         : bindChatgptWorkConversation(store, {
             workId: input.workId,
             conversationUrl: observedUrl,
             latestBrowserSessionId: delivery.browserSessionId,
+            authorizationGrantRefs: [...authorizationGrantRefs],
             localAlias: binding?.localAlias ?? input.title,
           });
     }
@@ -406,6 +419,7 @@ export async function runWorkChatgptContinuation(
         reasoning,
         tabPolicy,
         executionPreferenceVerified: delivery.executionPreferenceVerified,
+        authorizationGrantRefs: [...authorizationGrantRefs],
         providerDeliveryStatus: delivery.status,
         error: delivery.error ?? { code: `CHATGPT_PROVIDER_${delivery.status.toUpperCase()}`, message: delivery.status },
       };
@@ -422,6 +436,7 @@ export async function runWorkChatgptContinuation(
       reasoning,
       tabPolicy,
       executionPreferenceVerified: delivery.executionPreferenceVerified,
+      authorizationGrantRefs: [...authorizationGrantRefs],
       providerDeliveryStatus: delivery.status,
     };
   } catch (error) {
@@ -439,6 +454,7 @@ export async function runWorkChatgptContinuation(
       reasoning,
       tabPolicy,
       executionPreferenceVerified: false,
+      authorizationGrantRefs: [...authorizationGrantRefs],
       error: {
         code: error instanceof Error && error.message.includes(':') ? error.message.split(':', 1)[0] : bridgeRuntime ? 'CHATGPT_BRIDGE_DISPATCH_FAILED' : 'CHATGPT_CONTROLLER_BROWSER_FAILED',
         message: error instanceof Error ? error.message : String(error),

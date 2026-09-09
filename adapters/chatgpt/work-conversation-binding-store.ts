@@ -13,6 +13,8 @@ export interface ChatgptWorkConversationBinding {
   conversationId: string;
   localAlias: string;
   latestBrowserSessionId?: string;
+  /** Explicit controller-scoped Browser grants reusable by scheduled delivery. */
+  authorizationGrantRefs?: string[];
   createdAt: string;
   updatedAt: string;
   lastContinuedAt?: string;
@@ -90,6 +92,7 @@ export function rebindChatgptWorkConversation(
     previousConversationId: string;
     conversationUrl: string;
     latestBrowserSessionId?: string;
+    authorizationGrantRefs?: readonly string[];
     localAlias?: string;
   },
 ): ChatgptWorkConversationBinding {
@@ -116,6 +119,7 @@ export function rebindChatgptWorkConversation(
         conversationId: identity.conversationId,
         localAlias: (input.localAlias?.trim() || existing.value.localAlias).slice(0, 180),
         latestBrowserSessionId: input.latestBrowserSessionId ?? existing.value.latestBrowserSessionId,
+        authorizationGrantRefs: [...new Set((input.authorizationGrantRefs ?? existing.value.authorizationGrantRefs ?? []).map((ref) => ref.trim()).filter(Boolean))],
         createdAt: existing.value.createdAt,
         updatedAt: now,
         lastContinuedAt: now,
@@ -140,6 +144,7 @@ export function bindChatgptWorkConversation(
     workId: string;
     conversationUrl: string;
     latestBrowserSessionId?: string;
+    authorizationGrantRefs?: readonly string[];
     localAlias?: string;
   },
 ): ChatgptWorkConversationBinding {
@@ -167,6 +172,7 @@ export function bindChatgptWorkConversation(
         conversationId: identity.conversationId,
         localAlias: localAlias.slice(0, 180),
         latestBrowserSessionId: input.latestBrowserSessionId ?? existing?.value.latestBrowserSessionId,
+        authorizationGrantRefs: [...new Set((input.authorizationGrantRefs ?? existing?.value.authorizationGrantRefs ?? []).map((ref) => ref.trim()).filter(Boolean))],
         createdAt: existing?.value.createdAt ?? now,
         updatedAt: now,
         lastContinuedAt: now,

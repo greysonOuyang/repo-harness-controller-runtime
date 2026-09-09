@@ -2,7 +2,8 @@ import { randomUUID } from 'crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ExecutionJobOrigin } from '../../src/runtime/execution/jobs/types';
 import { buildBrowserPluginManifest } from '../../src/runtime/plugins/browser-adapter';
-import { executeControllerScopedPluginAction } from '../../src/runtime/plugins/store';
+import { browserActions } from '../../src/runtime/plugins/browser-manifest-surface';
+import { controllerPluginRepository, executeControllerScopedPluginAction, submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import { controllerSystemRoot } from '../../src/cli/repositories/controller-home';
 import {
   CHATGPT_AUTOMATION_SUBMISSION_OUTCOME_UNKNOWN,
@@ -15,13 +16,18 @@ import {
 const DEFAULT_CHATGPT_AUTOMATION_PLUGIN_MENTION = '@forge';
 
 type ChatgptBrowserActionOrigin = Pick<ExecutionJobOrigin, 'surface' | 'actor'>;
-const chatgptBrowserActionOrigin = new AsyncLocalStorage<ChatgptBrowserActionOrigin>();
+interface ChatgptBrowserActionContext {
+  origin: ChatgptBrowserActionOrigin;
+  authorizationGrantRefs: Set<string>;
+}
+const chatgptBrowserActionOrigin = new AsyncLocalStorage<ChatgptBrowserActionContext>();
 
 export function withChatgptBrowserActionOrigin<T>(
   origin: ChatgptBrowserActionOrigin,
   operation: () => Promise<T>,
+  authorizationGrantRefs: Set<string> = new Set(),
 ): Promise<T> {
-  return chatgptBrowserActionOrigin.run(origin, operation);
+  return chatgptBrowserActionOrigin.run({ origin, authorizationGrantRefs }, operation);
 }
 
 function withForgePluginMention(prompt: string): string {
@@ -44,6 +50,12 @@ const CHATGPT_CAPABILITY_MENUITEM_SELECTOR = '[role="menuitem"][aria-keyshortcut
 function requestId(workId: string, actionId: string): string {
   return `chatgpt-work:${workId}:${actionId}:${randomUUID()}`;
 }
+
+const CHATGPT_BROWSER_AUTHORIZATION_ACTIONS = new Set(
+  browserActions()
+    .filter((action) => !action.readOnly && action.confirmation === 'authorization')
+    .map((action) => action.actionId),
+);
 
 const CHATGPT_BROWSER_TRANSPORT_OVERRIDES = {
   browser_mode: 'attach_preferred',
@@ -72,14 +84,36 @@ async function controllerBrowserAction(
   args: Record<string, unknown>,
   timeoutMs?: number,
 ): Promise<Record<string, unknown>> {
-  const envelope = await executeControllerScopedPluginAction({
-    controllerHome,
+  const context = chatgptBrowserActionOrigin.getStore();
+  const origin = context?.origin ?? { surface: 'schedule', actor: 'chatgpt-work-continuation' };
+  const actionRequest = {
     pluginId: 'browser',
     actionId,
     requestId: requestId(workId, actionId),
     args: chatgptBrowserActionArgs(actionId, args),
     timeoutMs,
-    origin: chatgptBrowserActionOrigin.getStore() ?? { surface: 'schedule', actor: 'chatgpt-work-continuation' },
+    origin,
+  };
+
+  // Interactive ChatGPT delivery is the only place allowed to establish a
+  // reusable controller-scoped Browser grant. Scheduled delivery stays on the
+  // low-level executor and must present explicit refs already bound to this Work.
+  if (origin.surface === 'chatgpt-action' && CHATGPT_BROWSER_AUTHORIZATION_ACTIONS.has(actionId)) {
+    const submitted = await submitAssistantPluginAction(
+      controllerHome,
+      controllerPluginRepository(controllerHome),
+      actionRequest,
+    );
+    const grantId = submitted.authorization?.grantId?.trim();
+    if (grantId) context?.authorizationGrantRefs.add(grantId);
+    if (!submitted.result) throw new Error(`CHATGPT_BROWSER_ACTION_RESULT_INVALID:${actionId}`);
+    return chatgptBrowserActionResult(submitted.result, actionId);
+  }
+
+  const envelope = await executeControllerScopedPluginAction({
+    controllerHome,
+    ...actionRequest,
+    authorizationGrantRefs: [...(context?.authorizationGrantRefs ?? [])],
   });
   return chatgptBrowserActionResult(envelope, actionId);
 }
