@@ -58,6 +58,11 @@ export class ComputerProviderRegistry {
     return await this.execute({ capability: COMPUTER_BROWSER_AUTOMATION_CAPABILITY, request }, timeoutMs);
   }
 
+  dispose(): void {
+    for (const provider of this.providers.values()) provider.dispose?.();
+    this.providers.clear();
+  }
+
   snapshot(): Array<{ providerId: string; capabilities: ComputerRuntimeProviderCapabilityId[] }> {
     return [...this.providers.values()]
       .map((provider) => ({ providerId: provider.providerId, capabilities: [...provider.capabilities] }))

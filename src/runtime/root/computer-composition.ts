@@ -33,6 +33,7 @@ function ensureComputerComposition(): ComputerProviderRegistry {
   const fingerprint = computerCompositionFingerprint();
   if (computerProviders && computerProviderCompositionFingerprint === fingerprint) return computerProviders;
 
+  computerProviders?.dispose();
   const registration = currentDesktopOperatorRegistration();
   const next = new ComputerProviderRegistry();
   next.register(createDesktopOperatorComputerProvider({

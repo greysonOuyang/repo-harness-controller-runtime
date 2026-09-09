@@ -34,6 +34,19 @@ V2 must explicitly distinguish four concepts even if compatibility transport sti
 - Non-idempotent mutations never blind-replay after `outcome_unknown`; existing observe/reconcile authority remains canonical.
 - Process Runtime claims/leases remain the only execution concurrency authority.
 
+## Computer hot-path transport contract
+
+The 2026-09-09 #200 latency review proved that the native Desktop Operator is not the dominant warm-path cost, so provider transport optimization must preserve the existing authority boundary rather than introduce another controller or durable provider session. The Computer runtime therefore uses the following transport contract:
+
+- one live Desktop Operator provider binding is scoped to the current trusted registration identity/revision and endpoint contract;
+- provider identity/capability negotiation is reused only while the same Unix-socket connection generation remains live;
+- sequential Computer requests may reuse that bounded JSONL channel instead of reconnecting and handshaking for every action;
+- registration fingerprint/revision or endpoint-contract change disposes the old provider binding before replacement;
+- if the Unix connection changes after negotiation, the pending action is rejected before dispatch and the next explicit invocation must renegotiate; non-idempotent effects are never replayed automatically;
+- timeout, cancellation, response-size and protocol-error bounds remain per request; transport reuse creates no new durable lifecycle or retry authority.
+
+This is a transport/runtime optimization beneath the existing Computer authority. Browser/OS handles remain ephemeral observations, and Process Runtime plus existing unknown-outcome reconciliation remain authoritative for execution concurrency and effect recovery.
+
 ## Workflow Asset Contract
 
 Introduce the smallest generic versioned Workflow Asset model needed to move user-goal automation out of Core. Human-editable assets include:

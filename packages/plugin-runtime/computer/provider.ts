@@ -11,6 +11,7 @@ export interface ComputerProvider {
     request: ComputerExecutionRequest,
     timeoutMs: number,
   ): Promise<Record<string, unknown>>;
+  dispose?(): void;
 }
 
 export function computerProviderSupports(provider: ComputerProvider, capability: ComputerRuntimeProviderCapabilityId): boolean {
