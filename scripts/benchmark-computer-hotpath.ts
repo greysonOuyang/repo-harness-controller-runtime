@@ -7,6 +7,7 @@
  * measures the real Computer product dispatch path without touching the live
  * Desktop Operator or the repository checkout.
  */
+import { randomUUID } from 'crypto';
 import { mkdtempSync, rmSync } from 'fs';
 import { createServer, type Server } from 'net';
 import { tmpdir } from 'os';
@@ -15,6 +16,7 @@ import { computerPluginAdapter } from '../src/runtime/plugins/computer-registrat
 import { createDesktopOperatorRegistrationInput } from '../src/runtime/plugins/desktop-operator-registration';
 import { installExternalPluginRegistration } from '../src/runtime/plugins/external-registration';
 import { disposeRuntimeComputerComposition } from '../src/runtime/root/computer-composition';
+import { setComputerPlatformForTest } from '../src/runtime/platform/computer-platform';
 import type { AssistantPluginActionExecutionInput } from '../src/runtime/plugins/types';
 
 const WARMUP = 5;
@@ -73,13 +75,15 @@ async function closeServer(server: Server): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  if (process.platform === 'win32') {
-    console.log(JSON.stringify({ benchmark: 'computer-hotpath', skipped: 'unix_socket_unavailable_on_win32' }, null, 2));
-    return;
-  }
-
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-hotpath-'));
-  const socketPath = join(controllerHome, 'desktop.sock');
+  const socketPath = process.platform === 'win32'
+    ? `\\\\.\\pipe\\forge-computer-hotpath-${randomUUID()}`
+    : join(controllerHome, 'desktop.sock');
+  // Benchmark the macOS provider contract with a local transport fixture on
+  // every host. This is not a production platform fallback: it keeps the
+  // measured path identical while Windows still fails native calls without a
+  // registered Windows provider.
+  setComputerPlatformForTest('darwin');
   const registration = installExternalPluginRegistration(controllerHome, createDesktopOperatorRegistrationInput({
     socketPath,
     pluginVersion: '0.3.2',
@@ -242,6 +246,7 @@ async function main(): Promise<void> {
     }, null, 2));
   } finally {
     disposeRuntimeComputerComposition();
+    setComputerPlatformForTest(undefined);
     await closeServer(server);
     rmSync(controllerHome, { recursive: true, force: true });
   }
