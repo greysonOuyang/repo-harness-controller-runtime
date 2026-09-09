@@ -585,6 +585,10 @@
       "module": "process-runtime",
       "resource": "pure"
     },
+    "tests/runtime/mcp-timing.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/package-runtime-release.test.ts": {
       "module": "release",
       "resource": "temp-isolated"

@@ -18,7 +18,7 @@ import {
 import { executionJobRoot, rebuildExecutionJobIndexes } from '../../src/runtime/execution/jobs/store';
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import type { TaskLedgerProjection } from '../../src/cli/controller/task-ledger';
-import { recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
+import { flushMcpDiagnostics, recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
 import { classifyForgeIncidentForRepair, maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
 import { callRuntimeTool, sessionlessFacadeControllerAuthorityMatches } from '../../src/runtime/gateway/mcp/runtime-tools';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../src/cli/mcp/multi-repository';
@@ -729,7 +729,7 @@ describe('runtime observability', () => {
     expect(classifyFailure('worker quit unexpectedly')).toBe('agent_runtime_failure');
   });
 
-  test('persists request-level MCP timing and incident records with the same trace identity', () => {
+  test('persists request-level MCP timing and incident records with the same trace identity', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-observability-'));
     try {
       const traceId = 'trace-fixture';
@@ -756,6 +756,7 @@ describe('runtime observability', () => {
         code: 'PUBLIC_STABLE_ENDPOINT_UNHEALTHY',
         message: 'fixture',
       });
+      await flushMcpDiagnostics(controllerHome);
       const timing = JSON.parse(readFileSync(join(controllerHome, 'audit', 'mcp-timings.jsonl'), 'utf8')) as Record<string, unknown>;
       const incident = JSON.parse(readFileSync(join(controllerHome, 'audit', 'mcp-incidents.jsonl'), 'utf8')) as Record<string, unknown>;
       expect(timing).toMatchObject({
@@ -971,6 +972,7 @@ describe('runtime observability', () => {
       const meta = structured?.responseMeta as Record<string, unknown> | undefined;
       expect(meta?.traceId).toBeTruthy();
       const traceId = String(meta!.traceId);
+      await flushMcpDiagnostics(controllerHome);
       const incidents = readFileSync(join(controllerHome, 'audit', 'mcp-incidents.jsonl'), 'utf8')
         .trim().split('\n').map((line) => JSON.parse(line) as { traceId: string; code: string });
       expect(incidents.some((entry) => entry.traceId === traceId && entry.code === 'TOOL_NOT_FOUND')).toBe(true);

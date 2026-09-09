@@ -1,6 +1,5 @@
-import { appendFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
-import { ensureControllerHome } from '../../cli/repositories/controller-home';
+import { appendFile, mkdir, rename, rm, stat } from 'fs/promises';
+import { join, resolve } from 'path';
 
 export interface McpTimingTrace {
   tool: string;
@@ -56,10 +55,107 @@ export interface McpIncident {
   details?: Record<string, unknown>;
 }
 
+const MCP_DIAGNOSTIC_MAX_BYTES = 32 * 1024 * 1024;
+const MCP_DIAGNOSTIC_MAX_PENDING_ENTRIES = 4_096;
+const MCP_DIAGNOSTIC_MAX_BATCH_BYTES = 256 * 1024;
+const MCP_INCIDENT_MEMORY_WINDOW_LIMIT = 1_024;
+const MCP_INCIDENT_MEMORY_LEDGER_LIMIT = 64;
+
+interface PendingDiagnosticLedger {
+  readonly root: string;
+  readonly fileName: string;
+  pending: string[];
+  pendingBytes: number;
+  drain?: Promise<void>;
+}
+
+const diagnosticLedgers = new Map<string, PendingDiagnosticLedger>();
+const recentIncidents = new Map<string, Array<McpIncident & { at: string }>>();
+
+function ledgerFor(controllerHome: string, fileName: string): PendingDiagnosticLedger {
+  const root = join(resolve(controllerHome), 'audit');
+  const key = `${root}\0${fileName}`;
+  let ledger = diagnosticLedgers.get(key);
+  if (!ledger) {
+    ledger = { root, fileName, pending: [], pendingBytes: 0 };
+    diagnosticLedgers.set(key, ledger);
+  }
+  return ledger;
+}
+
+async function existingSize(path: string): Promise<number> {
+  try {
+    return (await stat(path)).size;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw error;
+  }
+}
+
+async function rotateLedger(path: string): Promise<void> {
+  const previous = `${path}.previous`;
+  // This is diagnostic evidence, not a control-plane authority. Keep one bounded
+  // previous segment so a stalled disk cannot turn unbounded telemetry into MCP
+  // dispatch latency.
+  await rm(previous, { force: true });
+  await rename(path, previous);
+}
+
+async function drainLedger(ledger: PendingDiagnosticLedger): Promise<void> {
+  const path = join(ledger.root, ledger.fileName);
+  await mkdir(ledger.root, { recursive: true, mode: 0o700 });
+  let size = await existingSize(path);
+  while (ledger.pending.length > 0) {
+    const records: string[] = [];
+    let bytes = 0;
+    while (ledger.pending.length > 0 && (records.length === 0 || bytes < MCP_DIAGNOSTIC_MAX_BATCH_BYTES)) {
+      const record = ledger.pending.shift()!;
+      ledger.pendingBytes -= Buffer.byteLength(record);
+      records.push(record);
+      bytes += Buffer.byteLength(record);
+    }
+    if (size > 0 && size + bytes > MCP_DIAGNOSTIC_MAX_BYTES) {
+      await rotateLedger(path);
+      size = 0;
+    }
+    const batch = records.join('');
+    await appendFile(path, batch, 'utf-8');
+    size += bytes;
+  }
+}
+
+function scheduleLedgerDrain(ledger: PendingDiagnosticLedger): void {
+  if (ledger.drain) return;
+  ledger.drain = drainLedger(ledger)
+    // Observability is deliberately best-effort. A write failure must not turn
+    // into a failed tool request or retain an unbounded queue in memory.
+    .catch(() => {
+      ledger.pending.length = 0;
+      ledger.pendingBytes = 0;
+    })
+    .finally(() => {
+      ledger.drain = undefined;
+      if (ledger.pending.length > 0) scheduleLedgerDrain(ledger);
+    });
+}
+
 function appendDiagnostic(controllerHome: string, fileName: string, value: Record<string, unknown>): void {
-  const root = join(ensureControllerHome(controllerHome), 'audit');
-  mkdirSync(root, { recursive: true, mode: 0o700 });
-  appendFileSync(join(root, fileName), `${JSON.stringify(value)}\n`, 'utf-8');
+  const ledger = ledgerFor(controllerHome, fileName);
+  if (ledger.pending.length >= MCP_DIAGNOSTIC_MAX_PENDING_ENTRIES) return;
+  const record = `${JSON.stringify(value)}\n`;
+  ledger.pending.push(record);
+  ledger.pendingBytes += Buffer.byteLength(record);
+  scheduleLedgerDrain(ledger);
+}
+
+/** Wait for queued diagnostic evidence in tests and explicit diagnostic consumers. */
+export async function flushMcpDiagnostics(controllerHome?: string): Promise<void> {
+  const ledgers = controllerHome
+    ? [...diagnosticLedgers.values()].filter((ledger) => ledger.root === join(resolve(controllerHome), 'audit'))
+    : [...diagnosticLedgers.values()];
+  await Promise.all(ledgers.map(async (ledger) => {
+    while (ledger.drain) await ledger.drain;
+  }));
 }
 
 export function recordMcpTiming(controllerHome: string, trace: McpTimingTrace): void {
@@ -71,6 +167,20 @@ export function recordMcpTiming(controllerHome: string, trace: McpTimingTrace): 
 }
 
 export function recordMcpIncident(controllerHome: string, incident: McpIncident): void {
+  const root = resolve(controllerHome);
+  let remembered = recentIncidents.get(root);
+  if (!remembered) {
+    if (recentIncidents.size >= MCP_INCIDENT_MEMORY_LEDGER_LIMIT) {
+      const oldest = recentIncidents.keys().next().value;
+      if (oldest) recentIncidents.delete(oldest);
+    }
+    remembered = [];
+    recentIncidents.set(root, remembered);
+  }
+  remembered.push({ ...incident, at: new Date().toISOString() });
+  if (remembered.length > MCP_INCIDENT_MEMORY_WINDOW_LIMIT) {
+    remembered.splice(0, remembered.length - MCP_INCIDENT_MEMORY_WINDOW_LIMIT);
+  }
   try {
     appendDiagnostic(controllerHome, 'mcp-incidents.jsonl', {
       schemaVersion: 1,
@@ -80,4 +190,13 @@ export function recordMcpIncident(controllerHome: string, incident: McpIncident)
   } catch {
     // Incident recording is diagnostic evidence; it must never change the tool result.
   }
+}
+
+/**
+ * The repair classifier needs to count immediately repeated incidents before an
+ * asynchronous diagnostic batch reaches disk. This bounded volatile view is
+ * supplemental evidence only; the JSONL ledger remains the restart-safe history.
+ */
+export function recentMcpIncidents(controllerHome: string): Array<McpIncident & { at: string }> {
+  return [...(recentIncidents.get(resolve(controllerHome)) ?? [])];
 }

@@ -10,7 +10,7 @@ import { appendWorkEvidence, getWorkContract, listWorkContracts } from '../../..
 import { routeWorkStart } from '../control-plane/facade/goal-workloop';
 import { createWorkContinuationSchedule } from '../workflow/schedules/work-continuation';
 import { touchSchedulerWakeSignal } from '../control-plane/global-scheduler/wake-signal';
-import type { McpIncident } from './mcp-timing';
+import { recentMcpIncidents, type McpIncident } from './mcp-timing';
 
 const RECURRENCE_WINDOW_MS = 30 * 60_000;
 const RECURRENCE_THRESHOLD = 3;
@@ -118,7 +118,7 @@ function recentRootIncidents(
 ): PersistedMcpIncident[] {
   if (!classification.eligible || !classification.rootCode) return [];
   const unique = new Map<string, PersistedMcpIncident>();
-  for (const candidate of readBoundedIncidentTail(controllerHome)) {
+  for (const candidate of [...readBoundedIncidentTail(controllerHome), ...recentMcpIncidents(controllerHome)]) {
     const at = Date.parse(candidate.at ?? '');
     if (!Number.isFinite(at) || at < nowMs - RECURRENCE_WINDOW_MS || at > nowMs + 60_000) continue;
     if (classifyForgeIncidentForRepair(candidate).rootCode !== classification.rootCode) continue;
