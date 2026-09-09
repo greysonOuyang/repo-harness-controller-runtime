@@ -303,7 +303,7 @@ describe('runtime release materialization', () => {
         futureSidecarEntrypoint: 'future-sidecar-v2',
       }) };
     }, runExecutionEntryCanary: (request) => { canaries.push(request.name); return { ok: true }; } });
-    expect(canaries).toEqual(['process_runner', 'check_runner']);
+    expect(canaries).toEqual(['process_runner', 'check_runner', 'scheduler_worker', 'periodic_cleanup']);
     expect(existsSync(join(staged.releasePath, 'future-sidecar-v2'))).toBe(true);
     expect(loadRuntimeReleaseManifest(staged.manifestPath, controllerHome).releaseId).toBe(staged.releaseId);
   });

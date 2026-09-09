@@ -1,15 +1,18 @@
 import { runProcess } from '../../effects/process-runner';
-import {
-  processRuntimeReleaseCanaryCommands,
-  type ProcessRuntimeReleaseCanaryCommand,
-} from '../execution/process-runtime/canary';
+import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../execution/process-runtime/canary';
 import {
   assertRuntimeReleaseExecutionSurface,
   type RuntimeReleaseExecutionSurface,
 } from './release-manifest';
 
+export interface RuntimeReleaseExecutionCanaryCommand {
+  name: RuntimeReleaseExecutionSurface['entries'][number]['name'];
+  executable: string;
+  args: string[];
+}
+
 export interface RuntimeReleaseExecutionCanaryDependencies {
-  runExecutionEntryCanary?: (input: ProcessRuntimeReleaseCanaryCommand) => {
+  runExecutionEntryCanary?: (input: RuntimeReleaseExecutionCanaryCommand) => {
     ok: boolean;
     stderr?: string;
     stdout?: string;
@@ -43,7 +46,7 @@ export function assertRuntimeReleaseExecutionCanaries(
   dependencies: RuntimeReleaseExecutionCanaryDependencies = {},
 ): RuntimeReleaseExecutionSurface {
   const surface = assertRuntimeReleaseExecutionSurface(manifestPath, controllerHome);
-  const runExecutionEntryCanary = dependencies.runExecutionEntryCanary ?? ((request: ProcessRuntimeReleaseCanaryCommand) => runProcess(
+  const runExecutionEntryCanary = dependencies.runExecutionEntryCanary ?? ((request: RuntimeReleaseExecutionCanaryCommand) => runProcess(
     request.executable,
     request.args,
     {
@@ -53,7 +56,12 @@ export function assertRuntimeReleaseExecutionCanaries(
       maxOutputBytes: 64 * 1024,
     },
   ));
-  for (const canary of processRuntimeReleaseCanaryCommands(surface.releaseRoot)) {
+  for (const entry of surface.entries) {
+    const canary: RuntimeReleaseExecutionCanaryCommand = {
+      name: entry.name,
+      executable: entry.path,
+      args: [PROCESS_RUNTIME_RELEASE_CANARY_ARG],
+    };
     const result = runExecutionEntryCanary(canary);
     if (!result.ok) {
       throw new Error(`RUNTIME_RELEASE_EXECUTION_CANARY_FAILED: ${canary.name}: ${result.stderr || result.stdout || result.error || 'unknown failure'}`.slice(0, 2_000));

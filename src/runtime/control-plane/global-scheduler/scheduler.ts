@@ -1,5 +1,5 @@
 import { execFile, type ChildProcess } from 'child_process';
-import { resolve } from 'path';
+import { dirname, resolve } from 'path';
 import { cpus, freemem, loadavg } from 'os';
 import { listRepositories } from '../../../cli/repositories/registry';
 import { writeAgentExecutableReadinessSnapshot } from '../../../cli/agent-jobs/executable-resolver';
@@ -160,6 +160,8 @@ export interface SchedulerRuntimeBinding {
   controllerPid?: number;
   runtimeSourceRoot?: string;
   workerEntrypoint?: string;
+  workerExecutable?: string;
+  periodicCleanupExecutable?: string;
   /** Canonical in-process Runtime isolates periodic cleanup from the public event loop. */
   isolatePeriodicCleanup?: boolean;
   /** Canonical Runtime treats a tick failure as a whole-Runtime failure. */
@@ -175,6 +177,8 @@ export class GlobalScheduler {
   private readonly controllerPid: number;
   private readonly runtimeSourceRoot?: string;
   private readonly workerEntrypoint?: string;
+  private readonly workerExecutable?: string;
+  private readonly periodicCleanupExecutable?: string;
   private readonly isolatePeriodicCleanup: boolean;
   private readonly fatalOnTickError: boolean;
   private lastScheduleTick = 0;
@@ -218,6 +222,8 @@ export class GlobalScheduler {
     this.actors = new RepoActorRegistry(controllerHome, { maxConcurrentWorkers: this.config.maxWorkers });
     this.runtimeSourceRoot = runtime.runtimeSourceRoot ? resolve(runtime.runtimeSourceRoot) : undefined;
     this.workerEntrypoint = runtime.workerEntrypoint ? resolve(runtime.workerEntrypoint) : undefined;
+    this.workerExecutable = runtime.workerExecutable ? resolve(runtime.workerExecutable) : undefined;
+    this.periodicCleanupExecutable = runtime.periodicCleanupExecutable ? resolve(runtime.periodicCleanupExecutable) : undefined;
     this.isolatePeriodicCleanup = runtime.isolatePeriodicCleanup === true;
     this.fatalOnTickError = runtime.fatalOnTickError === true;
     const restoredState = restoreSchedulerState(readSchedulerHealthSnapshot(controllerHome));
@@ -300,12 +306,13 @@ export class GlobalScheduler {
         return resolveSchedulerWorkerCommand({
           runtimeSourceRoot: this.runtimeSourceRoot,
           workerEntrypoint: this.workerEntrypoint,
+          standaloneExecutable: this.workerExecutable,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const lifecycle = buildSchedulerWorkerSpawnFailureLifecycle({
-          executable: process.execPath,
-          cwd: this.runtimeSourceRoot ?? process.cwd(),
+          executable: this.workerExecutable ?? process.execPath,
+          cwd: this.workerExecutable ? dirname(this.workerExecutable) : (this.runtimeSourceRoot ?? process.cwd()),
           environment: selectSchedulerWorkerEnvironment(process.env),
           ownerPid: this.controllerPid,
           attempt: current.attempt,
@@ -331,7 +338,7 @@ export class GlobalScheduler {
       repoId,
       jobId,
       controllerPid: this.controllerPid,
-      runtimeSourceRoot: this.runtimeSourceRoot,
+      runtimeSourceRoot: this.workerExecutable ? undefined : this.runtimeSourceRoot,
       writeClaimEnvironment: writeClaim ? runtimeWriteClaimEnvironment(writeClaim) : {},
     });
     const stderrCapture = createSchedulerWorkerStderrCapture({
@@ -465,7 +472,8 @@ export class GlobalScheduler {
       controllerPid: this.controllerPid,
       nowMs,
       cleanupIntervalMs: RUNTIME_CLEANUP_INTERVAL_MS,
-      runtimeSourceRoot: this.runtimeSourceRoot,
+      runtimeSourceRoot: this.periodicCleanupExecutable ? undefined : this.runtimeSourceRoot,
+      cleanupExecutable: this.periodicCleanupExecutable,
       writeClaimEnvironment: writeClaim ? runtimeWriteClaimEnvironment(writeClaim) : {},
     });
     if (!spawned.ok) {

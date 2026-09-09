@@ -6,8 +6,7 @@ import { runProcess } from '../../effects/process-runner';
 import { resolveBunExecutable } from '../shared/process-environment';
 import { CONTROL_PLANE_SCHEMA_VERSION } from '../control-plane/persistence/sqlite-store';
 import { loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
-import type { ProcessRuntimeReleaseCanaryCommand } from '../execution/process-runtime/canary';
-import { assertRuntimeReleaseExecutionCanaries } from './release-execution-canary';
+import { assertRuntimeReleaseExecutionCanaries, type RuntimeReleaseExecutionCanaryCommand } from './release-execution-canary';
 export { assertRuntimeReleaseExecutionCanaries, type RuntimeReleaseExecutionCanaryDependencies } from './release-execution-canary';
 import { packageRuntimeFileIndex, stagePackageRuntimeSnapshot } from './package-runtime-release';
 
@@ -39,6 +38,8 @@ export interface StagedRuntimeRelease {
   browserHandoffArtifactIdentity?: string;
   processRunnerArtifactIdentity?: string;
   checkRunnerArtifactIdentity?: string;
+  schedulerWorkerArtifactIdentity?: string;
+  periodicCleanupArtifactIdentity?: string;
   pluginActionSidecarArtifactIdentity?: string;
   externalPluginProbeArtifactIdentity?: string;
   codeGraphNodeArtifactIdentity?: string;
@@ -87,7 +88,7 @@ export interface CandidateRuntimeReleaseStagerDependencies {
     controllerHome: string;
     expectedHead: string;
   }) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
-  runExecutionEntryCanary?: (input: ProcessRuntimeReleaseCanaryCommand) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
+  runExecutionEntryCanary?: (input: RuntimeReleaseExecutionCanaryCommand) => { ok: boolean; stderr?: string; stdout?: string; error?: string };
 }
 
 function gitText(root: string, args: string[]): string {
@@ -348,6 +349,8 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     browserHandoffArtifactIdentity: manifest.browserHandoffArtifactIdentity,
     processRunnerArtifactIdentity: manifest.processRunnerArtifactIdentity,
     checkRunnerArtifactIdentity: manifest.checkRunnerArtifactIdentity,
+    schedulerWorkerArtifactIdentity: manifest.schedulerWorkerArtifactIdentity,
+    periodicCleanupArtifactIdentity: manifest.periodicCleanupArtifactIdentity,
     pluginActionSidecarArtifactIdentity: manifest.pluginActionSidecarArtifactIdentity,
     externalPluginProbeArtifactIdentity: manifest.externalPluginProbeArtifactIdentity,
     codeGraphNodeArtifactIdentity: manifest.codeGraphNodeArtifactIdentity,
@@ -528,6 +531,32 @@ export function stageRuntimeRelease(input: {
     chmodSync(checkRunnerPath, 0o700);
     const checkRunnerArtifactIdentity = `sha256:${sha256(checkRunnerPath)}`;
 
+    const schedulerWorkerEntrypoint = 'forge-scheduler-worker' as const;
+    const schedulerWorkerPath = join(staging, schedulerWorkerEntrypoint);
+    const schedulerWorkerCompile = compileBinary({
+      sourceRoot,
+      outputPath: schedulerWorkerPath,
+      entryPath: join(sourceRoot, 'src/runtime/control-plane/global-scheduler/scheduler-worker-entry.ts'),
+    });
+    if (!schedulerWorkerCompile.ok) {
+      throw new Error(`RUNTIME_RELEASE_SCHEDULER_WORKER_BUILD_FAILED: ${schedulerWorkerCompile.stderr || schedulerWorkerCompile.stdout || schedulerWorkerCompile.error}`.slice(0, 2_000));
+    }
+    chmodSync(schedulerWorkerPath, 0o700);
+    const schedulerWorkerArtifactIdentity = `sha256:${sha256(schedulerWorkerPath)}`;
+
+    const periodicCleanupEntrypoint = 'forge-periodic-cleanup' as const;
+    const periodicCleanupPath = join(staging, periodicCleanupEntrypoint);
+    const periodicCleanupCompile = compileBinary({
+      sourceRoot,
+      outputPath: periodicCleanupPath,
+      entryPath: join(sourceRoot, 'src/runtime/control-plane/global-scheduler/periodic-cleanup-entry.ts'),
+    });
+    if (!periodicCleanupCompile.ok) {
+      throw new Error(`RUNTIME_RELEASE_PERIODIC_CLEANUP_BUILD_FAILED: ${periodicCleanupCompile.stderr || periodicCleanupCompile.stdout || periodicCleanupCompile.error}`.slice(0, 2_000));
+    }
+    chmodSync(periodicCleanupPath, 0o700);
+    const periodicCleanupArtifactIdentity = `sha256:${sha256(periodicCleanupPath)}`;
+
     const pluginActionSidecarEntrypoint = 'forge-plugin-action-sidecar' as const;
     const pluginActionSidecarPath = join(staging, pluginActionSidecarEntrypoint);
     const pluginActionSidecarCompile = compileBinary({
@@ -610,6 +639,10 @@ export function stageRuntimeRelease(input: {
       processRunnerArtifactIdentity,
       checkRunnerEntrypoint,
       checkRunnerArtifactIdentity,
+      schedulerWorkerEntrypoint,
+      schedulerWorkerArtifactIdentity,
+      periodicCleanupEntrypoint,
+      periodicCleanupArtifactIdentity,
       pluginActionSidecarEntrypoint,
       pluginActionSidecarArtifactIdentity,
       externalPluginProbeEntrypoint,
@@ -652,6 +685,8 @@ export function stageRuntimeRelease(input: {
       browserHandoffArtifactIdentity,
       processRunnerArtifactIdentity,
       checkRunnerArtifactIdentity,
+      schedulerWorkerArtifactIdentity,
+      periodicCleanupArtifactIdentity,
       pluginActionSidecarArtifactIdentity,
       externalPluginProbeArtifactIdentity,
       codeGraphNodeArtifactIdentity,
@@ -731,6 +766,8 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, depende
   assertComponentFile({ path: join(release.releasePath, 'browser-handoff-host.js'), identity: release.browserHandoffArtifactIdentity, missingCode: 'RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'process-runner.js'), identity: release.processRunnerArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PROCESS_RUNNER_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'forge-check-runner'), identity: release.checkRunnerArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CHECK_RUNNER_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'forge-scheduler-worker'), identity: release.schedulerWorkerArtifactIdentity, missingCode: 'RUNTIME_RELEASE_SCHEDULER_WORKER_MISSING', executable: true });
+  assertComponentFile({ path: join(release.releasePath, 'forge-periodic-cleanup'), identity: release.periodicCleanupArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PERIODIC_CLEANUP_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'forge-plugin-action-sidecar'), identity: release.pluginActionSidecarArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PLUGIN_ACTION_SIDECAR_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'external-unix-socket-probe.cjs'), identity: release.externalPluginProbeArtifactIdentity, missingCode: 'RUNTIME_RELEASE_EXTERNAL_PLUGIN_PROBE_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'codegraph-node'), identity: release.codeGraphNodeArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CODEGRAPH_NODE_MISSING', executable: true });

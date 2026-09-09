@@ -57,6 +57,8 @@ export const COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS = [
   'browserHandoffEntrypoint', 'browserHandoffArtifactIdentity',
   'processRunnerEntrypoint', 'processRunnerArtifactIdentity',
   'checkRunnerEntrypoint', 'checkRunnerArtifactIdentity',
+  'schedulerWorkerEntrypoint', 'schedulerWorkerArtifactIdentity',
+  'periodicCleanupEntrypoint', 'periodicCleanupArtifactIdentity',
   'pluginActionSidecarEntrypoint', 'pluginActionSidecarArtifactIdentity',
   'externalPluginProbeEntrypoint', 'externalPluginProbeArtifactIdentity',
   'codeGraphNodeEntrypoint', 'codeGraphNodeArtifactIdentity',
@@ -158,6 +160,18 @@ export function loadRuntimeReleaseManifest(
     entryField: 'checkRunnerEntrypoint',
     identityField: 'checkRunnerArtifactIdentity',
     canonicalEntry: 'forge-check-runner',
+  });
+  const schedulerWorker = optionalRuntimeComponent({
+    value,
+    entryField: 'schedulerWorkerEntrypoint',
+    identityField: 'schedulerWorkerArtifactIdentity',
+    canonicalEntry: 'forge-scheduler-worker',
+  });
+  const periodicCleanup = optionalRuntimeComponent({
+    value,
+    entryField: 'periodicCleanupEntrypoint',
+    identityField: 'periodicCleanupArtifactIdentity',
+    canonicalEntry: 'forge-periodic-cleanup',
   });
   const pluginActionSidecar = optionalRuntimeComponent({
     value,
@@ -263,6 +277,8 @@ export function loadRuntimeReleaseManifest(
     ...(browserHandoff ?? {}),
     ...(processRunner ?? {}),
     ...(checkRunner ?? {}),
+    ...(schedulerWorker ?? {}),
+    ...(periodicCleanup ?? {}),
     ...(pluginActionSidecar ?? {}),
     ...(externalPluginProbe ?? {}),
     ...(browserAutomationHelper ?? {}),
@@ -285,7 +301,7 @@ export interface RuntimeReleaseExecutionSurface {
   manifest: RuntimeReleaseManifest;
   releaseRoot: string;
   entries: Array<{
-    name: 'process_runner' | 'check_runner';
+    name: 'process_runner' | 'check_runner' | 'scheduler_worker' | 'periodic_cleanup';
     path: string;
     artifactIdentity: string;
   }>;
@@ -306,6 +322,11 @@ export function assertRuntimeReleaseExecutionSurface(
     || !manifest.checkRunnerEntrypoint || !manifest.checkRunnerArtifactIdentity) {
     throw new Error('RUNTIME_RELEASE_PROCESS_RUNTIME_SURFACE_INCOMPLETE: process-runner.js and forge-check-runner are required');
   }
+  if (manifest.executionMode === 'standalone-binary'
+    && (!manifest.schedulerWorkerEntrypoint || !manifest.schedulerWorkerArtifactIdentity
+      || !manifest.periodicCleanupEntrypoint || !manifest.periodicCleanupArtifactIdentity)) {
+    throw new Error('RUNTIME_RELEASE_SCHEDULER_SURFACE_INCOMPLETE: forge-scheduler-worker and forge-periodic-cleanup are required');
+  }
   const releaseRoot = dirname(resolvedManifestPath);
   const entries: RuntimeReleaseExecutionSurface['entries'] = [
     {
@@ -318,6 +339,16 @@ export function assertRuntimeReleaseExecutionSurface(
       path: join(releaseRoot, manifest.checkRunnerEntrypoint),
       artifactIdentity: manifest.checkRunnerArtifactIdentity,
     },
+    ...(manifest.schedulerWorkerEntrypoint && manifest.schedulerWorkerArtifactIdentity ? [{
+      name: 'scheduler_worker' as const,
+      path: join(releaseRoot, manifest.schedulerWorkerEntrypoint),
+      artifactIdentity: manifest.schedulerWorkerArtifactIdentity,
+    }] : []),
+    ...(manifest.periodicCleanupEntrypoint && manifest.periodicCleanupArtifactIdentity ? [{
+      name: 'periodic_cleanup' as const,
+      path: join(releaseRoot, manifest.periodicCleanupEntrypoint),
+      artifactIdentity: manifest.periodicCleanupArtifactIdentity,
+    }] : []),
   ];
   for (const entry of entries) {
     if (!existsSync(entry.path)) throw new Error(`RUNTIME_RELEASE_EXECUTION_ENTRY_MISSING: ${entry.name}: ${entry.path}`);

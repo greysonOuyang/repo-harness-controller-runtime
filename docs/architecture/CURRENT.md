@@ -198,6 +198,7 @@ Within one migration slice, gather facts in batches, decide ownership once, impl
 ## Runtime and MCP boundary
 
 - Canonical Runtime is activated as one immutable whole release with a previous release retained for rollback.
+- A compiled `standalone-binary` release has a closed manifest-owned execution surface: Process Runner, Check Runner, Scheduler Worker, and periodic cleanup are immutable executable components with artifact identities and release canaries. Scheduler/cleanup source entrypoints remain a development/source-backed execution mechanism only; compiled Runtime must never fall back to checkout paths or Bun virtual `import.meta.url` paths.
 - Runtime availability/recovery keeps Forge itself healthy; it does not imply exactly-once crash recovery for every local shell command.
 - The default Controller MCP schema is the stable **19-tool** surface.
 - `core` and `advanced` expose that same stable surface.

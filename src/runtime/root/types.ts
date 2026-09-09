@@ -45,6 +45,10 @@ export interface RuntimeReleaseManifest {
   processRunnerArtifactIdentity?: string;
   checkRunnerEntrypoint?: 'forge-check-runner';
   checkRunnerArtifactIdentity?: string;
+  schedulerWorkerEntrypoint?: 'forge-scheduler-worker';
+  schedulerWorkerArtifactIdentity?: string;
+  periodicCleanupEntrypoint?: 'forge-periodic-cleanup';
+  periodicCleanupArtifactIdentity?: string;
   pluginActionSidecarEntrypoint?: 'forge-plugin-action-sidecar';
   pluginActionSidecarArtifactIdentity?: string;
   externalPluginProbeEntrypoint?: 'external-unix-socket-probe.cjs';

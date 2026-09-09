@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { statSync } from 'fs';
 import { ensureForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { ControlPlaneDatabaseInspection } from '../control-plane/persistence/sqlite-store';
 import { inspectControlPlaneDatabase } from '../control-plane/persistence/sqlite-store';
@@ -17,7 +17,7 @@ import { createRuntimeGatewayServer, runtimeGatewayToolSurfaceFingerprint } from
 import { startRuntimeMcpTransport, type RuntimeMcpTransportHandle } from './mcp-transport';
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from './ownership';
 import { RuntimeReadinessState } from './readiness';
-import { loadRuntimeReleaseManifest } from './release-manifest';
+import { loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
 import { ensureActiveRuntimeRelease, readRuntimeReleaseAuthority, type RuntimeReleaseAuthority } from './release-store';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaim } from './write-fence';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
@@ -43,7 +43,7 @@ export interface CanonicalRuntimeDependencies {
   bindWriteClaim(input: { controllerHome: string; owner: RuntimeOwnershipHandle['record']; authority: RuntimeReleaseAuthority }): void;
   acquireOwnership(controllerHome: string, runtimeInstanceId: string): RuntimeOwnershipHandle;
   inspectDatabase(controllerHome: string): ControlPlaneDatabaseInspection;
-  startScheduler(controllerHome: string, timeoutMs?: number): RuntimeSchedulerHandle;
+  startScheduler(input: Parameters<typeof startInProcessScheduler>[0]): RuntimeSchedulerHandle;
   startLocalBridge(input: { controllerHome: string; repositoryRoot?: string }): Promise<RuntimeLocalBridgeHandle | undefined>;
   startTransport(options: Parameters<typeof startRuntimeMcpTransport>[0]): Promise<RuntimeMcpTransportHandle>;
   runMcpProbe(endpoint: string, authToken: string): Promise<void>;
@@ -237,6 +237,12 @@ export class CanonicalForgeRuntime {
       stage = 'release';
       const releaseAuthority = this.dependencies.ensureReleaseAuthority(this.config.controllerHome, this.config.releaseManifestPath);
       stage = 'source';
+      // A compiled release is a closed execution surface. Fail before Scheduler
+      // composition if a stale/corrupt manifest omits any immutable component;
+      // standalone Runtime must never regain source/import.meta.url fallback.
+      if (this.release.executionMode === 'standalone-binary') {
+        requireCompleteCompiledRuntimeReleaseManifest(this.release);
+      }
       // A materialized immutable release carries either a source revision or a
       // package release revision and must snapshot that release directory.
       // Source/fixture manifests without either identity keep the historical
@@ -283,10 +289,20 @@ export class CanonicalForgeRuntime {
       }
 
       stage = 'scheduler';
-      this.scheduler = this.dependencies.startScheduler(
-        this.config.controllerHome,
-        this.config.schedulerReadyTimeoutMs,
-      );
+      const standaloneReleaseRoot = this.release.executionMode === 'standalone-binary'
+        ? dirname(this.config.releaseManifestPath)
+        : undefined;
+      this.scheduler = this.dependencies.startScheduler({
+        controllerHome: this.config.controllerHome,
+        readyTimeoutMs: this.config.schedulerReadyTimeoutMs,
+        runtimeSourceRoot: standaloneReleaseRoot ? undefined : runtimeSourceRoot,
+        workerExecutable: standaloneReleaseRoot && this.release.schedulerWorkerEntrypoint
+          ? join(standaloneReleaseRoot, this.release.schedulerWorkerEntrypoint)
+          : undefined,
+        periodicCleanupExecutable: standaloneReleaseRoot && this.release.periodicCleanupEntrypoint
+          ? join(standaloneReleaseRoot, this.release.periodicCleanupEntrypoint)
+          : undefined,
+      });
       await this.scheduler.ready;
       this.readinessState.setDiagnostic('scheduler', 'pass');
       this.publishStatus();
