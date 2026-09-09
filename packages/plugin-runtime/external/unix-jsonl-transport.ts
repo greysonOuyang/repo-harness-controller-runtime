@@ -122,7 +122,7 @@ function boundedInteger(value: number | undefined, fallback: number, min: number
 function validateSocketPath(socketPath: string): string {
   const normalized = socketPath.trim();
   if (!normalized || !isAbsolute(normalized)) {
-    throw transportError('EXTERNAL_PLUGIN_SOCKET_PATH_INVALID', 'External provider socket path must be absolute.', { retryable: false });
+    throw transportError('EXTERNAL_PLUGIN_SOCKET_PATH_INVALID', 'External provider local socket or Windows named-pipe path must be absolute.', { retryable: false });
   }
   return normalized;
 }

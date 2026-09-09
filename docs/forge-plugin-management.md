@@ -83,7 +83,7 @@ This split keeps Forge extensible without moving product-specific implementation
 
 ### `unix_socket_jsonl`
 
-Used by long-lived native providers such as Forge Desktop Operator. Forge connects to a stable local socket after trusted provider installation and lifecycle verification.
+Used by long-lived native providers such as Forge Desktop Operator. Forge connects to a stable local Unix socket on Unix hosts or a Windows named pipe on Windows after trusted provider installation and lifecycle verification; both use the same bounded JSONL protocol.
 
 ### `managed_cli_json`
 

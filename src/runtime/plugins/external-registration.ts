@@ -107,7 +107,7 @@ function normalizedTransport(input: ExternalPluginTransport): ExternalPluginTran
   if (input.kind === 'unix_socket_jsonl') {
     const socketPath = input.socketPath.trim();
     if (!socketPath || !isAbsolute(socketPath)) {
-      throw new Error('EXTERNAL_PLUGIN_SOCKET_PATH_INVALID: trusted registrations require an absolute Unix socket path');
+      throw new Error('EXTERNAL_PLUGIN_SOCKET_PATH_INVALID: trusted registrations require an absolute local socket or Windows named-pipe path');
     }
     return {
       kind: 'unix_socket_jsonl',

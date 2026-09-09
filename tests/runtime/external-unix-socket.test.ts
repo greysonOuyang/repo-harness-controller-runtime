@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawn, type ChildProcess } from 'child_process';
+import { randomUUID } from 'crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { createServer, type Server } from 'net';
 import { tmpdir } from 'os';
@@ -24,7 +25,12 @@ afterEach(async () => {
 function socketFixture(): { root: string; socketPath: string } {
   const root = mkdtempSync(join(tmpdir(), 'forge-external-socket-'));
   roots.push(root);
-  return { root, socketPath: join(root, 'provider.sock') };
+  return {
+    root,
+    socketPath: process.platform === 'win32'
+      ? `\\\\.\\pipe\\forge-external-socket-${randomUUID()}`
+      : join(root, 'provider.sock'),
+  };
 }
 
 function startServer(socketPath: string): Promise<void> {
@@ -87,9 +93,8 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
   return child;
 }
 
-describe('external Unix socket provider transport', () => {
+describe('external local socket / named-pipe provider transport', () => {
   test('executes bounded asynchronous JSONL RPC and returns object results', async () => {
-    if (process.platform === 'win32') return;
     const { socketPath } = socketFixture();
     await startServer(socketPath);
     const result = await callExternalUnixSocket({
@@ -103,7 +108,6 @@ describe('external Unix socket provider transport', () => {
   });
 
   test('preserves structured provider errors as failed outcomes', async () => {
-    if (process.platform === 'win32') return;
     const { socketPath } = socketFixture();
     await startServer(socketPath);
     try {
@@ -123,7 +127,6 @@ describe('external Unix socket provider transport', () => {
   });
 
   test('marks transport loss after effect dispatch as outcome_unknown', async () => {
-    if (process.platform === 'win32') return;
     const { socketPath } = socketFixture();
     await startServer(socketPath);
     try {
@@ -142,7 +145,6 @@ describe('external Unix socket provider transport', () => {
   });
 
   test('accepts bounded provider-specific RPC methods without transport allowlisting', async () => {
-    if (process.platform === 'win32') return;
     const { socketPath } = socketFixture();
     await startServer(socketPath);
     const result = await callExternalUnixSocket({
@@ -197,6 +199,9 @@ describe('external Unix socket provider transport', () => {
   });
 
   test('synchronous probe uses a separate bounded sidecar and preserves the response envelope', async () => {
+    // Bun's Windows test runner can retain a child named-pipe server after a
+    // synchronous spawn, despite the probe itself succeeding. The real
+    // Windows JSONL path is exercised above without that runner artifact.
     if (process.platform === 'win32') return;
     const { root, socketPath } = socketFixture();
     await startChildServer(root, socketPath);
